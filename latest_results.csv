@@ -1,0 +1,2 @@
+wallet_address,status,total_pnl_usd,realized_pnl_usd,unrealized_pnl_usd,total_trades,winning_trades,losing_trades,win_rate,total_volume_usd,total_fees_usd,first_trade_time,last_trade_time,error_message
+EtjUEdstCK856io1ZNoGs9aamsjBJaSm6rmNYz5uTKqv,failed,0,0,0,0,0,0,0%,0,0,,,Job execution failed: No transactions found for wallet: EtjUEdstCK856io1ZNoGs9aamsjBJaSm6rmNYz5uTKqv

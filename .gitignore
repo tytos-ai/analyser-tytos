@@ -1,0 +1,46 @@
+node_modules
+node_modules
+ts_system_to_rewrite_to_rust
+
+
+# === Rust build output ===
+/target/
+**/target/
+
+# === Common Cargo files ===
+**/Cargo.lock
+/.cargo/
+**/.cargo/
+
+# === IDEs and editors ===
+# VSCode
+.vscode/
+/.idea/
+
+# Sublime
+*.sublime-workspace
+*.sublime-project
+
+# JetBrains (CLion, IntelliJ)
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# === OS-generated files ===
+.DS_Store
+Thumbs.db
+
+# === Git submodule leftovers ===
+**/.git
+
+# === Backup and temp files ===
+*.log
+*.tmp
+*.swp
+*~
+
+# === Optional: ignore binaries you may build ===
+**/bin/
+**/debug/
+**/release/

@@ -1,0 +1,4 @@
+
+wallet_address,status,total_pnl_usd,realized_pnl_usd,unrealized_pnl_usd,total_trades,winning_trades,losing_trades,win_rate,total_volume_usd,total_fees_usd,first_trade_time,last_trade_time,error_message
+EhYXVsWmYNEDUxJBf5qFmLmPjm4FQCdHYB5vWnKB7LSJ,failed,0,0,0,0,0,0,0%,0,0,,,Job execution failed: No transactions found for wallet: EhYXVsWmYNEDUxJBf5qFmLmPjm4FQCdHYB5vWnKB7LSJ
+9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM,failed,0,0,0,0,0,0,0%,0,0,,,Anyhow error: Invalid response: HTTP 429 Too Many Requests

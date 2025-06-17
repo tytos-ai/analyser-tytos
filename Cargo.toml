@@ -1,0 +1,30 @@
+[package]
+name = "pnl_tracker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+config_manager = { path = "config_manager" }
+job_orchestrator = { path = "job_orchestrator" }
+dex_client = { path = "dex_client" }
+solana_client = { path = "solana_client" }
+jprice_client = { path = "jprice_client" }
+
+[workspace]
+resolver = "2"
+members = [
+    "pnl_core",
+    "solana_client",
+    "dex_client",
+    "tx_parser",
+    "persistence_layer",
+    "api_server",
+    "config_manager",
+    "job_orchestrator",
+    "jprice_client"
+]
+

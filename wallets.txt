@@ -1,0 +1,7 @@
+# Test wallets for batch mode testing
+# These are real Solana wallet addresses for testing P&L analysis
+9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM
+EhYXVsWmYNEDUxJBf5qFmLmPjm4FQCdHYB5vWnKB7LSJ
+CuieVDEDtLo7FypA9SbLM9saXFdb1dsshEkyErMqkRQq
+6dNVYztGNhB3L4XYeFJK9M7FgpAMKbXBFEv6jkC7b6s3
+7S9ZFRJj8yqGGRkMPZBCQX4iX9rBRZYgVHzjL2xJkPZB

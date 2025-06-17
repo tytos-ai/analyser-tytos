@@ -1,0 +1,69 @@
+[system]
+debug_mode = true
+redis_mode = true
+process_loop_ms = 30000
+output_csv_file = "pnl_results.csv"
+
+[redis]
+url = "redis://localhost:6379"
+connection_timeout_seconds = 10
+default_lock_ttl_seconds = 600
+
+[solana]
+rpc_url = "https://solana-mainnet.g.alchemy.com/v2/wrsArAcfwcXqcPQXnXB27S4-CXyvMkXP"
+max_signatures = 50
+rpc_timeout_seconds = 30
+max_concurrent_requests = 10
+
+[dexscreener]
+api_base_url = "https://api.dexscreener.com"
+websocket_url = "wss://io.dexscreener.com/dex/screener/v5/pairs/h24/1"
+http_base_url = "https://io.dexscreener.com/dex/log/amm/v4/pumpfundex/top/solana"
+user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+reconnect_delay_seconds = 30
+max_reconnect_attempts = 5
+
+[dexscreener.trending]
+min_volume_24h = 1270000.0
+min_txns_24h = 45000
+min_liquidity_usd = 10000.0
+min_price_change_24h = 50.0
+max_pair_age_hours = 168
+polling_interval_seconds = 60
+max_tokens_per_cycle = 20
+wallet_discovery_limit = 10
+rate_limit_ms = 200
+
+[jupiter]
+api_url = "https://lite-api.jup.ag"
+price_cache_ttl_seconds = 60
+request_timeout_seconds = 30
+
+[pnl]
+timeframe_mode = "none"
+timeframe_general = "7d"
+wallet_min_capital = 0.0
+aggregator_min_hold_minutes = 0.0
+amount_trades = 0
+win_rate = 0.0
+aggregator_batch_size = 20
+
+# Advanced trader filtering for copy trading (more lenient for testing)
+[trader_filter]
+min_realized_pnl_usd = 0.01       # Lower threshold for testing
+min_total_trades = 2               # Lower threshold
+min_winning_trades = 1             # Lower threshold  
+min_win_rate = 25.0                # Lower threshold
+min_roi_percentage = 5.0           # Lower threshold
+min_capital_deployed_sol = 0.001   # Much lower threshold for testing
+max_avg_hold_time_minutes = 1440   # 24 hours max
+min_avg_hold_time_minutes = 1      # 1 minute min
+exclude_holders_only = true        # Skip wallets with only buy transactions
+exclude_zero_pnl = true           # Skip wallets with no realized gains
+min_transaction_frequency = 0.05   # Lower frequency requirement
+
+[api]
+host = "0.0.0.0"
+port = 8080
+enable_cors = true
+request_timeout_seconds = 30

@@ -1,0 +1,138 @@
+# Guidelines for AI-Assisted Rust Development (P&L Tracker Project)
+
+## 1. Introduction
+
+This document provides guidelines for AI coding assistants (e.g., Cursor, Claude) to ensure the generated Rust code for the "Rust-Powered Solana P&L Tracker and Dex Analyzer" project is high-quality, consistent, and aligns with the project's architecture and best practices, reflecting the "as-is" functionalities of the original JS/TS codebase.
+
+## 2. General Rust Guidelines
+
+*   **Rust Edition:** Use the latest stable Rust edition (e.g., 2021 or newer as appropriate at the time of development).
+*   **Formatting:**
+    *   Strictly adhere to `rustfmt` for all code formatting. Ensure `rustfmt` is run before committing any code.
+    *   Command: `cargo fmt`
+*   **Linting:**
+    *   Address all warnings from `clippy`. Aim for `clippy::pedantic` where reasonable, but prioritize clarity and maintainability.
+    *   Command: `cargo clippy --all-targets --all-features -- -D warnings` (or a suitably strict subset).
+*   **Error Handling:**
+    *   Prefer `Result<T, E>` for all fallible operations. Avoid `unwrap()` or `expect()` in library code or any code that can reasonably recover or propagate an error. `expect()` may be used in tests or truly unrecoverable situations in `main.rs`.
+    *   Utilize custom error types. Define them using the `thiserror` crate for library-like components (e.g., `pnl_core`, `solana_client`, `dex_client`, `jprice_client`).
+        *Example `thiserror` usage:*
+        ```rust
+        use thiserror::Error;
+
+        #[derive(Error, Debug)]
+        pub enum MyModuleError {
+            #[error("Network request failed: {0}")]
+            NetworkError(#[from] reqwest::Error),
+            #[error("Data parsing error: {0}")]
+            ParsingError(String),
+            #[error("Resource not found for ID: {0}")]
+            NotFound(String),
+            #[error("Configuration error: {0}")]
+            ConfigError(String),
+            #[error("Redis operation failed: {0}")]
+            RedisError(#[from] redis::RedisError),
+        }
+        ```
+    *   The `anyhow` crate can be used for simpler error propagation in application-level code (e.g., Axum handlers, `main.rs`, CLI tool, `job_orchestrator` logic).
+*   **Logging:**
+    *   Use the `tracing` crate for structured logging.
+    *   Employ spans (`#[tracing::instrument]`) to add contextual information to logs.
+    *   Log levels: Use `error!`, `warn!`, `info!`, `debug!`, `trace!` appropriately.
+    *   Avoid `println!` or `dbg!` macros in production code.
+*   **Asynchronous Programming (Tokio):**
+    *   Use `async/await` for all I/O-bound operations.
+    *   Be mindful of holding `Mutex` guards across `.await` points.
+    *   For CPU-bound work within an async context, use `tokio::task::spawn_blocking`.
+*   **Dependencies (`Cargo.toml`):**
+    *   Specify dependency versions carefully. Enable only necessary features.
+    *   Regularly review and update dependencies.
+*   **Testing:**
+    *   Write unit tests for individual functions and modules.
+    *   Write integration tests for interactions between components/crates.
+*   **Modularity:**
+    *   Organize code into logical modules and crates as defined in `architecture.md`.
+*   **Comments and Documentation:**
+    *   Write clear `rustdoc` comments for public APIs. Use inline comments for complex logic.
+
+## 3. Project-Specific Guidelines (Reflecting "As-Is" JS/TS Base)
+
+*   **Axum Framework (`api_server` crate):**
+    *   Structure handlers logically. `AppState` should provide access to `config_manager`, `job_orchestrator` (or the main P&L processing loop manager), and `persistence_layer` (Redis connections).
+    *   Error responses should be user-friendly JSON.
+*   **Configuration (`config_manager`):**
+    *   Use the `config` crate to load settings from `.toml` files and/or environment variables into a typed `SystemConfig` struct. This struct will map to parameters found in the JS `.env` (e.g., `SOLANA_RPC_URL`, `REDIS_URL`, `REDIS_MODE`, `TIMEFRAME_MODE`, P&L filters) and new Rust-specific configurables like DexScreener/Jupiter API URLs.
+*   **Solana Interactions (`solana_client`):**
+    *   Use `reqwest` for RPC calls. Focus on replicating existing Solana data fetching logic.
+*   **DexScreener Interactions (`dex_client`):**
+    *   This client is specific to **DexScreener**.
+    *   Implement WebSocket connection to `wss://io.dexscreener.com/dex/screener/v5/pairs/h24/1` for trending pair streams.
+    *   Implement HTTP requests to `https://io.dexscreener.com/dex/log/amm/v4/pumpfundex/top/solana/{pair}` for specific pair data.
+    *   Logic for identifying wallet addresses from DexScreener data (mirroring `extractSolKeys.js`, `workerTrending.js`) is critical.
+    *   Identified wallets should be passed to the `persistence_layer` for queuing in Redis.
+*   **Jupiter Price Fetching (`jprice_client` or module):**
+    *   Responsible for fetching token prices from the Jupiter API (`https://lite-api.jup.ag/price/v2`) using `reqwest`.
+    *   Must interact with `persistence_layer` to cache these prices in Redis, replicating the behavior of `src/utils/jprice.ts`.
+*   **Redis Usage (`persistence_layer`):**
+    *   Use `redis-rs` with Tokio integration.
+    *   Implement Redis interactions based on the JS system's usage:
+        *   **Wallet Queue (Continuous Mode):** Use Redis lists (e.g., `LPUSH` by `dex_client`, `BRPOP` or `RPOP` by `job_orchestrator`/P&L loop) for the queue of discovered wallets.
+        *   **P&L State/Temporary Data:** Replicate storage patterns for data like `accamounts:*` and `temptxids:*` if they are essential to the P&L logic flow from the JS version.
+        *   **`aggregator-lock`:** Implement a distributed lock (e.g., using `SETNX`) for the main P&L processing loop in Continuous/24/7 mode, ensuring only one instance processes from the Redis queue.
+        *   **Jupiter Price Cache:** Store and retrieve token prices.
+        *   **DexScreener `trending:{pair}` keys:** Store raw trending pair data from DexScreener, potentially with an `extracted:bool` field, to manage processing state by the Rust equivalent of `workerTrending.js`.
+    *   Use clear Redis key prefixes (e.g., `pnltracker:jsbased:<type>:`).
+*   **Job Orchestration (`job_orchestrator` / P&L Main Loop):**
+    *   **Batch Mode:** Manage P&L tasks for lists of wallets provided via API.
+    *   **Continuous Mode:**
+        *   The main P&L processing loop must acquire the `aggregator-lock` from `persistence_layer`.
+        *   If lock acquired, read wallet addresses from the Redis queue populated by `dex_client`.
+        *   (Consider if a "recently processed" check beyond the `aggregator-lock`'s single-instance nature is needed/present in JS).
+        *   Process wallets through the P&L pipeline (`solana_client`, `tx_parser`, `pnl_core`, `jprice_client`).
+*   **P&L Core (`pnl_core`):**
+    *   Ensure P&L calculation logic strictly adheres to rules derived from `pnl.ts` and `txParser.ts`, including how prices from `jprice_client` are used for transfers/current holdings.
+
+## 4. AI Assistant Interaction Tips
+
+*   **Be Specific:** Refer to JS/TS file names (e.g., "`pnl.ts`", "`extractSolKeys.js`") when asking for Rust equivalents of specific logic. Example: "Generate Rust code for `dex_client` to connect to the DexScreener WebSocket, similar to `Dex/trendingWs.js`."
+*   **Provide JS Snippets:** If asking to translate a specific JS function, provide that snippet.
+*   **Iterative Refinement & Context:** As before.
+*   **Focus on Replication:** Emphasize that the initial goal is to replicate the existing JS/TS system's verified functionalities using Rust.
+
+By following these guidelines, the AI coding assistant can be a powerful tool in translating and re-engineering the existing P&L Tracker system into Rust effectively.Okay, the `ai_coding_guidelines.md` has been updated to align its project-specific guidelines with the revised "as-is" `architecture.md` and `requirements.md`.
+
+Key changes in Section 3 (Project-Specific Guidelines):
+
+1.  **General Note:** Added emphasis that guidelines now reflect the "as-is" functionalities of the original JS/TS codebase.
+2.  **Axum Framework (`api_server` crate):** Confirmed `AppState` considerations.
+3.  **Configuration (`config_manager`):** Updated to reflect that `SystemConfig` will map to refined parameters from JS `.env` and new configurables (DexScreener/Jupiter URLs).
+4.  **Solana Interactions (`solana_client`):** No major change, still direct RPC.
+5.  **DexScreener Interactions (`dex_client`):**
+    *   Explicitly named "DexScreener Interactions".
+    *   Specified interaction with DexScreener WebSocket and HTTP APIs.
+    *   Highlighted replication of wallet identification logic from `extractSolKeys.js`, `workerTrending.js`.
+    *   Mentioned passing wallets to `persistence_layer` for Redis queuing.
+6.  **Jupiter Price Fetching (`jprice_client` or module):**
+    *   Added this new subsection.
+    *   Specified fetching prices from Jupiter API.
+    *   Noted interaction with `persistence_layer` for Redis caching, mirroring `src/utils/jprice.ts`.
+7.  **Redis Usage (`persistence_layer`):**
+    *   Updated to detail specific Redis patterns based on the JS system:
+        *   Wallet Queue for continuous mode (e.g., `LPUSH`/`BRPOP`).
+        *   P&L state/temporary data (e.g., `accamounts:*`, `temptxids:*`).
+        *   `aggregator-lock` for the continuous mode P&L loop.
+        *   Jupiter price cache.
+        *   DexScreener `trending:{pair}` keys for managing processing state.
+    *   Advised on clear Redis key prefixing.
+8.  **Job Orchestration (`job_orchestrator` / P&L Main Loop):**
+    *   Clarified Batch Mode task management.
+    *   For Continuous Mode, detailed acquiring `aggregator-lock`, reading from Redis wallet queue, and processing.
+9.  **P&L Core (`pnl_core`):**
+    *   Added a note to ensure P&L logic uses prices from `jprice_client` correctly, mirroring `pnl.ts`.
+10. **AI Interaction Tips (Section 4):**
+    *   Added advice to refer to specific JS/TS file names and provide JS snippets when asking for Rust equivalents.
+    *   Emphasized that the initial goal is replication.
+
+Section 2 (General Rust Guidelines) was briefly reviewed and remains applicable.
+
+The `ai_coding_guidelines.md` file has been overwritten with these modifications.

@@ -1,0 +1,37 @@
+# Simple test configuration file
+
+[redis]
+url = "redis://127.0.0.1:6379"
+default_lock_ttl_seconds = 600
+wallet_limit = 10
+
+[solana]
+rpc_url = "https://api.mainnet-beta.solana.com"
+rpc_timeout_seconds = 30
+max_concurrent_requests = 5
+max_signatures = 1000
+
+[pnl]
+timeframe_mode = "general"
+timeframe_general = "1h"
+wallet_min_capital = 1.0
+aggregator_min_hold_minutes = 1
+amount_trades = 1
+win_rate = 0.0
+
+[jupiter]
+api_url = "https://lite-api.jup.ag"
+request_timeout_seconds = 30
+price_cache_ttl_seconds = 60
+
+[dex]
+ws_url = "wss://io.dexscreener.com/dex/screener/v5/pairs/h24/1"
+http_base_url = "https://io.dexscreener.com/dex/log/amm/v4/pumpfundex/top/solana"
+
+[system]
+redis_mode = true
+process_loop_ms = 60000
+
+[api]
+host = "0.0.0.0"
+port = 8080
