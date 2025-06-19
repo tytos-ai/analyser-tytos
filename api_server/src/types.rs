@@ -59,8 +59,7 @@ pub struct DexClientStatus {
 #[derive(Debug, Serialize)]
 pub struct ConfigSummary {
     pub redis_mode: bool,
-    pub solana_rpc_url: String,
-    pub max_signatures: u32,
+    pub birdeye_api_configured: bool,
     pub pnl_filters: PnLFiltersSummary,
 }
 
@@ -221,20 +220,6 @@ pub struct SystemSettingsUpdate {
     pub redis_mode: Option<bool>,
 }
 
-/// DexClient control request
-#[derive(Debug, Deserialize)]
-pub struct DexControlRequest {
-    pub action: String, // "start", "stop", "restart"
-}
-
-/// DexClient control response
-#[derive(Debug, Serialize)]
-pub struct DexControlResponse {
-    pub action: String,
-    pub success: bool,
-    pub message: String,
-    pub status: DexClientStatus,
-}
 
 /// System logs query parameters
 #[derive(Debug, Deserialize)]
@@ -398,4 +383,119 @@ pub struct TraderPnLSummary {
     pub total_trades: u32,
     pub winning_trades: u32,
     pub capital_deployed_sol: String,
+}
+
+// =====================================
+// Service Management Types
+// =====================================
+
+/// Simple message response
+#[derive(Debug, Serialize)]
+pub struct MessageResponse {
+    pub message: String,
+}
+
+/// Discovery cycle response
+#[derive(Debug, Serialize)]
+pub struct DiscoveryCycleResponse {
+    pub message: String,
+    pub discovered_wallets: u64,
+}
+
+// =====================================
+// Results Retrieval Types
+// =====================================
+
+/// Query parameters for getting all P&L results
+#[derive(Debug, Deserialize)]
+pub struct AllResultsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+    pub sort_by: Option<String>, // "pnl", "analyzed_at", "wallet_address"
+    pub order: Option<String>,   // "asc", "desc"
+}
+
+/// Response for all P&L results
+#[derive(Debug, Serialize)]
+pub struct AllResultsResponse {
+    pub results: Vec<StoredPnLResultSummary>,
+    pub pagination: PaginationInfo,
+    pub summary: AllResultsSummary,
+}
+
+/// Simplified P&L result for list view
+#[derive(Debug, Serialize)]
+pub struct StoredPnLResultSummary {
+    pub wallet_address: String,
+    pub token_address: String,
+    pub token_symbol: String,
+    pub total_pnl_usd: Decimal,
+    pub realized_pnl_usd: Decimal,
+    pub unrealized_pnl_usd: Decimal,
+    pub roi_percentage: Decimal,
+    pub total_trades: u32,
+    pub win_rate: Decimal,
+    pub analyzed_at: DateTime<Utc>,
+}
+
+/// Summary of all P&L results
+#[derive(Debug, Serialize)]
+pub struct AllResultsSummary {
+    pub total_wallets: u64,
+    pub profitable_wallets: u64,
+    pub total_pnl_usd: Decimal,
+    pub average_pnl_usd: Decimal,
+    pub total_trades: u64,
+    pub profitability_rate: f64,
+    pub last_updated: DateTime<Utc>,
+}
+
+/// Detailed P&L result response
+#[derive(Debug, Serialize)]
+pub struct DetailedPnLResultResponse {
+    pub wallet_address: String,
+    pub token_address: String,
+    pub token_symbol: String,
+    pub pnl_report: pnl_core::PnLReport,
+    pub analyzed_at: DateTime<Utc>,
+}
+
+/// Enhanced health response with component status
+#[derive(Debug, Serialize)]
+pub struct EnhancedHealthResponse {
+    pub status: String,
+    pub version: String,
+    pub uptime_seconds: u64,
+    pub components: ComponentHealthStatus,
+}
+
+/// Component health status
+#[derive(Debug, Serialize)]
+pub struct ComponentHealthStatus {
+    pub redis: RedisComponentHealth,
+    pub birdeye_api: ApiComponentHealth,
+    pub services: ServicesComponentHealth,
+}
+
+/// Redis component health
+#[derive(Debug, Serialize)]
+pub struct RedisComponentHealth {
+    pub connected: bool,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+/// API component health  
+#[derive(Debug, Serialize)]
+pub struct ApiComponentHealth {
+    pub accessible: bool,
+    pub latency_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Services component health
+#[derive(Debug, Serialize)]
+pub struct ServicesComponentHealth {
+    pub wallet_discovery: String, // "Running", "Stopped", "Error"
+    pub pnl_analysis: String,     // "Running", "Stopped", "Error"
 }

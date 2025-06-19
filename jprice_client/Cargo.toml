@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 pnl_core = { path = "../pnl_core" }
 persistence_layer = { path = "../persistence_layer" }
+dex_client = { path = "../dex_client" }
 tokio = { version = "1.0", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }

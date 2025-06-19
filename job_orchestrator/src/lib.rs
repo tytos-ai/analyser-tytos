@@ -1,12 +1,13 @@
 use chrono::Utc;
 use config_manager::SystemConfig;
 use futures::future::join_all;
-use jprice_client::JupiterPriceClient;
-use persistence_layer::{PersistenceError, RedisClient};
+use jprice_client::BirdEyePriceFetcher;
+use dex_client::{BirdEyeClient, BirdEyeConfig, BirdEyeError, TraderTransaction, GeneralTraderTransaction};
+use pnl_core::{FinancialEvent, EventType, EventMetadata};
+use persistence_layer::{PersistenceError, RedisClient, DiscoveredWalletToken};
 use pnl_core::{AnalysisTimeframe, PnLEngine, PnLFilters, PnLReport};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use solana_client::{SolanaClient, SolanaClientConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,11 +15,15 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
-use tx_parser::{ParserConfig, TransactionParser};
 use uuid::Uuid;
 
-pub mod trending_orchestrator;
-pub use trending_orchestrator::{TrendingOrchestrator, TrendingCycleStats};
+// Legacy module removed - trending functionality moved to BirdEye
+// pub mod trending_orchestrator;
+pub mod birdeye_trending_orchestrator;
+
+// Legacy trending orchestrator removed - use BirdEye instead
+// pub use trending_orchestrator::{TrendingOrchestrator, TrendingCycleStats};
+pub use birdeye_trending_orchestrator::{BirdEyeTrendingOrchestrator, BirdEyeTrendingConfig, DiscoveryStats};
 
 #[derive(Error, Debug, Clone)]
 pub enum OrchestratorError {
@@ -26,12 +31,8 @@ pub enum OrchestratorError {
     Persistence(String),
     #[error("P&L calculation error: {0}")]
     PnL(String),
-    #[error("Solana client error: {0}")]
-    SolanaClient(String),
-    #[error("Transaction parser error: {0}")]
-    TxParser(String),
-    #[error("Jupiter client error: {0}")]
-    JupiterClient(String),
+    #[error("BirdEye price client error: {0}")]
+    BirdEyePrice(String),
     #[error("Configuration error: {0}")]
     Config(String),
     #[error("Lock acquisition failed")]
@@ -62,21 +63,17 @@ impl From<pnl_core::PnLError> for OrchestratorError {
     }
 }
 
-impl From<solana_client::SolanaClientError> for OrchestratorError {
-    fn from(err: solana_client::SolanaClientError) -> Self {
-        OrchestratorError::SolanaClient(err.to_string())
+
+
+impl From<jprice_client::BirdEyePriceError> for OrchestratorError {
+    fn from(err: jprice_client::BirdEyePriceError) -> Self {
+        OrchestratorError::BirdEyePrice(err.to_string())
     }
 }
 
-impl From<tx_parser::ParseError> for OrchestratorError {
-    fn from(err: tx_parser::ParseError) -> Self {
-        OrchestratorError::TxParser(err.to_string())
-    }
-}
-
-impl From<jprice_client::JupiterClientError> for OrchestratorError {
-    fn from(err: jprice_client::JupiterClientError) -> Self {
-        OrchestratorError::JupiterClient(err.to_string())
+impl From<BirdEyeError> for OrchestratorError {
+    fn from(err: BirdEyeError) -> Self {
+        OrchestratorError::BirdEyePrice(err.to_string())
     }
 }
 
@@ -162,10 +159,9 @@ impl BatchJob {
 /// Job orchestrator for managing P&L analysis tasks
 pub struct JobOrchestrator {
     config: SystemConfig,
-    solana_client: SolanaClient,
-    jupiter_client: JupiterPriceClient,
-    transaction_parser: TransactionParser,
-    pnl_engine: PnLEngine<JupiterPriceClient>,
+    birdeye_client: BirdEyeClient,
+    birdeye_price_fetcher: BirdEyePriceFetcher,
+    pnl_engine: PnLEngine<BirdEyePriceFetcher>,
     redis_client: Arc<Mutex<RedisClient>>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     batch_jobs: Arc<Mutex<HashMap<Uuid, BatchJob>>>,
@@ -173,44 +169,36 @@ pub struct JobOrchestrator {
 
 impl JobOrchestrator {
     pub async fn new(config: SystemConfig) -> Result<Self> {
-        // Initialize Solana client
-        let solana_config = SolanaClientConfig {
-            rpc_url: config.solana.rpc_url.clone(),
-            rpc_timeout_seconds: config.solana.rpc_timeout_seconds,
-            max_concurrent_requests: config.solana.max_concurrent_requests as usize,
-            max_signatures: config.solana.max_signatures as u64,
-        };
-        let solana_client = SolanaClient::new(solana_config)?;
-
         // Initialize Redis client
         let redis_client = RedisClient::new(&config.redis.url).await?;
         let redis_client = Arc::new(Mutex::new(redis_client));
 
-        // Initialize Jupiter client
-        let jupiter_config = jprice_client::JupiterClientConfig {
-            api_url: config.jupiter.api_url.clone(),
-            request_timeout_seconds: config.jupiter.request_timeout_seconds,
-            price_cache_ttl_seconds: config.jupiter.price_cache_ttl_seconds,
-            max_retries: 3,
-            rate_limit_delay_ms: 100,
+        // Initialize BirdEye client and price fetcher
+        let birdeye_config = BirdEyeConfig {
+            api_key: config.birdeye.api_key.clone(),
+            api_base_url: config.birdeye.api_base_url.clone(),
+            request_timeout_seconds: config.birdeye.request_timeout_seconds,
+            rate_limit_per_second: config.birdeye.rate_limit_per_second,
         };
-        let jupiter_client = JupiterPriceClient::new(jupiter_config, Some({
-            let redis = redis_client.lock().await;
-            redis.clone()
-        })).await?;
-
-        // Initialize transaction parser
-        let parser_config = ParserConfig::default();
-        let transaction_parser = TransactionParser::new(parser_config);
+        
+        let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
+        
+        let birdeye_price_fetcher = BirdEyePriceFetcher::new(
+            birdeye_config,
+            Some({
+                let redis = redis_client.lock().await;
+                redis.clone()
+            }),
+            Some(config.birdeye.price_cache_ttl_seconds)
+        )?;
 
         // Initialize P&L engine
-        let pnl_engine = PnLEngine::new(jupiter_client.clone());
+        let pnl_engine = PnLEngine::new(birdeye_price_fetcher.clone());
 
         Ok(Self {
             config,
-            solana_client,
-            jupiter_client,
-            transaction_parser,
+            birdeye_client,
+            birdeye_price_fetcher,
             pnl_engine,
             redis_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
@@ -270,39 +258,143 @@ impl JobOrchestrator {
         result
     }
 
-    /// Process wallets discovered by DexScreener
+    /// Run a single continuous mode cycle for testing (returns true if processed a pair)
+    pub async fn start_continuous_mode_single_cycle(&self) -> Result<bool> {
+        // Try to acquire the aggregator lock
+        let lock = {
+            let redis = self.redis_client.lock().await;
+            redis.acquire_lock("aggregator-lock", self.config.redis.default_lock_ttl_seconds).await
+        };
+
+        let lock_handle = match lock {
+            Ok(handle) => handle,
+            Err(PersistenceError::LockFailed) => {
+                debug!("Another instance is processing, skipping cycle");
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        debug!("Acquired aggregator lock, processing single wallet-token pair...");
+
+        // Process just one wallet-token pair
+        let processed = self.process_single_discovered_wallet().await?;
+
+        // Release the lock
+        {
+            let redis = self.redis_client.lock().await;
+            if let Err(e) = redis.release_lock(&lock_handle).await {
+                warn!("Failed to release lock: {}", e);
+            }
+        }
+
+        Ok(processed)
+    }
+
+    /// Process a single wallet-token pair from the discovery queue
+    async fn process_single_discovered_wallet(&self) -> Result<bool> {
+        // Pop a single wallet-token pair from the discovery queue
+        let wallet_token_pair = {
+            let redis = self.redis_client.lock().await;
+            redis.pop_discovered_wallet_token_pair(1).await?
+        };
+
+        let pair = match wallet_token_pair {
+            Some(pair) => pair,
+            None => {
+                debug!("No wallet-token pairs in discovery queue");
+                return Ok(false);
+            }
+        };
+
+        info!("Processing discovered wallet-token pair: {} for {} ({})", 
+              pair.wallet_address, pair.token_symbol, pair.token_address);
+
+        // Create P&L filters from configuration
+        let filters = self.create_pnl_filters_from_config();
+
+        // Process the wallet-token pair using targeted BirdEye transactions
+        match self.process_single_wallet_token_pair(&pair, filters).await {
+            Ok(report) => {
+                info!("Successfully processed wallet {} for token {}: P&L = {} USD", 
+                      pair.wallet_address, pair.token_symbol, report.summary.total_pnl_usd);
+                
+                // Store the P&L result in Redis for later retrieval
+                {
+                    let redis = self.redis_client.lock().await;
+                    if let Err(e) = redis.store_pnl_result(
+                        &pair.wallet_address,
+                        &pair.token_address,
+                        &pair.token_symbol,
+                        &report,
+                    ).await {
+                        warn!("Failed to store P&L result for wallet {}: {}", pair.wallet_address, e);
+                    } else {
+                        debug!("Stored P&L result for wallet {} token {}", pair.wallet_address, pair.token_symbol);
+                    }
+                }
+                
+                Ok(true)
+            }
+            Err(e) => {
+                warn!("Failed to process wallet {} for token {}: {}", 
+                      pair.wallet_address, pair.token_symbol, e);
+                Ok(true) // Still processed (even if failed)
+            }
+        }
+    }
+
+    /// Process wallet-token pairs discovered by BirdEye
     async fn process_discovered_wallets(&self) -> Result<()> {
         let mut processed_count = 0;
 
         loop {
-            // Pop a wallet from the discovery queue
-            let wallet = {
+            // Pop a wallet-token pair from the discovery queue
+            let wallet_token_pair = {
                 let redis = self.redis_client.lock().await;
-                redis.pop_discovered_wallet(1).await?
+                redis.pop_discovered_wallet_token_pair(1).await?
             };
 
-            let wallet_address = match wallet {
-                Some(addr) => addr,
+            let pair = match wallet_token_pair {
+                Some(pair) => pair,
                 None => {
-                    debug!("No more wallets in discovery queue");
+                    debug!("No more wallet-token pairs in discovery queue");
                     break;
                 }
             };
 
-            info!("Processing discovered wallet: {}", wallet_address);
+            info!("Processing discovered wallet-token pair: {} for {} ({})", 
+                  pair.wallet_address, pair.token_symbol, pair.token_address);
 
             // Create P&L filters from configuration
             let filters = self.create_pnl_filters_from_config();
 
-            // Process the wallet
-            match self.process_single_wallet(&wallet_address, filters).await {
+            // Process the wallet-token pair using targeted BirdEye transactions
+            match self.process_single_wallet_token_pair(&pair, filters).await {
                 Ok(report) => {
-                    info!("Successfully processed wallet {}: P&L = {} USD", 
-                          wallet_address, report.summary.total_pnl_usd);
+                    info!("Successfully processed wallet {} for token {}: P&L = {} USD", 
+                          pair.wallet_address, pair.token_symbol, report.summary.total_pnl_usd);
+                    
+                    // Store the P&L result in Redis for later retrieval
+                    {
+                        let redis = self.redis_client.lock().await;
+                        if let Err(e) = redis.store_pnl_result(
+                            &pair.wallet_address,
+                            &pair.token_address,
+                            &pair.token_symbol,
+                            &report,
+                        ).await {
+                            warn!("Failed to store P&L result for wallet {}: {}", pair.wallet_address, e);
+                        } else {
+                            debug!("Stored P&L result for wallet {} token {}", pair.wallet_address, pair.token_symbol);
+                        }
+                    }
+                    
                     processed_count += 1;
                 }
                 Err(e) => {
-                    warn!("Failed to process wallet {}: {}", wallet_address, e);
+                    warn!("Failed to process wallet {} for token {}: {}", 
+                          pair.wallet_address, pair.token_symbol, e);
                 }
             }
 
@@ -311,7 +403,7 @@ impl JobOrchestrator {
         }
 
         if processed_count > 0 {
-            info!("Processed {} discovered wallets", processed_count);
+            info!("Processed {} discovered wallet-token pairs", processed_count);
         }
 
         Ok(())
@@ -417,19 +509,73 @@ impl JobOrchestrator {
         batch_jobs.get(&job_id).cloned()
     }
 
-    /// Process a single wallet for P&L analysis
+    /// Process a single wallet-token pair for targeted P&L analysis using BirdEye transactions
+    async fn process_single_wallet_token_pair(
+        &self,
+        pair: &DiscoveredWalletToken,
+        filters: PnLFilters,
+    ) -> Result<PnLReport> {
+        debug!("Starting targeted P&L analysis for wallet: {} on token: {} ({})", 
+               pair.wallet_address, pair.token_symbol, pair.token_address);
+
+        // Fetch transactions for this specific wallet-token pair using BirdEye
+        let transactions = self
+            .birdeye_client
+            .get_trader_transactions(
+                &pair.wallet_address,
+                &pair.token_address,
+                None, // from_time (no limit)
+                None, // to_time (no limit)
+                Some(1000), // limit to 1000 transactions max
+            )
+            .await?;
+
+        if transactions.is_empty() {
+            return Err(OrchestratorError::JobExecution(format!(
+                "No BirdEye transactions found for wallet: {} on token: {}",
+                pair.wallet_address, pair.token_symbol
+            )));
+        }
+
+        info!("📊 Found {} BirdEye transactions for {} trading {}", 
+              transactions.len(), pair.wallet_address, pair.token_symbol);
+
+        // Convert BirdEye transactions to financial events
+        let events = self
+            .convert_birdeye_transactions_to_events(&transactions, &pair.wallet_address)?;
+
+        if events.is_empty() {
+            return Err(OrchestratorError::JobExecution(format!(
+                "No financial events found for wallet: {} on token: {}",
+                pair.wallet_address, pair.token_symbol
+            )));
+        }
+
+        // Calculate P&L using the targeted transactions
+        let report = self
+            .pnl_engine
+            .calculate_pnl(&pair.wallet_address, events, filters)
+            .await?;
+
+        debug!("✅ Targeted P&L analysis completed for wallet: {} on token: {}", 
+               pair.wallet_address, pair.token_symbol);
+
+        Ok(report)
+    }
+
+    /// Process a single wallet for P&L analysis (legacy method using Solana RPC)
     async fn process_single_wallet(
         &self,
         wallet_address: &str,
         filters: PnLFilters,
     ) -> Result<PnLReport> {
-        debug!("Starting P&L analysis for wallet: {}", wallet_address);
+        debug!("Starting P&L analysis for wallet: {} using BirdEye API", wallet_address);
 
-        // Fetch all transactions for the wallet
-        let max_signatures = self.config.solana.max_signatures;
+        // Fetch all trading transactions for the wallet using BirdEye
+        let max_limit = 1000; // BirdEye API limit
         let transactions = self
-            .solana_client
-            .get_all_transactions_for_address(wallet_address, Some(max_signatures as usize))
+            .birdeye_client
+            .get_all_trader_transactions(wallet_address, None, None, Some(max_limit))
             .await?;
 
         if transactions.is_empty() {
@@ -439,10 +585,12 @@ impl JobOrchestrator {
             )));
         }
 
-        // Parse transactions into financial events
+        info!("📊 Found {} BirdEye transactions for wallet {}", 
+              transactions.len(), wallet_address);
+
+        // Convert BirdEye transactions to financial events
         let events = self
-            .transaction_parser
-            .parse_transactions(&transactions, wallet_address)?;
+            .convert_general_birdeye_transactions_to_events(&transactions, wallet_address)?;
 
         if events.is_empty() {
             return Err(OrchestratorError::JobExecution(format!(
@@ -457,9 +605,164 @@ impl JobOrchestrator {
             .calculate_pnl(wallet_address, events, filters)
             .await?;
 
-        debug!("P&L analysis completed for wallet: {}", wallet_address);
+        debug!("✅ P&L analysis completed for wallet: {} using BirdEye data", wallet_address);
 
         Ok(report)
+    }
+
+    /// Convert BirdEye transactions to FinancialEvents for P&L analysis
+    fn convert_birdeye_transactions_to_events(
+        &self,
+        transactions: &[TraderTransaction],
+        wallet_address: &str,
+    ) -> Result<Vec<FinancialEvent>> {
+        let mut events = Vec::new();
+
+        for tx in transactions {
+            let event_type = match tx.side.as_str() {
+                "buy" => EventType::Buy,
+                "sell" => EventType::Sell,
+                _ => continue, // Skip unknown transaction types
+            };
+
+            // Convert timestamp from Unix time to DateTime
+            let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(tx.block_unix_time, 0)
+                .unwrap_or_else(|| chrono::Utc::now());
+
+            // Create extra metadata map for additional BirdEye data
+            let mut extra = HashMap::new();
+            if let Some(ref symbol) = tx.token_symbol {
+                extra.insert("token_symbol".to_string(), symbol.clone());
+            }
+            if let Some(ref pool) = tx.pool_address {
+                extra.insert("pool_address".to_string(), pool.clone());
+            }
+            extra.insert("volume_usd".to_string(), tx.volume_usd.to_string());
+
+            let event = FinancialEvent {
+                id: Uuid::new_v4(),
+                transaction_id: tx.tx_hash.clone(),
+                wallet_address: wallet_address.to_string(),
+                event_type,
+                token_mint: tx.token_address.clone(),
+                token_amount: Decimal::try_from(tx.token_amount).unwrap_or(Decimal::ZERO),
+                sol_amount: Decimal::ZERO, // BirdEye doesn't provide SOL amount directly
+                timestamp,
+                transaction_fee: Decimal::ZERO, // BirdEye doesn't provide fees
+                metadata: EventMetadata {
+                    program_id: tx.source.clone(),
+                    instruction_index: None,
+                    exchange: tx.source.clone(), // Use source as exchange identifier
+                    price_per_token: Some(Decimal::try_from(tx.token_price).unwrap_or(Decimal::ZERO)),
+                    extra,
+                },
+            };
+
+            events.push(event);
+        }
+
+        info!("✅ Converted {} BirdEye transactions to {} financial events for wallet {}", 
+              transactions.len(), events.len(), wallet_address);
+
+        Ok(events)
+    }
+
+    /// Convert general BirdEye transactions to FinancialEvents for P&L analysis
+    fn convert_general_birdeye_transactions_to_events(
+        &self,
+        transactions: &[GeneralTraderTransaction],
+        wallet_address: &str,
+    ) -> Result<Vec<FinancialEvent>> {
+        let mut events = Vec::new();
+
+        for tx in transactions {
+            // Skip non-swap transactions
+            if tx.tx_type != "swap" {
+                debug!("Skipping non-swap transaction: {}", tx.tx_hash);
+                continue;
+            }
+
+            // Determine which side is the token and which is SOL/base currency
+            let (token_side, base_side, is_buy) = if tx.quote.type_swap == "to" {
+                // Buying token with SOL/base
+                (&tx.quote, &tx.base, true)
+            } else if tx.quote.type_swap == "from" {
+                // Selling token for SOL/base  
+                (&tx.quote, &tx.base, false)
+            } else {
+                debug!("Unclear swap direction for transaction: {}", tx.tx_hash);
+                continue;
+            };
+
+            let event_type = if is_buy { EventType::Buy } else { EventType::Sell };
+
+            // Convert timestamp from Unix time to DateTime
+            let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(tx.block_unix_time, 0)
+                .unwrap_or_else(|| chrono::Utc::now());
+
+            // Create extra metadata map for additional BirdEye data
+            let mut extra = HashMap::new();
+            extra.insert("token_symbol".to_string(), token_side.symbol.clone());
+            extra.insert("base_symbol".to_string(), base_side.symbol.clone());
+            extra.insert("source".to_string(), tx.source.clone());
+            extra.insert("program_address".to_string(), tx.address.clone());
+            if let Some(base_price) = tx.base_price {
+                extra.insert("base_price".to_string(), base_price.to_string());
+            }
+
+            // Calculate token amount and price
+            let token_amount = Decimal::try_from(token_side.ui_amount).unwrap_or(Decimal::ZERO);
+            let token_price = if let Some(price) = token_side.price {
+                Decimal::try_from(price).unwrap_or(Decimal::ZERO)
+            } else {
+                Decimal::try_from(token_side.nearest_price).unwrap_or(Decimal::ZERO)
+            };
+
+            // Calculate SOL amount from base side
+            let sol_amount = if base_side.symbol == "SOL" {
+                Decimal::try_from(base_side.ui_amount.abs()).unwrap_or(Decimal::ZERO)
+            } else {
+                // If base is not SOL, try to calculate from base price
+                if let Some(base_price) = tx.base_price {
+                    let base_amount = Decimal::try_from(base_side.ui_amount.abs()).unwrap_or(Decimal::ZERO);
+                    let base_price_decimal = Decimal::try_from(base_price).unwrap_or(Decimal::ZERO);
+                    // Convert to SOL equivalent (assuming SOL price around 144 based on our test data)
+                    if base_price_decimal > Decimal::ZERO {
+                        base_amount * base_price_decimal / Decimal::from(144)
+                    } else {
+                        Decimal::ZERO
+                    }
+                } else {
+                    Decimal::ZERO
+                }
+            };
+
+            let event = FinancialEvent {
+                id: Uuid::new_v4(),
+                transaction_id: tx.tx_hash.clone(),
+                wallet_address: wallet_address.to_string(),
+                event_type,
+                token_mint: token_side.address.clone(),
+                token_amount,
+                sol_amount,
+                timestamp,
+                transaction_fee: Decimal::ZERO, // BirdEye doesn't provide detailed fee info
+                metadata: EventMetadata {
+                    program_id: Some(tx.address.clone()),
+                    instruction_index: None,
+                    exchange: Some(tx.source.clone()),
+                    price_per_token: Some(token_price),
+                    extra,
+                },
+            };
+
+            events.push(event);
+        }
+
+        info!("✅ Converted {} general BirdEye transactions to {} financial events for wallet {}", 
+              transactions.len(), events.len(), wallet_address);
+
+        Ok(events)
     }
 
     /// Create P&L filters from system configuration
@@ -504,19 +807,19 @@ impl JobOrchestrator {
             min_hold_minutes: Decimal::from_f64_retain(self.config.pnl.aggregator_min_hold_minutes).unwrap_or(Decimal::ZERO),
             min_trades: self.config.pnl.amount_trades,
             min_win_rate: Decimal::from_f64_retain(self.config.pnl.win_rate).unwrap_or(Decimal::ZERO),
-            max_signatures: Some(self.config.solana.max_signatures),
+            max_signatures: Some(1000),
             timeframe_filter,
         }
     }
 
     /// Get system status
     pub async fn get_status(&self) -> Result<OrchestratorStatus> {
-        // Try to get queue size with timeout, fallback to 0 if Redis unavailable
+        // Try to get wallet-token pairs queue size with timeout, fallback to 0 if Redis unavailable
         let queue_size = {
             use tokio::time::{timeout, Duration};
             match timeout(Duration::from_millis(1000), async {
                 let redis = self.redis_client.lock().await;
-                redis.get_wallet_queue_size().await
+                redis.get_wallet_token_pairs_queue_size().await
             }).await {
                 Ok(Ok(size)) => size,
                 Ok(Err(_)) => {
@@ -555,10 +858,9 @@ impl Clone for JobOrchestrator {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            solana_client: self.solana_client.clone(),
-            jupiter_client: self.jupiter_client.clone(),
-            transaction_parser: TransactionParser::new(ParserConfig::default()),
-            pnl_engine: PnLEngine::new(self.jupiter_client.clone()),
+            birdeye_client: self.birdeye_client.clone(),
+            birdeye_price_fetcher: self.birdeye_price_fetcher.clone(),
+            pnl_engine: PnLEngine::new(self.birdeye_price_fetcher.clone()),
             redis_client: self.redis_client.clone(),
             running_jobs: self.running_jobs.clone(),
             batch_jobs: self.batch_jobs.clone(),

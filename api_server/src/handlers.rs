@@ -14,6 +14,7 @@ use std::io::Cursor;
 use tracing::{info, warn};
 use uuid::Uuid;
 use pnl_core::{TraderFilter, generate_trader_summary};
+use crate::service_manager::ServiceConfig;
 
 /// Health check endpoint
 pub async fn health_check() -> impl IntoResponse {
@@ -30,31 +31,19 @@ pub async fn get_system_status(
 ) -> Result<impl IntoResponse, ApiError> {
     let orchestrator_status = state.orchestrator.get_status().await?;
     
-    let dex_status = {
-        let dex_guard = state.dex_client.lock().await;
-        if let Some(_) = dex_guard.as_ref() {
-            DexClientStatus {
-                enabled: true,
-                connected: true, // TODO: Get actual connection status
-                last_activity: None, // TODO: Track last activity
-                processed_pairs: 0, // TODO: Get actual metrics
-                discovered_wallets: orchestrator_status.discovery_queue_size,
-            }
-        } else {
-            DexClientStatus {
-                enabled: false,
-                connected: false,
-                last_activity: None,
-                processed_pairs: 0,
-                discovered_wallets: 0,
-            }
-        }
+    let service_stats = state.service_manager.get_stats().await;
+    
+    let dex_status = DexClientStatus {
+        enabled: service_stats.wallet_discovery.state != crate::service_manager::ServiceState::Stopped,
+        connected: matches!(service_stats.wallet_discovery.state, crate::service_manager::ServiceState::Running),
+        last_activity: service_stats.wallet_discovery.last_activity,
+        processed_pairs: service_stats.wallet_discovery.cycles_completed,
+        discovered_wallets: service_stats.wallet_discovery.queue_size,
     };
 
     let config_summary = ConfigSummary {
         redis_mode: state.config.system.redis_mode,
-        solana_rpc_url: state.config.solana.rpc_url.clone(),
-        max_signatures: state.config.solana.max_signatures,
+        birdeye_api_configured: !state.config.birdeye.api_key.is_empty(),
         pnl_filters: PnLFiltersSummary {
             timeframe_mode: state.config.pnl.timeframe_mode.clone(),
             min_capital_sol: Decimal::from_f64_retain(state.config.pnl.wallet_min_capital).unwrap_or(Decimal::ZERO),
@@ -244,88 +233,6 @@ pub async fn get_wallet_details(
     )))
 }
 
-/// Get DexClient status
-pub async fn get_dex_status(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
-    let dex_guard = state.dex_client.lock().await;
-    let status = if let Some(_) = dex_guard.as_ref() {
-        DexClientStatus {
-            enabled: true,
-            connected: true, // TODO: Get actual connection status from DexClient
-            last_activity: None, // TODO: Track last activity
-            processed_pairs: 0, // TODO: Get actual metrics
-            discovered_wallets: 0, // TODO: Get actual metrics
-        }
-    } else {
-        DexClientStatus {
-            enabled: false,
-            connected: false,
-            last_activity: None,
-            processed_pairs: 0,
-            discovered_wallets: 0,
-        }
-    };
-
-    Ok(Json(SuccessResponse::new(status)))
-}
-
-/// Control DexClient service (start/stop/restart)
-pub async fn control_dex_service(
-    State(state): State<AppState>,
-    Json(request): Json<DexControlRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let action = request.action.to_lowercase();
-    
-    match action.as_str() {
-        "start" => {
-            // TODO: Implement DexClient start logic
-            warn!("DexClient start requested but not implemented");
-        }
-        "stop" => {
-            // TODO: Implement DexClient stop logic  
-            warn!("DexClient stop requested but not implemented");
-        }
-        "restart" => {
-            // TODO: Implement DexClient restart logic
-            warn!("DexClient restart requested but not implemented");
-        }
-        _ => {
-            return Err(ApiError::Validation(format!(
-                "Invalid action: {}. Valid actions are: start, stop, restart",
-                action
-            )));
-        }
-    }
-
-    let dex_guard = state.dex_client.lock().await;
-    let status = if let Some(_) = dex_guard.as_ref() {
-        DexClientStatus {
-            enabled: true,
-            connected: true,
-            last_activity: None,
-            processed_pairs: 0,
-            discovered_wallets: 0,
-        }
-    } else {
-        DexClientStatus {
-            enabled: false,
-            connected: false,
-            last_activity: None,
-            processed_pairs: 0,
-            discovered_wallets: 0,
-        }
-    };
-
-    let response = DexControlResponse {
-        action: request.action,
-        success: true, // TODO: Return actual success status
-        message: format!("DexClient {} action completed", action),
-        status,
-    };
-
-    Ok(Json(SuccessResponse::new(response)))
-}
 
 /// Generate CSV content for batch job results
 fn generate_batch_results_csv(job: &job_orchestrator::BatchJob) -> Result<String, ApiError> {
@@ -485,4 +392,295 @@ pub async fn filter_copy_traders(
     };
 
     Ok(Json(SuccessResponse::new(response)))
+}
+
+// =====================================
+// Service Management Handlers
+// =====================================
+
+/// Get service status
+pub async fn get_services_status(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let stats = state.service_manager.get_stats().await;
+    Ok(Json(SuccessResponse::new(stats)))
+}
+
+/// Get service configuration
+pub async fn get_services_config(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let config = state.service_manager.get_config().await;
+    Ok(Json(SuccessResponse::new(config)))
+}
+
+/// Update service configuration
+pub async fn update_services_config(
+    State(state): State<AppState>,
+    Json(new_config): Json<ServiceConfig>,
+) -> Result<impl IntoResponse, ApiError> {
+    state.service_manager.update_config(new_config).await
+        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+    
+    let response = MessageResponse {
+        message: "Service configuration updated successfully".to_string(),
+    };
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Start wallet discovery service
+pub async fn start_wallet_discovery(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    state.service_manager.start_wallet_discovery().await
+        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+    
+    let response = MessageResponse {
+        message: "Wallet discovery service started successfully".to_string(),
+    };
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Stop wallet discovery service
+pub async fn stop_wallet_discovery(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    state.service_manager.stop_wallet_discovery().await
+        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+    
+    let response = MessageResponse {
+        message: "Wallet discovery service stopped successfully".to_string(),
+    };
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Trigger a manual discovery cycle
+pub async fn trigger_discovery_cycle(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let discovered_wallets = state.service_manager.trigger_discovery_cycle().await
+        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+    
+    let response = DiscoveryCycleResponse {
+        message: "Manual discovery cycle completed".to_string(),
+        discovered_wallets,
+    };
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Start P&L analysis service
+pub async fn start_pnl_analysis(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    state.service_manager.start_pnl_analysis().await
+        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+    
+    let response = MessageResponse {
+        message: "P&L analysis service started successfully".to_string(),
+    };
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Stop P&L analysis service
+pub async fn stop_pnl_analysis(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    state.service_manager.stop_pnl_analysis().await
+        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+    
+    let response = MessageResponse {
+        message: "P&L analysis service stopped successfully".to_string(),
+    };
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+// =====================================
+// Results Retrieval Handlers
+// =====================================
+
+/// Get all P&L analysis results
+pub async fn get_all_results(
+    State(state): State<AppState>,
+    Query(query): Query<AllResultsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50).min(200); // Max 200 per request
+    
+    // Get results from persistence layer
+    let redis_client = persistence_layer::RedisClient::new(&state.config.redis.url).await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    
+    let (stored_results, total_count) = redis_client.get_all_pnl_results(offset, limit).await
+        .map_err(|e| ApiError::Internal(format!("Failed to fetch results: {}", e)))?;
+    
+    // Get summary statistics
+    let summary_stats = redis_client.get_pnl_summary_stats().await
+        .map_err(|e| ApiError::Internal(format!("Failed to fetch summary: {}", e)))?;
+    
+    // Convert to response format
+    let results: Vec<StoredPnLResultSummary> = stored_results
+        .into_iter()
+        .map(|stored_result| StoredPnLResultSummary {
+            wallet_address: stored_result.wallet_address,
+            token_address: stored_result.token_address,
+            token_symbol: stored_result.token_symbol,
+            total_pnl_usd: stored_result.pnl_report.summary.total_pnl_usd,
+            realized_pnl_usd: stored_result.pnl_report.summary.realized_pnl_usd,
+            unrealized_pnl_usd: stored_result.pnl_report.summary.unrealized_pnl_usd,
+            roi_percentage: stored_result.pnl_report.summary.roi_percentage,
+            total_trades: stored_result.pnl_report.summary.total_trades,
+            win_rate: stored_result.pnl_report.summary.win_rate,
+            analyzed_at: stored_result.analyzed_at,
+        })
+        .collect();
+    
+    let pagination = PaginationInfo {
+        total_count: total_count as u64,
+        limit: limit as u32,
+        offset: offset as u32,
+        has_more: offset + limit < total_count,
+    };
+    
+    let summary = AllResultsSummary {
+        total_wallets: summary_stats.total_wallets_analyzed,
+        profitable_wallets: summary_stats.profitable_wallets,
+        total_pnl_usd: summary_stats.total_pnl_usd,
+        average_pnl_usd: summary_stats.average_pnl_usd,
+        total_trades: summary_stats.total_trades,
+        profitability_rate: summary_stats.profitability_rate,
+        last_updated: summary_stats.last_updated,
+    };
+    
+    let response = AllResultsResponse {
+        results,
+        pagination,
+        summary,
+    };
+    
+    Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Get detailed P&L result for a specific wallet-token pair
+pub async fn get_detailed_result(
+    State(state): State<AppState>,
+    Path((wallet_address, token_address)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let redis_client = persistence_layer::RedisClient::new(&state.config.redis.url).await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    
+    let stored_result = redis_client.get_pnl_result(&wallet_address, &token_address).await
+        .map_err(|e| ApiError::Internal(format!("Failed to fetch result: {}", e)))?;
+    
+    match stored_result {
+        Some(result) => {
+            let response = DetailedPnLResultResponse {
+                wallet_address: result.wallet_address,
+                token_address: result.token_address,
+                token_symbol: result.token_symbol,
+                pnl_report: result.pnl_report,
+                analyzed_at: result.analyzed_at,
+            };
+            Ok(Json(SuccessResponse::new(response)))
+        }
+        None => Err(ApiError::NotFound(format!(
+            "No P&L result found for wallet {} token {}",
+            wallet_address, token_address
+        ))),
+    }
+}
+
+/// Enhanced health check with component status
+pub async fn enhanced_health_check(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let start_time = std::time::Instant::now();
+    
+    // Test Redis connectivity
+    let redis_client_result = persistence_layer::RedisClient::new(&state.config.redis.url).await;
+    let redis_health = match redis_client_result {
+        Ok(redis_client) => {
+            match redis_client.health_check().await {
+                Ok(status) => RedisComponentHealth {
+                    connected: status.connected,
+                    latency_ms: status.latency_ms,
+                    error: status.error,
+                },
+                Err(e) => RedisComponentHealth {
+                    connected: false,
+                    latency_ms: start_time.elapsed().as_millis() as u64,
+                    error: Some(format!("Health check failed: {}", e)),
+                },
+            }
+        }
+        Err(e) => RedisComponentHealth {
+            connected: false,
+            latency_ms: start_time.elapsed().as_millis() as u64,
+            error: Some(format!("Connection failed: {}", e)),
+        },
+    };
+    
+    // Test BirdEye API connectivity
+    let birdeye_health = {
+        let birdeye_start = std::time::Instant::now();
+        // Simple test request to BirdEye
+        let client = reqwest::Client::new();
+        match client
+            .get("https://public-api.birdeye.so/defi/token_trending?chain=solana&limit=1")
+            .header("X-API-KEY", &state.config.birdeye.api_key)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let latency = birdeye_start.elapsed().as_millis() as u64;
+                if response.status().is_success() {
+                    ApiComponentHealth {
+                        accessible: true,
+                        latency_ms: Some(latency),
+                        error: None,
+                    }
+                } else {
+                    ApiComponentHealth {
+                        accessible: false,
+                        latency_ms: Some(latency),
+                        error: Some(format!("HTTP {}", response.status())),
+                    }
+                }
+            }
+            Err(e) => ApiComponentHealth {
+                accessible: false,
+                latency_ms: Some(birdeye_start.elapsed().as_millis() as u64),
+                error: Some(format!("Request failed: {}", e)),
+            },
+        }
+    };
+    
+    // Get service states
+    let service_stats = state.service_manager.get_stats().await;
+    let services_health = ServicesComponentHealth {
+        wallet_discovery: format!("{:?}", service_stats.wallet_discovery.state),
+        pnl_analysis: format!("{:?}", service_stats.pnl_analysis.state),
+    };
+    
+    let components = ComponentHealthStatus {
+        redis: redis_health,
+        birdeye_api: birdeye_health,
+        services: services_health,
+    };
+    
+    // Determine overall status
+    let overall_status = if components.redis.connected && components.birdeye_api.accessible {
+        "healthy"
+    } else {
+        "degraded"
+    };
+    
+    let response = EnhancedHealthResponse {
+        status: overall_status.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        uptime_seconds: 0, // TODO: Track actual uptime
+        components,
+    };
+    
+    Json(SuccessResponse::new(response))
 }

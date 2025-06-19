@@ -1,9 +1,11 @@
 pub mod timeframe;
 pub mod partial_fifo;
 pub mod trader_filter;
+pub mod fifo_pnl_engine;
 
 // Re-export key trader filtering types
 pub use trader_filter::{TraderFilter, TraderQuality, RiskLevel, TradingStyle, generate_trader_summary};
+pub use fifo_pnl_engine::FifoPnLEngine;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

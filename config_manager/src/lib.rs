@@ -19,8 +19,6 @@ pub struct SystemConfig {
     /// General system settings
     pub system: SystemSettings,
     
-    /// Solana blockchain configuration
-    pub solana: SolanaConfig,
     
     /// Redis configuration
     pub redis: RedisConfig,
@@ -28,7 +26,10 @@ pub struct SystemConfig {
     /// DexScreener configuration
     pub dexscreener: DexScreenerConfig,
     
-    /// Jupiter API configuration
+    /// BirdEye API configuration
+    pub birdeye: BirdEyeConfig,
+    
+    /// Jupiter API configuration (legacy - use BirdEye instead)
     pub jupiter: JupiterConfig,
     
     /// P&L calculation settings
@@ -56,20 +57,6 @@ pub struct SystemSettings {
     pub output_csv_file: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SolanaConfig {
-    /// Solana RPC URL
-    pub rpc_url: String,
-    
-    /// Maximum number of signatures to fetch per wallet
-    pub max_signatures: u32,
-    
-    /// RPC request timeout in seconds
-    pub rpc_timeout_seconds: u64,
-    
-    /// Max concurrent RPC requests
-    pub max_concurrent_requests: u32,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfig {
@@ -135,6 +122,24 @@ pub struct TrendingConfig {
     
     /// Rate limit between API requests in milliseconds
     pub rate_limit_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BirdEyeConfig {
+    /// BirdEye API key
+    pub api_key: String,
+    
+    /// BirdEye API base URL  
+    pub api_base_url: String,
+    
+    /// Request timeout in seconds
+    pub request_timeout_seconds: u64,
+    
+    /// Price cache TTL in seconds
+    pub price_cache_ttl_seconds: u64,
+    
+    /// Rate limit per second
+    pub rate_limit_per_second: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,12 +241,6 @@ impl Default for SystemConfig {
                 process_loop_ms: 60000,
                 output_csv_file: "final_output.csv".to_string(),
             },
-            solana: SolanaConfig {
-                rpc_url: "https://solana-mainnet.g.alchemy.com/v2/wrsArAcfwcXqcPQXnXB27S4-CXyvMkXP".to_string(),
-                max_signatures: 1000,
-                rpc_timeout_seconds: 30,
-                max_concurrent_requests: 10,
-            },
             redis: RedisConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 connection_timeout_seconds: 10,
@@ -265,6 +264,13 @@ impl Default for SystemConfig {
                     wallet_discovery_limit: 10,      // Max 10 wallets per trending pair
                     rate_limit_ms: 200,             // 200ms between API requests (300 req/min limit)
                 },
+            },
+            birdeye: BirdEyeConfig {
+                api_key: "".to_string(), // Must be set in .env or config file
+                api_base_url: "https://public-api.birdeye.so".to_string(),
+                request_timeout_seconds: 30,
+                price_cache_ttl_seconds: 60,
+                rate_limit_per_second: 100,
             },
             jupiter: JupiterConfig {
                 api_url: "https://lite-api.jup.ag".to_string(),
@@ -333,6 +339,14 @@ impl SystemConfig {
         );
         
         let config = config_builder.build()?;
+        
+        // Debug: Print the raw config values to understand the parsing issue
+        if let Ok(birdeye_key) = config.get::<String>("birdeye.api_key") {
+            debug!("Raw birdeye.api_key value: '{}'", birdeye_key);
+        } else {
+            debug!("Failed to get birdeye.api_key as string");
+        }
+        
         let system_config: SystemConfig = config.try_deserialize()?;
         
         // Validate configuration

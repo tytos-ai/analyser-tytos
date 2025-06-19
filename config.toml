@@ -9,11 +9,6 @@ url = "redis://localhost:6379"
 connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
 
-[solana]
-rpc_url = "https://solana-mainnet.g.alchemy.com/v2/wrsArAcfwcXqcPQXnXB27S4-CXyvMkXP"
-max_signatures = 50
-rpc_timeout_seconds = 30
-max_concurrent_requests = 10
 
 [dexscreener]
 api_base_url = "https://api.dexscreener.com"
@@ -38,6 +33,13 @@ rate_limit_ms = 200
 api_url = "https://lite-api.jup.ag"
 price_cache_ttl_seconds = 60
 request_timeout_seconds = 30
+
+[birdeye]
+api_key = "5ff313b239ac42e297b830b10ea1871d"
+api_base_url = "https://public-api.birdeye.so"
+request_timeout_seconds = 30
+price_cache_ttl_seconds = 60
+rate_limit_per_second = 100
 
 [pnl]
 timeframe_mode = "none"

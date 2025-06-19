@@ -5,28 +5,28 @@ use axum::{
     Router,
 };
 use config_manager::{SystemConfig, ConfigurationError};
-use dex_client::DexClient;
 use job_orchestrator::{JobOrchestrator, OrchestratorError};
 use pnl_core::PnLError;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use tracing::{error, info, warn};
+use tracing::info;
 
 mod handlers;
 mod middleware;
 mod types;
+mod service_manager;
 
 use handlers::*;
 use types::*;
+use service_manager::ServiceManager;
 
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
     pub config: SystemConfig,
     pub orchestrator: Arc<JobOrchestrator>,
-    pub dex_client: Arc<Mutex<Option<DexClient>>>,
+    pub service_manager: Arc<ServiceManager>,
 }
 
 /// Main application error type
@@ -38,8 +38,8 @@ pub enum ApiError {
     Orchestrator(#[from] OrchestratorError),
     #[error("P&L calculation error: {0}")]
     PnL(#[from] PnLError),
-    #[error("DexClient error: {0}")]
-    DexClient(String),
+    #[error("Service management error: {0}")]
+    ServiceManager(String),
     #[error("Validation error: {0}")]
     Validation(String),
     #[error("Not found: {0}")]
@@ -54,7 +54,7 @@ impl IntoResponse for ApiError {
             ApiError::Config(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             ApiError::Orchestrator(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             ApiError::PnL(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            ApiError::DexClient(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
+            ApiError::ServiceManager(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
@@ -89,70 +89,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orchestrator = Arc::new(JobOrchestrator::new(config.clone()).await?);
     info!("Job orchestrator initialized");
 
-    // Initialize dex client if enabled
-    let dex_client = if config.system.redis_mode {
-        let dex_config = dex_client::DexClientConfig {
-            api_base_url: config.dexscreener.api_base_url.clone(),
-            ws_url: config.dexscreener.websocket_url.clone(),
-            http_base_url: config.dexscreener.http_base_url.clone(),
-            request_timeout_seconds: 30, // Default timeout
-            debug: false,
-            trending_criteria: dex_client::TrendingCriteria {
-                min_volume_24h: config.dexscreener.trending.min_volume_24h,
-                min_txns_24h: config.dexscreener.trending.min_txns_24h,
-                min_liquidity_usd: config.dexscreener.trending.min_liquidity_usd,
-                min_price_change_24h: config.dexscreener.trending.min_price_change_24h,
-                max_pair_age_hours: config.dexscreener.trending.max_pair_age_hours,
-            },
-        };
-        match DexClient::new(dex_config, None).await {
-            Ok(client) => {
-                info!("DexClient initialized successfully");
-                Arc::new(Mutex::new(Some(client)))
-            }
-            Err(e) => {
-                warn!("Failed to initialize DexClient: {}", e);
-                Arc::new(Mutex::new(None))
-            }
-        }
-    } else {
-        Arc::new(Mutex::new(None))
-    };
+    // Initialize service manager (but don't start any services yet)
+    let service_manager = Arc::new(ServiceManager::new(config.clone(), orchestrator.clone()));
+    info!("Service manager initialized");
 
     // Create application state
     let app_state = AppState {
         config: config.clone(),
         orchestrator,
-        dex_client,
+        service_manager,
     };
 
     // Build the application router
     let app = create_router(app_state.clone()).await;
-
-    // Start continuous mode if enabled
-    if config.system.redis_mode {
-        let orchestrator_clone = app_state.orchestrator.clone();
-        tokio::spawn(async move {
-            info!("Starting continuous mode in background...");
-            if let Err(e) = orchestrator_clone.start_continuous_mode().await {
-                error!("Continuous mode failed: {}", e);
-            }
-        });
-    }
-
-    // Start DexClient monitoring if enabled
-    if config.system.redis_mode {
-        let dex_client_clone = app_state.dex_client.clone();
-        tokio::spawn(async move {
-            info!("Starting DexClient monitoring in background...");
-            let mut dex_guard = dex_client_clone.lock().await;
-            if let Some(ref mut dex_client) = dex_guard.as_mut() {
-                if let Err(e) = dex_client.start_monitoring().await {
-                    error!("DexClient monitoring failed: {}", e);
-                }
-            }
-        });
-    }
+    
+    info!("🎯 API Server ready - services can be controlled via API endpoints");
+    info!("📋 Available endpoints:");
+    info!("   • POST /api/services/config - Configure services");
+    info!("   • POST /api/services/discovery/start - Start wallet discovery");
+    info!("   • POST /api/services/discovery/stop - Stop wallet discovery");
+    info!("   • POST /api/services/pnl/start - Start P&L analysis");
+    info!("   • POST /api/services/pnl/stop - Stop P&L analysis");
+    info!("   • GET /api/services/status - Get service status");
+    info!("   • GET /health - Health check");
 
     // Bind and serve
     let bind_addr = format!("{}:{}", config.api.host, config.api.port);
@@ -171,12 +130,27 @@ async fn create_router(state: AppState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(health_check))
+        .route("/health/detailed", get(enhanced_health_check))
         
-        // System endpoints
+        // Service management endpoints
+        .route("/api/services/status", get(get_services_status))
+        .route("/api/services/config", get(get_services_config))
+        .route("/api/services/config", post(update_services_config))
+        .route("/api/services/discovery/start", post(start_wallet_discovery))
+        .route("/api/services/discovery/stop", post(stop_wallet_discovery))
+        .route("/api/services/discovery/trigger", post(trigger_discovery_cycle))
+        .route("/api/services/pnl/start", post(start_pnl_analysis))
+        .route("/api/services/pnl/stop", post(stop_pnl_analysis))
+        
+        // Results retrieval endpoints
+        .route("/api/results", get(get_all_results))
+        .route("/api/results/:wallet_address/:token_address", get(get_detailed_result))
+        
+        // Legacy system endpoints (kept for compatibility)
         .route("/api/status", get(get_system_status))
         .route("/api/logs", get(get_system_logs))
         
-        // Configuration endpoints
+        // Configuration endpoints (legacy)
         .route("/api/config", get(get_config))
         .route("/api/config", post(update_config))
         
@@ -190,10 +164,6 @@ async fn create_router(state: AppState) -> Router {
         // Continuous mode endpoints
         .route("/api/pnl/continuous/discovered-wallets", get(get_discovered_wallets))
         .route("/api/pnl/continuous/discovered-wallets/:wallet_address/details", get(get_wallet_details))
-        
-        // Dex monitoring endpoints
-        .route("/api/dex/status", get(get_dex_status))
-        .route("/api/dex/control", post(control_dex_service))
         
         // Add CORS middleware
         .layer(

@@ -2,6 +2,70 @@ use redis::{AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
+use rust_decimal::Decimal;
+
+/// Discovered wallet-token pair for targeted P&L analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredWalletToken {
+    /// Wallet address of the trader
+    pub wallet_address: String,
+    /// Token address that this wallet was discovered trading
+    pub token_address: String,
+    /// Token symbol (for logging/display)
+    pub token_symbol: String,
+    /// Trader's volume on this token (USD)
+    pub trader_volume_usd: f64,
+    /// Number of trades on this token
+    pub trader_trades: u32,
+    /// Discovery timestamp
+    pub discovered_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Stored P&L analysis result with metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPnLResult {
+    pub wallet_address: String,
+    pub token_address: String,
+    pub token_symbol: String,
+    pub pnl_report: pnl_core::PnLReport,
+    pub analyzed_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Aggregated P&L summary statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PnLSummaryStats {
+    pub total_wallets_analyzed: u64,
+    pub profitable_wallets: u64,
+    pub total_pnl_usd: Decimal,
+    pub total_realized_pnl_usd: Decimal,
+    pub average_pnl_usd: Decimal,
+    pub total_trades: u64,
+    pub profitability_rate: f64, // percentage
+    pub last_updated: chrono::DateTime<chrono::Utc>,
+}
+
+impl Default for PnLSummaryStats {
+    fn default() -> Self {
+        Self {
+            total_wallets_analyzed: 0,
+            profitable_wallets: 0,
+            total_pnl_usd: Decimal::ZERO,
+            total_realized_pnl_usd: Decimal::ZERO,
+            average_pnl_usd: Decimal::ZERO,
+            total_trades: 0,
+            profitability_rate: 0.0,
+            last_updated: chrono::Utc::now(),
+        }
+    }
+}
+
+/// Redis health status information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedisHealthStatus {
+    pub connected: bool,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
 
 #[derive(Error, Debug)]
 pub enum PersistenceError {
@@ -137,6 +201,262 @@ impl RedisClient {
         let mut conn = self.get_connection().await?;
         let size: u64 = conn.llen(queue_key).await?;
         Ok(size)
+    }
+
+    /// Push discovered wallet-token pairs to the queue for targeted P&L analysis
+    pub async fn push_discovered_wallet_token_pairs(&self, wallet_tokens: &[DiscoveredWalletToken]) -> Result<()> {
+        if wallet_tokens.is_empty() {
+            return Ok(());
+        }
+        
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let mut conn = self.get_connection().await?;
+        
+        // Serialize each wallet-token pair as JSON
+        let json_pairs: Result<Vec<String>> = wallet_tokens
+            .iter()
+            .map(|wt| serde_json::to_string(wt).map_err(PersistenceError::from))
+            .collect();
+        
+        let json_pairs = json_pairs?;
+        let _: () = conn.lpush(queue_key, json_pairs).await?;
+        info!("Pushed {} wallet-token pairs to discovery queue", wallet_tokens.len());
+        Ok(())
+    }
+
+    /// Pop a wallet-token pair from the queue (blocking with timeout)
+    pub async fn pop_discovered_wallet_token_pair(&self, timeout_seconds: u64) -> Result<Option<DiscoveredWalletToken>> {
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let mut conn = self.get_connection().await?;
+        let result: Option<Vec<String>> = conn
+            .brpop(queue_key, timeout_seconds as f64)
+            .await?;
+        
+        match result {
+            Some(mut items) if items.len() >= 2 => {
+                // brpop returns [key, value]
+                let json_data = items.pop().unwrap();
+                let wallet_token: DiscoveredWalletToken = serde_json::from_str(&json_data)?;
+                debug!("Popped wallet-token pair from queue: {} for token {}", 
+                       wallet_token.wallet_address, wallet_token.token_symbol);
+                Ok(Some(wallet_token))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Get the current size of the wallet-token pairs queue
+    pub async fn get_wallet_token_pairs_queue_size(&self) -> Result<u64> {
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let mut conn = self.get_connection().await?;
+        let size: u64 = conn.llen(queue_key).await?;
+        Ok(size)
+    }
+
+    // =====================================
+    // P&L Results Storage and Aggregation
+    // =====================================
+    
+    /// Store P&L analysis result for a wallet-token pair
+    pub async fn store_pnl_result(
+        &self,
+        wallet_address: &str,
+        token_address: &str,
+        token_symbol: &str,
+        pnl_report: &pnl_core::PnLReport,
+    ) -> Result<()> {
+        let result_key = format!("pnl_result:{}:{}", wallet_address, token_address);
+        
+        let stored_result = StoredPnLResult {
+            wallet_address: wallet_address.to_string(),
+            token_address: token_address.to_string(),
+            token_symbol: token_symbol.to_string(),
+            pnl_report: pnl_report.clone(),
+            analyzed_at: chrono::Utc::now(),
+        };
+        
+        let result_json = serde_json::to_string(&stored_result)?;
+        let mut conn = self.get_connection().await?;
+        
+        // Store individual result
+        let _: () = conn.set(&result_key, &result_json).await?;
+        
+        // Add to results index for easy retrieval
+        let _: () = conn.sadd("pnl_results_index", &result_key).await?;
+        
+        // Update summary statistics
+        self.update_pnl_summary_stats(pnl_report).await?;
+        
+        info!("Stored P&L result for wallet {} token {}", wallet_address, token_symbol);
+        Ok(())
+    }
+    
+    /// Get P&L result for a specific wallet-token pair
+    pub async fn get_pnl_result(
+        &self,
+        wallet_address: &str,
+        token_address: &str,
+    ) -> Result<Option<StoredPnLResult>> {
+        let result_key = format!("pnl_result:{}:{}", wallet_address, token_address);
+        let mut conn = self.get_connection().await?;
+        
+        let result_json: Option<String> = conn.get(&result_key).await?;
+        
+        match result_json {
+            Some(json) => {
+                let result: StoredPnLResult = serde_json::from_str(&json)?;
+                Ok(Some(result))
+            }
+            None => Ok(None),
+        }
+    }
+    
+    /// Get all P&L results with pagination
+    pub async fn get_all_pnl_results(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<StoredPnLResult>, usize)> {
+        let mut conn = self.get_connection().await?;
+        
+        // Get all result keys
+        let result_keys: Vec<String> = conn.smembers("pnl_results_index").await?;
+        let total_count = result_keys.len();
+        
+        // Apply pagination
+        let paginated_keys: Vec<String> = result_keys
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
+        
+        let mut results = Vec::new();
+        
+        // Fetch results in batch
+        for key in paginated_keys {
+            let result_json: Option<String> = conn.get(&key).await?;
+            if let Some(json) = result_json {
+                if let Ok(result) = serde_json::from_str::<StoredPnLResult>(&json) {
+                    results.push(result);
+                }
+            }
+        }
+        
+        // Sort by analysis time (newest first)
+        results.sort_by(|a, b| b.analyzed_at.cmp(&a.analyzed_at));
+        
+        Ok((results, total_count))
+    }
+    
+    /// Update summary statistics for aggregated P&L data
+    async fn update_pnl_summary_stats(&self, pnl_report: &pnl_core::PnLReport) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let stats_key = "pnl_summary_stats";
+        
+        // Get current stats or create new ones
+        let current_stats_json: Option<String> = conn.get(&stats_key).await?;
+        let mut stats = match current_stats_json {
+            Some(json) => serde_json::from_str::<PnLSummaryStats>(&json)
+                .unwrap_or_default(),
+            None => PnLSummaryStats::default(),
+        };
+        
+        // Update stats
+        stats.total_wallets_analyzed += 1;
+        stats.total_pnl_usd += pnl_report.summary.total_pnl_usd;
+        stats.total_realized_pnl_usd += pnl_report.summary.realized_pnl_usd;
+        stats.total_trades += pnl_report.summary.total_trades as u64;
+        
+        if pnl_report.summary.total_pnl_usd > Decimal::ZERO {
+            stats.profitable_wallets += 1;
+        }
+        
+        // Calculate averages
+        if stats.total_wallets_analyzed > 0 {
+            stats.average_pnl_usd = stats.total_pnl_usd / Decimal::from(stats.total_wallets_analyzed);
+            stats.profitability_rate = (stats.profitable_wallets as f64 / stats.total_wallets_analyzed as f64) * 100.0;
+        }
+        
+        stats.last_updated = chrono::Utc::now();
+        
+        // Store updated stats
+        let stats_json = serde_json::to_string(&stats)?;
+        let _: () = conn.set(&stats_key, &stats_json).await?;
+        
+        Ok(())
+    }
+    
+    /// Get aggregated P&L summary statistics
+    pub async fn get_pnl_summary_stats(&self) -> Result<PnLSummaryStats> {
+        let mut conn = self.get_connection().await?;
+        let stats_key = "pnl_summary_stats";
+        
+        let stats_json: Option<String> = conn.get(&stats_key).await?;
+        
+        match stats_json {
+            Some(json) => {
+                let stats: PnLSummaryStats = serde_json::from_str(&json)?;
+                Ok(stats)
+            }
+            None => Ok(PnLSummaryStats::default()),
+        }
+    }
+
+    // =====================================
+    // Health Checks and Connectivity
+    // =====================================
+    
+    /// Test Redis connectivity and health
+    pub async fn health_check(&self) -> Result<RedisHealthStatus> {
+        let start_time = std::time::Instant::now();
+        
+        match self.get_connection().await {
+            Ok(mut conn) => {
+                // Test basic operations
+                let test_key = "health_check_test";
+                let test_value = "ok";
+                
+                // Test SET operation
+                let set_result: redis::RedisResult<String> = conn.set(test_key, test_value).await;
+                if set_result.is_err() {
+                    return Ok(RedisHealthStatus {
+                        connected: false,
+                        latency_ms: start_time.elapsed().as_millis() as u64,
+                        error: Some("Failed to execute SET command".to_string()),
+                    });
+                }
+                
+                // Test GET operation
+                let get_result: redis::RedisResult<String> = conn.get(test_key).await;
+                match get_result {
+                    Ok(value) if value == test_value => {
+                        // Cleanup test key
+                        let _: redis::RedisResult<u32> = conn.del(test_key).await;
+                        
+                        Ok(RedisHealthStatus {
+                            connected: true,
+                            latency_ms: start_time.elapsed().as_millis() as u64,
+                            error: None,
+                        })
+                    }
+                    Ok(_) => Ok(RedisHealthStatus {
+                        connected: false,
+                        latency_ms: start_time.elapsed().as_millis() as u64,
+                        error: Some("GET returned unexpected value".to_string()),
+                    }),
+                    Err(e) => Ok(RedisHealthStatus {
+                        connected: false,
+                        latency_ms: start_time.elapsed().as_millis() as u64,
+                        error: Some(format!("GET command failed: {}", e)),
+                    }),
+                }
+            }
+            Err(e) => Ok(RedisHealthStatus {
+                connected: false,
+                latency_ms: start_time.elapsed().as_millis() as u64,
+                error: Some(format!("Connection failed: {}", e)),
+            }),
+        }
     }
 
     // =====================================
