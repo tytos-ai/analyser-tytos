@@ -748,6 +748,77 @@ impl<P: PriceFetcher> PnLEngine<P> {
     }
 }
 
+/// Standalone P&L calculation function for events with embedded prices
+/// This function doesn't require a price fetcher as it uses prices from the events themselves
+pub async fn calculate_pnl_with_embedded_prices(
+    wallet_address: &str,
+    events: Vec<FinancialEvent>,
+    filters: PnLFilters,
+) -> Result<PnLReport> {
+    let start_time = std::time::Instant::now();
+    
+    info!("Starting P&L calculation with embedded prices for wallet: {}", wallet_address);
+    debug!("Processing {} events with embedded price data", events.len());
+    
+    // Validate that events have embedded prices
+    let events_without_prices: Vec<_> = events.iter()
+        .filter(|e| e.metadata.price_per_token.is_none())
+        .collect();
+    
+    if !events_without_prices.is_empty() {
+        warn!("Found {} events without embedded prices - these will be skipped", events_without_prices.len());
+    }
+    
+    // Filter events that have embedded prices
+    let events_with_prices: Vec<FinancialEvent> = events.into_iter()
+        .filter(|e| e.metadata.price_per_token.is_some())
+        .collect();
+    
+    if events_with_prices.is_empty() {
+        return Err(PnLError::InvalidEvent(
+            "No events with embedded price data found".to_string()
+        ));
+    }
+    
+    info!("Using {} events with embedded price data", events_with_prices.len());
+    
+    // Use the FIFO engine with a dummy price fetcher since we have embedded prices
+    let fifo_engine = FifoPnLEngine::new(EmbeddedPriceFetcher);
+    let report = fifo_engine.calculate_pnl(wallet_address, events_with_prices, filters).await?;
+    
+    let elapsed = start_time.elapsed();
+    info!("P&L calculation completed in {:?} using embedded prices", elapsed);
+    
+    Ok(report)
+}
+
+/// Dummy price fetcher that should never be called since we use embedded prices
+struct EmbeddedPriceFetcher;
+
+#[async_trait]
+impl PriceFetcher for EmbeddedPriceFetcher {
+    async fn fetch_prices(
+        &self,
+        _token_mints: &[String], 
+        _vs_token: Option<&str>,
+    ) -> Result<HashMap<String, Decimal>> {
+        // This should never be called when using embedded prices
+        warn!("EmbeddedPriceFetcher::fetch_prices called - this indicates embedded prices are missing");
+        Err(PnLError::PriceFetch("Embedded prices should be used instead of external price fetching".to_string()))
+    }
+    
+    async fn fetch_historical_price(
+        &self,
+        _token_mint: &str,
+        _timestamp: DateTime<Utc>,
+        _vs_token: Option<&str>,
+    ) -> Result<Option<Decimal>> {
+        // This should never be called when using embedded prices
+        warn!("EmbeddedPriceFetcher::fetch_historical_price called - this indicates embedded prices are missing");
+        Err(PnLError::PriceFetch("Embedded prices should be used instead of external price fetching".to_string()))
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

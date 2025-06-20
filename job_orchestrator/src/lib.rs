@@ -1,11 +1,10 @@
 use chrono::Utc;
 use config_manager::SystemConfig;
 use futures::future::join_all;
-use jprice_client::BirdEyePriceFetcher;
 use dex_client::{BirdEyeClient, BirdEyeConfig, BirdEyeError, TraderTransaction, GeneralTraderTransaction};
 use pnl_core::{FinancialEvent, EventType, EventMetadata};
 use persistence_layer::{PersistenceError, RedisClient, DiscoveredWalletToken};
-use pnl_core::{AnalysisTimeframe, PnLEngine, PnLFilters, PnLReport};
+use pnl_core::{AnalysisTimeframe, PnLFilters, PnLReport, calculate_pnl_with_embedded_prices};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -65,11 +64,6 @@ impl From<pnl_core::PnLError> for OrchestratorError {
 
 
 
-impl From<jprice_client::BirdEyePriceError> for OrchestratorError {
-    fn from(err: jprice_client::BirdEyePriceError) -> Self {
-        OrchestratorError::BirdEyePrice(err.to_string())
-    }
-}
 
 impl From<BirdEyeError> for OrchestratorError {
     fn from(err: BirdEyeError) -> Self {
@@ -160,8 +154,6 @@ impl BatchJob {
 pub struct JobOrchestrator {
     config: SystemConfig,
     birdeye_client: BirdEyeClient,
-    birdeye_price_fetcher: BirdEyePriceFetcher,
-    pnl_engine: PnLEngine<BirdEyePriceFetcher>,
     redis_client: Arc<Mutex<RedisClient>>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     batch_jobs: Arc<Mutex<HashMap<Uuid, BatchJob>>>,
@@ -182,24 +174,10 @@ impl JobOrchestrator {
         };
         
         let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
-        
-        let birdeye_price_fetcher = BirdEyePriceFetcher::new(
-            birdeye_config,
-            Some({
-                let redis = redis_client.lock().await;
-                redis.clone()
-            }),
-            Some(config.birdeye.price_cache_ttl_seconds)
-        )?;
-
-        // Initialize P&L engine
-        let pnl_engine = PnLEngine::new(birdeye_price_fetcher.clone());
 
         Ok(Self {
             config,
             birdeye_client,
-            birdeye_price_fetcher,
-            pnl_engine,
             redis_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
             batch_jobs: Arc::new(Mutex::new(HashMap::new())),
@@ -526,7 +504,7 @@ impl JobOrchestrator {
                 &pair.token_address,
                 None, // from_time (no limit)
                 None, // to_time (no limit)
-                Some(1000), // limit to 1000 transactions max
+                Some(100), // limit to 100 transactions max (BirdEye API limit)
             )
             .await?;
 
@@ -551,10 +529,8 @@ impl JobOrchestrator {
             )));
         }
 
-        // Calculate P&L using the targeted transactions
-        let report = self
-            .pnl_engine
-            .calculate_pnl(&pair.wallet_address, events, filters)
+        // Calculate P&L using the targeted transactions with embedded prices
+        let report = calculate_pnl_with_embedded_prices(&pair.wallet_address, events, filters)
             .await?;
 
         debug!("✅ Targeted P&L analysis completed for wallet: {} on token: {}", 
@@ -572,7 +548,7 @@ impl JobOrchestrator {
         debug!("Starting P&L analysis for wallet: {} using BirdEye API", wallet_address);
 
         // Fetch all trading transactions for the wallet using BirdEye
-        let max_limit = 1000; // BirdEye API limit
+        let max_limit = 100; // BirdEye API limit is 100, not 1000
         let transactions = self
             .birdeye_client
             .get_all_trader_transactions(wallet_address, None, None, Some(max_limit))
@@ -599,10 +575,8 @@ impl JobOrchestrator {
             )));
         }
 
-        // Calculate P&L
-        let report = self
-            .pnl_engine
-            .calculate_pnl(wallet_address, events, filters)
+        // Calculate P&L with embedded prices from BirdEye transactions
+        let report = calculate_pnl_with_embedded_prices(wallet_address, events, filters)
             .await?;
 
         debug!("✅ P&L analysis completed for wallet: {} using BirdEye data", wallet_address);
@@ -668,7 +642,7 @@ impl JobOrchestrator {
     }
 
     /// Convert general BirdEye transactions to FinancialEvents for P&L analysis
-    fn convert_general_birdeye_transactions_to_events(
+    pub fn convert_general_birdeye_transactions_to_events(
         &self,
         transactions: &[GeneralTraderTransaction],
         wallet_address: &str,
@@ -859,8 +833,6 @@ impl Clone for JobOrchestrator {
         Self {
             config: self.config.clone(),
             birdeye_client: self.birdeye_client.clone(),
-            birdeye_price_fetcher: self.birdeye_price_fetcher.clone(),
-            pnl_engine: PnLEngine::new(self.birdeye_price_fetcher.clone()),
             redis_client: self.redis_client.clone(),
             running_jobs: self.running_jobs.clone(),
             batch_jobs: self.batch_jobs.clone(),

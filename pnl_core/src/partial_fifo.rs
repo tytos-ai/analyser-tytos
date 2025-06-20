@@ -183,7 +183,7 @@ pub async fn process_mint_transactions(
     mint: &str,
     mut records: Vec<TxRecord>,
     min_hold_sec: i64,
-    jupiter_price_fetcher: Option<&dyn Fn(&str) -> std::result::Result<Decimal, String>>,
+    jupiter_price_fetcher: Option<fn(&str) -> std::result::Result<Decimal, String>>,
 ) -> std::result::Result<(Decimal, Decimal, Vec<LeftoverChunk>, MintDetail, u32), String> {
     debug!("Processing mint={}, #records={} => sorting by blockTime...", mint, records.len());
     

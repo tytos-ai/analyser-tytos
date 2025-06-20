@@ -1,10 +1,11 @@
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, error};
 
 #[derive(Error, Debug)]
 pub enum BirdEyeError {
@@ -166,7 +167,6 @@ pub struct GeneralTraderTransactionsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralTraderTransactionsData {
     pub items: Vec<GeneralTraderTransaction>,
-    #[serde(rename = "hasNext")]
     pub has_next: Option<bool>, // Make optional since it may not always be present
 }
 
@@ -197,7 +197,7 @@ pub struct TokenTransactionSide {
     pub decimals: u32,
     pub address: String,
     #[serde(deserialize_with = "deserialize_amount")]
-    pub amount: u64,
+    pub amount: u128,
     #[serde(rename = "type")]
     pub transfer_type: String, // "transfer", "transferChecked"
     #[serde(rename = "type_swap")]
@@ -208,7 +208,7 @@ pub struct TokenTransactionSide {
     #[serde(rename = "nearest_price")]
     pub nearest_price: f64,
     #[serde(rename = "change_amount")]
-    pub change_amount: i64,
+    pub change_amount: i128,
     #[serde(rename = "ui_change_amount")]
     pub ui_change_amount: f64,
     #[serde(rename = "fee_info")]
@@ -353,12 +353,10 @@ impl BirdEyeClient {
     ) -> Result<Vec<TraderTransaction>, BirdEyeError> {
         let url = format!("{}/trader/txs/seek_by_time", self.config.api_base_url);
         
-        debug!("Fetching trader transactions from BirdEye for wallet: {} token: {}", 
-               wallet_address, token_address);
+        debug!("Fetching trader transactions from BirdEye for wallet: {}", wallet_address);
         
         let mut query_params = vec![
-            ("wallet", wallet_address),
-            ("token_address", token_address),
+            ("address", wallet_address),
         ];
         
         let from_string;
@@ -367,11 +365,11 @@ impl BirdEyeClient {
         
         if let Some(from) = from_time {
             from_string = from.to_string();
-            query_params.push(("from", &from_string));
+            query_params.push(("after_time", &from_string));
         }
         if let Some(to) = to_time {
             to_string = to.to_string();
-            query_params.push(("to", &to_string));
+            query_params.push(("before_time", &to_string));
         }
         if let Some(limit_val) = limit {
             limit_string = limit_val.to_string();
@@ -381,6 +379,7 @@ impl BirdEyeClient {
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", "solana")
             .query(&query_params)
             .send()
             .await?;
@@ -437,23 +436,34 @@ impl BirdEyeClient {
             query_params.push(("limit", &limit_string));
         }
 
-        let response = self.http_client
+        let request = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
             .header("x-chain", "solana")
-            .query(&query_params)
-            .send()
-            .await?;
+            .query(&query_params);
+            
+        debug!("Making BirdEye API request to: {} with params: {:?}", url, query_params);
+        
+        let response = request.send().await?;
+
+        debug!("BirdEye API response status: {} for wallet: {}", response.status(), wallet_address);
 
         if response.status() == 429 {
             return Err(BirdEyeError::RateLimit);
         }
 
         if !response.status().is_success() {
-            return Err(BirdEyeError::Api(format!("HTTP {}", response.status())));
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            error!("BirdEye API error for wallet {}: HTTP {} - Body: {}", wallet_address, status, error_body);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_body)));
         }
 
-        let general_txs_response: GeneralTraderTransactionsResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("Raw BirdEye API response for wallet {}: {}", wallet_address, response_text);
+        
+        let general_txs_response: GeneralTraderTransactionsResponse = serde_json::from_str(&response_text)
+            .map_err(|e| BirdEyeError::Api(format!("JSON parsing error: {}", e)))?;
         
         if !general_txs_response.success {
             return Err(BirdEyeError::Api("API returned success=false".to_string()));
@@ -728,7 +738,7 @@ impl Default for TopTraderFilter {
 }
 
 /// Custom deserializer for amount fields that can be either string or number
-fn deserialize_amount<'de, D>(deserializer: D) -> Result<u64, D::Error>
+fn deserialize_amount<'de, D>(deserializer: D) -> Result<u128, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -738,7 +748,7 @@ where
     struct AmountVisitor;
 
     impl<'de> Visitor<'de> for AmountVisitor {
-        type Value = u64;
+        type Value = u128;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str("a string or number representing an amount")
@@ -748,7 +758,7 @@ where
         where
             E: Error,
         {
-            Ok(value)
+            Ok(value as u128)
         }
 
         fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
@@ -756,7 +766,7 @@ where
             E: Error,
         {
             if value >= 0 {
-                Ok(value as u64)
+                Ok(value as u128)
             } else {
                 Err(Error::invalid_value(Unexpected::Signed(value), &self))
             }
@@ -766,8 +776,17 @@ where
         where
             E: Error,
         {
-            if value >= 0.0 && value.fract() == 0.0 {
-                Ok(value as u64)
+            // Handle large floating point numbers more gracefully
+            if value >= 0.0 && value.is_finite() {
+                // For very large numbers, truncate the fractional part
+                let truncated = value.floor();
+                if truncated <= (u128::MAX as f64) {
+                    Ok(truncated as u128)
+                } else {
+                    // If the number is too large for u128, use u128::MAX
+                    debug!("Large amount {} truncated to u128::MAX", value);
+                    Ok(u128::MAX)
+                }
             } else {
                 Err(Error::invalid_value(Unexpected::Float(value), &self))
             }
@@ -777,7 +796,7 @@ where
         where
             E: Error,
         {
-            value.parse::<u64>().map_err(|_| {
+            value.parse::<u128>().map_err(|_| {
                 Error::invalid_value(Unexpected::Str(value), &self)
             })
         }

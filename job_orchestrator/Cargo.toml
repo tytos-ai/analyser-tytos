@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 pnl_core = { path = "../pnl_core" }
 dex_client = { path = "../dex_client" }
-jprice_client = { path = "../jprice_client" }
 persistence_layer = { path = "../persistence_layer" }
 config_manager = { path = "../config_manager" }
 tokio = { version = "1.0", features = ["full"] }
