@@ -6,7 +6,7 @@ use persistence_layer::RedisClient;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tracing::{info, error};
+use tracing::{info, error, debug};
 use serde::{Serialize, Deserialize};
 
 /// Service states
@@ -237,20 +237,47 @@ impl ServiceManager {
                 *state = ServiceState::Running;
             }
 
-            // Get the orchestrator
-            let _orchestrator = {
-                let guard = birdeye_orch_clone.lock().await;
-                if let Some(ref _orch) = *guard {
-                    // Can't clone the orchestrator directly, so we'll handle this differently
-                    info!("✅ BirdEye wallet discovery service is now running");
-                    return;
-                } else {
-                    error!("❌ Failed to get BirdEye orchestrator instance");
-                    let mut state = state_clone.write().await;
-                    *state = ServiceState::Error("Failed to get orchestrator instance".to_string());
-                    return;
+            info!("✅ BirdEye wallet discovery service is now running - starting discovery loop");
+
+            // Get the orchestrator and start the discovery loop
+            loop {
+                let should_continue = {
+                    let guard = birdeye_orch_clone.lock().await;
+                    if let Some(ref orch) = *guard {
+                        // Execute a single discovery cycle
+                        match orch.execute_discovery_cycle().await {
+                            Ok(discovered_count) => {
+                                if discovered_count > 0 {
+                                    info!("🔍 Discovery cycle completed: {} wallets discovered", discovered_count);
+                                } else {
+                                    debug!("🔍 Discovery cycle completed: no new wallets discovered");
+                                }
+                                true // Continue running
+                            }
+                            Err(e) => {
+                                error!("❌ Discovery cycle failed: {}", e);
+                                true // Continue despite errors
+                            }
+                        }
+                    } else {
+                        error!("❌ BirdEye orchestrator instance lost");
+                        false // Stop the loop
+                    }
+                };
+
+                if !should_continue {
+                    break;
                 }
-            };
+
+                // Wait for the configured cycle interval (default 5 minutes)
+                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+            }
+
+            // Update state to error if we exit the loop
+            {
+                let mut state = state_clone.write().await;
+                *state = ServiceState::Error("Discovery loop exited unexpectedly".to_string());
+            }
         });
 
         // Store the handle
