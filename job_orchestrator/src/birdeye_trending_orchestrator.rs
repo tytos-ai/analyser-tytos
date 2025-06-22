@@ -222,7 +222,7 @@ impl BirdEyeTrendingOrchestrator {
     async fn get_top_traders_for_token(&self, token_address: &str) -> Result<Vec<TopTrader>> {
         debug!("👥 Fetching top traders for token: {}", token_address);
 
-        match self.birdeye_client.get_top_traders(token_address, Some(50)).await {
+        match self.birdeye_client.get_top_traders(token_address, Some(10)).await {
             Ok(traders) => {
                 debug!("📊 Retrieved {} raw traders for token {}", traders.len(), token_address);
 

@@ -195,25 +195,63 @@ pub async fn export_batch_results_csv(
 
 /// Get discovered wallets from continuous mode
 pub async fn get_discovered_wallets(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(query): Query<DiscoveredWalletsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // For now, return empty results as we don't have a storage mechanism for discovered wallets
-    // In a real implementation, you'd query the persistence layer for discovered wallet data
+    // Use the same logic as get_all_results since discovered wallets are stored as P&L results
+    let limit = query.limit.unwrap_or(50) as usize;
+    let offset = query.offset.unwrap_or(0) as usize;
+    
+    // Get P&L results (which are the discovered wallets with analysis)
+    let redis_client = persistence_layer::RedisClient::new(&state.config.redis.url).await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    
+    let (results, total_count) = redis_client.get_all_pnl_results(offset, limit).await
+        .map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
+
+    // Convert P&L results to discovered wallets format
+    let wallets: Vec<DiscoveredWalletSummary> = results.into_iter().map(|result| {
+        DiscoveredWalletSummary {
+            wallet_address: result.wallet_address,
+            discovered_at: result.analyzed_at,
+            analyzed_at: Some(result.analyzed_at),
+            pnl_usd: Some(result.pnl_report.summary.total_pnl_usd),
+            win_rate: Some(result.pnl_report.summary.win_rate),
+            trade_count: Some(result.pnl_report.summary.total_trades as u32),
+            status: "analyzed".to_string(),
+        }
+    }).collect();
+
+    // Calculate summary statistics
+    let analyzed_count = wallets.len() as u64;
+    let profitable_count = wallets.iter().filter(|w| {
+        w.pnl_usd.map_or(false, |pnl| pnl > Decimal::ZERO)
+    }).count() as u64;
+    
+    let total_pnl = wallets.iter()
+        .filter_map(|w| w.pnl_usd)
+        .fold(Decimal::ZERO, |acc, pnl| acc + pnl);
+    
+    let average_pnl = if analyzed_count > 0 {
+        total_pnl / Decimal::from(analyzed_count)
+    } else {
+        Decimal::ZERO
+    };
+
     let response = DiscoveredWalletsResponse {
-        wallets: vec![],
+        wallets,
         pagination: PaginationInfo {
-            total_count: 0,
-            limit: query.limit.unwrap_or(50),
-            offset: query.offset.unwrap_or(0),
-            has_more: false,
+            total_count: total_count as u64,
+            limit: limit as u32,
+            offset: offset as u32,
+            has_more: (offset + limit) < total_count,
         },
         summary: DiscoveredWalletsSummary {
-            total_discovered: 0,
-            analyzed_count: 0,
-            profitable_count: 0,
-            average_pnl_usd: Decimal::ZERO,
-            total_pnl_usd: Decimal::ZERO,
+            total_discovered: total_count as u64,
+            analyzed_count,
+            profitable_count,
+            average_pnl_usd: average_pnl,
+            total_pnl_usd: total_pnl,
         },
     };
 

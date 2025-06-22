@@ -229,6 +229,7 @@ impl ServiceManager {
         let birdeye_orch_clone = self.birdeye_orchestrator.clone();
         let state_clone = self.wallet_discovery_state.clone();
         let _stats_clone = self.stats.clone();
+        let cycle_interval = config.birdeye_config.cycle_interval_seconds;
 
         let handle = tokio::spawn(async move {
             // Update state to running
@@ -269,8 +270,8 @@ impl ServiceManager {
                     break;
                 }
 
-                // Wait for the configured cycle interval (default 5 minutes)
-                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+                // Wait for the configured cycle interval from config
+                tokio::time::sleep(tokio::time::Duration::from_secs(cycle_interval)).await;
             }
 
             // Update state to error if we exit the loop

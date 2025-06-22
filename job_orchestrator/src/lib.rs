@@ -488,7 +488,7 @@ impl JobOrchestrator {
     }
 
     /// Process a single wallet-token pair for targeted P&L analysis using BirdEye transactions
-    async fn process_single_wallet_token_pair(
+    pub async fn process_single_wallet_token_pair(
         &self,
         pair: &DiscoveredWalletToken,
         filters: PnLFilters,
@@ -496,16 +496,11 @@ impl JobOrchestrator {
         debug!("Starting targeted P&L analysis for wallet: {} on token: {} ({})", 
                pair.wallet_address, pair.token_symbol, pair.token_address);
 
-        // Fetch transactions for this specific wallet-token pair using BirdEye
+        // Fetch all trading transactions for the wallet using BirdEye (same as general method)
+        let max_limit = 100; // BirdEye API limit is 100, not 1000
         let transactions = self
             .birdeye_client
-            .get_trader_transactions(
-                &pair.wallet_address,
-                &pair.token_address,
-                None, // from_time (no limit)
-                None, // to_time (no limit)
-                Some(100), // limit to 100 transactions max (BirdEye API limit)
-            )
+            .get_all_trader_transactions(&pair.wallet_address, None, None, Some(max_limit))
             .await?;
 
         if transactions.is_empty() {
@@ -518,9 +513,9 @@ impl JobOrchestrator {
         info!("📊 Found {} BirdEye transactions for {} trading {}", 
               transactions.len(), pair.wallet_address, pair.token_symbol);
 
-        // Convert BirdEye transactions to financial events
+        // Convert BirdEye transactions to financial events (use general method)
         let events = self
-            .convert_birdeye_transactions_to_events(&transactions, &pair.wallet_address)?;
+            .convert_general_birdeye_transactions_to_events(&transactions, &pair.wallet_address)?;
 
         if events.is_empty() {
             return Err(OrchestratorError::JobExecution(format!(
@@ -540,7 +535,7 @@ impl JobOrchestrator {
     }
 
     /// Process a single wallet for P&L analysis (legacy method using Solana RPC)
-    async fn process_single_wallet(
+    pub async fn process_single_wallet(
         &self,
         wallet_address: &str,
         filters: PnLFilters,

@@ -328,7 +328,10 @@ impl BirdEyeClient {
         }
 
         if !response.status().is_success() {
-            return Err(BirdEyeError::Api(format!("HTTP {}", response.status())));
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            error!("BirdEye API error for top traders {}: HTTP {} - Body: {}", token_address, status, error_body);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_body)));
         }
 
         let top_traders_response: TopTradersResponse = response.json().await?;

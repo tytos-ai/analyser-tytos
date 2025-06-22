@@ -29,6 +29,26 @@ path = "test_birdeye_api.rs"
 name = "test_conversion"
 path = "test_conversion.rs"
 
+[[bin]]
+name = "test_discovery_pipeline"
+path = "test_discovery_pipeline.rs"
+
+[[bin]]
+name = "test_top_traders_debug"
+path = "test_top_traders_debug.rs"
+
+[[bin]]
+name = "test_config_debug"
+path = "test_config_debug.rs"
+
+[[bin]]
+name = "test_wallet_token_pnl"
+path = "test_wallet_token_pnl.rs"
+
+[[bin]]
+name = "test_continuous_processing"
+path = "test_continuous_processing.rs"
+
 
 [workspace]
 resolver = "2"
