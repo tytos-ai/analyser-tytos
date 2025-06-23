@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 use rust_decimal::Decimal;
+use uuid::Uuid;
 
 /// Discovered wallet-token pair for targeted P&L analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +66,41 @@ pub struct RedisHealthStatus {
     pub connected: bool,
     pub latency_ms: u64,
     pub error: Option<String>,
+}
+
+/// Status of a batch job
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum JobStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Batch P&L analysis job for persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchJob {
+    pub id: Uuid,
+    pub wallet_addresses: Vec<String>,
+    pub status: JobStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub filters: serde_json::Value, // Store as JSON for flexibility
+    pub individual_jobs: Vec<Uuid>,
+    // Results are stored separately and linked by job_id
+}
+
+/// Batch job statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchJobStats {
+    pub total_jobs: u64,
+    pub pending_jobs: u64,
+    pub running_jobs: u64,
+    pub completed_jobs: u64,
+    pub failed_jobs: u64,
+    pub cancelled_jobs: u64,
 }
 
 #[derive(Error, Debug)]
@@ -985,6 +1021,172 @@ impl RedisClient {
         let mut conn = self.get_connection().await?;
         let _: () = conn.set_ex(key, value, ttl_seconds).await?;
         Ok(())
+    }
+    // =====================================
+    // Batch Job Storage and Management
+    // =====================================
+    
+    /// Store a batch job in Redis for persistence
+    pub async fn store_batch_job(&self, job: &BatchJob) -> Result<()> {
+        let job_key = format!("batch_job:{}", job.id);
+        let job_json = serde_json::to_string(job)?;
+        
+        let mut conn = self.get_connection().await?;
+        
+        // Store the job data
+        let _: () = conn.set(&job_key, &job_json).await?;
+        
+        // Add to batch jobs index for easy retrieval
+        let _: () = conn.sadd("batch_jobs_index", job.id.to_string()).await?;
+        
+        // Add to time-ordered sorted set for chronological listing
+        let timestamp = job.created_at.timestamp() as f64;
+        let _: () = conn.zadd("batch_jobs_timeline", job.id.to_string(), timestamp).await?;
+        
+        debug!("Stored batch job {} in Redis", job.id);
+        Ok(())
+    }
+    
+    /// Update an existing batch job in Redis
+    pub async fn update_batch_job(&self, job: &BatchJob) -> Result<()> {
+        let job_key = format!("batch_job:{}", job.id);
+        let job_json = serde_json::to_string(job)?;
+        
+        let mut conn = self.get_connection().await?;
+        let _: () = conn.set(&job_key, &job_json).await?;
+        
+        debug!("Updated batch job {} in Redis", job.id);
+        Ok(())
+    }
+    
+    /// Get a specific batch job by ID
+    pub async fn get_batch_job(&self, job_id: &str) -> Result<Option<BatchJob>> {
+        let job_key = format!("batch_job:{}", job_id);
+        let mut conn = self.get_connection().await?;
+        
+        let job_json: Option<String> = conn.get(&job_key).await?;
+        
+        match job_json {
+            Some(json) => {
+                match serde_json::from_str::<BatchJob>(&json) {
+                    Ok(job) => Ok(Some(job)),
+                    Err(e) => {
+                        warn!("Corrupted batch job data for {}: {}", job_id, e);
+                        // Delete corrupted entry
+                        let _: () = conn.del(&job_key).await?;
+                        let _: () = conn.srem("batch_jobs_index", job_id).await?;
+                        let _: () = conn.zrem("batch_jobs_timeline", job_id).await?;
+                        Ok(None)
+                    }
+                }
+            }
+            None => Ok(None),
+        }
+    }
+    
+    /// Get all batch jobs with pagination, sorted by creation time (newest first)
+    pub async fn get_all_batch_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
+        let mut conn = self.get_connection().await?;
+        
+        // Get total count
+        let total_count: usize = conn.zcard("batch_jobs_timeline").await?;
+        
+        if total_count == 0 {
+            return Ok((Vec::new(), 0));
+        }
+        
+        // Get job IDs from timeline, newest first (reverse order)
+        let job_ids: Vec<String> = conn
+            .zrevrange("batch_jobs_timeline", offset as isize, (offset + limit - 1) as isize)
+            .await?;
+        
+        // Fetch job details for each ID
+        let mut jobs = Vec::new();
+        for job_id in job_ids {
+            if let Some(job) = self.get_batch_job(&job_id).await? {
+                jobs.push(job);
+            }
+        }
+        
+        Ok((jobs, total_count))
+    }
+    
+    /// Get batch jobs filtered by status
+    pub async fn get_batch_jobs_by_status(&self, status: &str, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
+        let mut conn = self.get_connection().await?;
+        
+        // Get all job IDs from timeline
+        let all_job_ids: Vec<String> = conn.zrevrange("batch_jobs_timeline", 0, -1).await?;
+        
+        // Filter by status and paginate
+        let mut filtered_jobs = Vec::new();
+        let mut found_count = 0;
+        let mut total_matching = 0;
+        
+        for job_id in all_job_ids {
+            if let Some(job) = self.get_batch_job(&job_id).await? {
+                if format!("{:?}", job.status).to_lowercase() == status.to_lowercase() {
+                    total_matching += 1;
+                    
+                    if found_count >= offset && filtered_jobs.len() < limit {
+                        filtered_jobs.push(job);
+                    }
+                    found_count += 1;
+                }
+            }
+        }
+        
+        Ok((filtered_jobs, total_matching))
+    }
+    
+    /// Delete a batch job from Redis
+    pub async fn delete_batch_job(&self, job_id: &str) -> Result<bool> {
+        let job_key = format!("batch_job:{}", job_id);
+        let mut conn = self.get_connection().await?;
+        
+        // Delete from all locations
+        let deleted: usize = conn.del(&job_key).await?;
+        let _: () = conn.srem("batch_jobs_index", job_id).await?;
+        let _: () = conn.zrem("batch_jobs_timeline", job_id).await?;
+        
+        info!("Deleted batch job {} from Redis", job_id);
+        Ok(deleted > 0)
+    }
+    
+    /// Get batch job statistics
+    pub async fn get_batch_job_stats(&self) -> Result<BatchJobStats> {
+        let mut conn = self.get_connection().await?;
+        
+        let total_jobs: usize = conn.zcard("batch_jobs_timeline").await?;
+        
+        // Count jobs by status
+        let all_job_ids: Vec<String> = conn.smembers("batch_jobs_index").await?;
+        let mut pending_count = 0;
+        let mut running_count = 0;
+        let mut completed_count = 0;
+        let mut failed_count = 0;
+        let mut cancelled_count = 0;
+        
+        for job_id in all_job_ids {
+            if let Some(job) = self.get_batch_job(&job_id).await? {
+                match job.status {
+                    JobStatus::Pending => pending_count += 1,
+                    JobStatus::Running => running_count += 1,
+                    JobStatus::Completed => completed_count += 1,
+                    JobStatus::Failed => failed_count += 1,
+                    JobStatus::Cancelled => cancelled_count += 1,
+                }
+            }
+        }
+        
+        Ok(BatchJobStats {
+            total_jobs: total_jobs as u64,
+            pending_jobs: pending_count,
+            running_jobs: running_count,
+            completed_jobs: completed_count,
+            failed_jobs: failed_count,
+            cancelled_jobs: cancelled_count,
+        })
     }
 }
 

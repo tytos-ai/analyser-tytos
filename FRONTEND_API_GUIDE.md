@@ -1,4 +1,4 @@
-
+claude 
 # P&L Tracker API - Frontend Integration Guide
 
 ## Quick Start
@@ -137,10 +137,13 @@ Content-Type: application/json
 
 ## Batch P&L Analysis
 
+**🆕 NEW FEATURE:** Batch job history endpoint now available! Get complete job history without needing specific job IDs. Jobs persist across server restarts.
+
 ### Submit Batch Job
 ```http
 POST /api/pnl/batch/run
 Content-Type: application/json
+
 
 {
   "wallets": [
@@ -284,6 +287,44 @@ GET /api/pnl/batch/results/{job_id}/traders
     }
   },
   "timestamp": "2025-06-18T05:58:00Z"
+}
+```
+
+### 🆕 Get Batch Job History (NEW!)
+```http
+GET /api/pnl/batch/history?limit=50&offset=0
+```
+
+**Purpose:** Retrieve complete history of all batch jobs without requiring job IDs. Jobs persist across server restarts.
+
+**Response:**
+```json
+{
+  "data": {
+    "jobs": [
+      {
+        "id": "46b9c6f7-0639-4dfb-a7dc-61468d60080f",
+        "wallet_count": 2,
+        "status": "Completed",
+        "created_at": "2025-06-23T08:37:35.092389210Z",
+        "success_count": 0,
+        "failure_count": 0
+      }
+    ],
+    "pagination": {
+      "total_count": 2,
+      "limit": 50,
+      "offset": 0,
+      "has_more": false
+    },
+    "summary": {
+      "total_jobs": 2,
+      "pending_jobs": 0,
+      "running_jobs": 0,
+      "completed_jobs": 2,
+      "failed_jobs": 0
+    }
+  }
 }
 ```
 
@@ -781,6 +822,128 @@ do {
 
 // Get results
 const results = await fetch(`/api/pnl/batch/results/${jobId}`).then(r => r.json());
+```
+
+### ✅ NEW: Batch Job History (Verified Working)
+```http
+GET /api/pnl/batch/history?limit=50&offset=0
+```
+
+**Purpose:** Get complete history of all batch jobs without needing job IDs. Solves the persistence issue where jobs were lost on server restart.
+
+**Query Parameters:**
+- `limit` (optional): Number of jobs to return (default: 50, max: 200)
+- `offset` (optional): Number of jobs to skip for pagination (default: 0)
+
+**Response Example:**
+```json
+{
+  "data": {
+    "jobs": [
+      {
+        "id": "46b9c6f7-0639-4dfb-a7dc-61468d60080f",
+        "wallet_count": 2,
+        "status": "Completed",
+        "created_at": "2025-06-23T08:37:35.092389210Z",
+        "started_at": "2025-06-23T08:37:35.126743363Z",
+        "completed_at": "2025-06-23T08:37:35.563563614Z",
+        "success_count": 0,
+        "failure_count": 0
+      },
+      {
+        "id": "fd26d745-9179-4853-98d4-904bd685346a", 
+        "wallet_count": 1,
+        "status": "Completed",
+        "created_at": "2025-06-23T08:36:56.257505150Z",
+        "started_at": "2025-06-23T08:36:56.271748044Z", 
+        "completed_at": "2025-06-23T08:36:58.012173130Z",
+        "success_count": 0,
+        "failure_count": 0
+      }
+    ],
+    "pagination": {
+      "total_count": 2,
+      "limit": 10, 
+      "offset": 0,
+      "has_more": false
+    },
+    "summary": {
+      "total_jobs": 2,
+      "pending_jobs": 0,
+      "running_jobs": 0,
+      "completed_jobs": 2,
+      "failed_jobs": 0
+    }
+  },
+  "timestamp": "2025-06-23T08:37:47.599700969Z"
+}
+```
+
+**Frontend Implementation:**
+```javascript
+// Get batch job history with pagination
+const getBatchJobHistory = async (page = 0, limit = 50) => {
+  const offset = page * limit;
+  const response = await fetch(`/api/pnl/batch/history?limit=${limit}&offset=${offset}`)
+    .then(r => r.json());
+  
+  return response.data;
+};
+
+// Display batch job history in a table
+const displayBatchHistory = async () => {
+  const history = await getBatchJobHistory();
+  
+  console.log('\n=== Batch Job History ===');
+  console.log(`Total jobs: ${history.summary.total_jobs}`);
+  console.log(`Completed: ${history.summary.completed_jobs}`);
+  console.log(`Failed: ${history.summary.failed_jobs}`);
+  console.log(`Running: ${history.summary.running_jobs}`);
+  
+  history.jobs.forEach((job, index) => {
+    const duration = job.completed_at && job.started_at ? 
+      Math.round((new Date(job.completed_at) - new Date(job.started_at)) / 1000) : 'N/A';
+    
+    console.log(`${index + 1}. Job ${job.id.substring(0, 8)}...`);
+    console.log(`   Wallets: ${job.wallet_count}`);
+    console.log(`   Status: ${job.status}`);
+    console.log(`   Duration: ${duration}s`);
+    console.log(`   Created: ${new Date(job.created_at).toLocaleString()}`);
+    console.log(`   Success/Failure: ${job.success_count}/${job.failure_count}`);
+  });
+};
+
+// Pagination example for large datasets
+const createBatchHistoryPaginator = () => {
+  let currentPage = 0;
+  const pageSize = 20;
+  
+  return {
+    async next() {
+      const history = await getBatchJobHistory(currentPage, pageSize);
+      currentPage++;
+      return history;
+    },
+    
+    async previous() {
+      if (currentPage > 0) {
+        currentPage--;
+        return await getBatchJobHistory(currentPage, pageSize);
+      }
+      return null;
+    },
+    
+    async goToPage(page) {
+      currentPage = page;
+      return await getBatchJobHistory(currentPage, pageSize);
+    }
+  };
+};
+
+// Example usage
+const paginator = createBatchHistoryPaginator();
+const firstPage = await paginator.next();
+console.log('Page 1:', firstPage.jobs.length, 'jobs');
 ```
 
 ### Monitoring Automatic Discovery Pipeline

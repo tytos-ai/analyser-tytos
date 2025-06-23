@@ -148,6 +148,53 @@ impl BatchJob {
             results: HashMap::new(),
         }
     }
+
+    /// Convert to persistence layer BatchJob format
+    pub fn to_persistence_batch_job(&self) -> Result<persistence_layer::BatchJob> {
+        let filters_json = serde_json::to_value(&self.filters)
+            .map_err(|e| OrchestratorError::JobExecution(format!("Failed to serialize filters: {}", e)))?;
+        
+        Ok(persistence_layer::BatchJob {
+            id: self.id,
+            wallet_addresses: self.wallet_addresses.clone(),
+            status: match self.status {
+                JobStatus::Pending => persistence_layer::JobStatus::Pending,
+                JobStatus::Running => persistence_layer::JobStatus::Running,
+                JobStatus::Completed => persistence_layer::JobStatus::Completed,
+                JobStatus::Failed => persistence_layer::JobStatus::Failed,
+                JobStatus::Cancelled => persistence_layer::JobStatus::Cancelled,
+            },
+            created_at: self.created_at,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            filters: filters_json,
+            individual_jobs: self.individual_jobs.clone(),
+        })
+    }
+
+    /// Create from persistence layer BatchJob format
+    pub fn from_persistence_batch_job(persistent_job: persistence_layer::BatchJob) -> Result<Self> {
+        let filters: PnLFilters = serde_json::from_value(persistent_job.filters)
+            .map_err(|e| OrchestratorError::JobExecution(format!("Failed to deserialize filters: {}", e)))?;
+        
+        Ok(Self {
+            id: persistent_job.id,
+            wallet_addresses: persistent_job.wallet_addresses,
+            status: match persistent_job.status {
+                persistence_layer::JobStatus::Pending => JobStatus::Pending,
+                persistence_layer::JobStatus::Running => JobStatus::Running,
+                persistence_layer::JobStatus::Completed => JobStatus::Completed,
+                persistence_layer::JobStatus::Failed => JobStatus::Failed,
+                persistence_layer::JobStatus::Cancelled => JobStatus::Cancelled,
+            },
+            created_at: persistent_job.created_at,
+            started_at: persistent_job.started_at,
+            completed_at: persistent_job.completed_at,
+            filters,
+            individual_jobs: persistent_job.individual_jobs,
+            results: HashMap::new(), // Results are loaded separately
+        })
+    }
 }
 
 /// Job orchestrator for managing P&L analysis tasks
@@ -156,7 +203,7 @@ pub struct JobOrchestrator {
     birdeye_client: BirdEyeClient,
     redis_client: Arc<Mutex<RedisClient>>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
-    batch_jobs: Arc<Mutex<HashMap<Uuid, BatchJob>>>,
+    // batch_jobs now stored in Redis via persistence_layer
 }
 
 impl JobOrchestrator {
@@ -180,7 +227,6 @@ impl JobOrchestrator {
             birdeye_client,
             redis_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
-            batch_jobs: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -394,13 +440,14 @@ impl JobOrchestrator {
         filters: Option<PnLFilters>,
     ) -> Result<Uuid> {
         let filters = filters.unwrap_or_else(|| self.create_pnl_filters_from_config());
-        let batch_job = BatchJob::new(wallet_addresses, filters);
+        let batch_job = BatchJob::new(wallet_addresses.clone(), filters);
         let job_id = batch_job.id;
 
-        // Store the batch job
+        // Store the batch job in Redis for persistence
         {
-            let mut batch_jobs = self.batch_jobs.lock().await;
-            batch_jobs.insert(job_id, batch_job);
+            let redis = self.redis_client.lock().await;
+            let persistent_job = batch_job.to_persistence_batch_job()?;
+            redis.store_batch_job(&persistent_job).await?;
         }
 
         // Process in background
@@ -411,22 +458,26 @@ impl JobOrchestrator {
             }
         });
 
-        info!("Submitted batch job {} for {} wallets", job_id, 
-              self.batch_jobs.lock().await.get(&job_id).unwrap().wallet_addresses.len());
+        info!("Submitted batch job {} for {} wallets", job_id, wallet_addresses.len());
 
         Ok(job_id)
     }
 
     /// Execute a batch job
     async fn execute_batch_job(&self, job_id: Uuid) -> Result<()> {
+        // Load job from Redis and update status to Running
         let (wallet_addresses, filters) = {
-            let mut batch_jobs = self.batch_jobs.lock().await;
-            let job = batch_jobs.get_mut(&job_id).ok_or_else(|| {
-                OrchestratorError::JobExecution(format!("Batch job {} not found", job_id))
-            })?;
-
+            let redis = self.redis_client.lock().await;
+            let persistent_job = redis.get_batch_job(&job_id.to_string()).await?
+                .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
+            
+            let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
             job.status = JobStatus::Running;
             job.started_at = Some(Utc::now());
+
+            // Update status in Redis
+            let updated_persistent_job = job.to_persistence_batch_job()?;
+            redis.update_batch_job(&updated_persistent_job).await?;
 
             (job.wallet_addresses.clone(), job.filters.clone())
         };
@@ -456,23 +507,28 @@ impl JobOrchestrator {
 
         let results = join_all(futures).await;
 
-        // Update batch job with results
-        {
-            let mut batch_jobs = self.batch_jobs.lock().await;
-            let job = batch_jobs.get_mut(&job_id).unwrap();
-
+        // Update batch job status to Completed in Redis
+        let successful_count = {
+            let redis = self.redis_client.lock().await;
+            let persistent_job = redis.get_batch_job(&job_id.to_string()).await?
+                .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
+            
+            let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
             job.status = JobStatus::Completed;
             job.completed_at = Some(Utc::now());
 
-            for (wallet, result) in results {
-                job.results.insert(wallet, result);
+            // Add results to the job for counting
+            for (wallet, result) in &results {
+                job.results.insert(wallet.clone(), result.clone());
             }
-        }
 
-        let successful_count = {
-            let batch_jobs = self.batch_jobs.lock().await;
-            let job = batch_jobs.get(&job_id).unwrap();
-            job.results.values().filter(|r| r.is_ok()).count()
+            let success_count = job.results.values().filter(|r| r.is_ok()).count();
+
+            // Update final status in Redis
+            let updated_persistent_job = job.to_persistence_batch_job()?;
+            redis.update_batch_job(&updated_persistent_job).await?;
+
+            success_count
         };
 
         info!("Batch job {} completed: {}/{} wallets successful", 
@@ -483,8 +539,41 @@ impl JobOrchestrator {
 
     /// Get batch job status
     pub async fn get_batch_job_status(&self, job_id: Uuid) -> Option<BatchJob> {
-        let batch_jobs = self.batch_jobs.lock().await;
-        batch_jobs.get(&job_id).cloned()
+        let redis = self.redis_client.lock().await;
+        match redis.get_batch_job(&job_id.to_string()).await {
+            Ok(Some(persistent_job)) => {
+                match BatchJob::from_persistence_batch_job(persistent_job) {
+                    Ok(job) => Some(job),
+                    Err(e) => {
+                        error!("Failed to convert persistent batch job: {}", e);
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                error!("Failed to load batch job from Redis: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Get all batch jobs with pagination
+    pub async fn get_all_batch_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
+        let redis = self.redis_client.lock().await;
+        let (persistent_jobs, total_count) = redis.get_all_batch_jobs(limit, offset).await?;
+        
+        let mut jobs = Vec::new();
+        for persistent_job in persistent_jobs {
+            match BatchJob::from_persistence_batch_job(persistent_job) {
+                Ok(job) => jobs.push(job),
+                Err(e) => {
+                    warn!("Failed to convert persistent batch job: {}", e);
+                }
+            }
+        }
+        
+        Ok((jobs, total_count))
     }
 
     /// Process a single wallet-token pair for targeted P&L analysis using BirdEye transactions
@@ -803,7 +892,25 @@ impl JobOrchestrator {
         };
 
         let running_jobs_count = self.running_jobs.lock().await.len();
-        let batch_jobs_count = self.batch_jobs.lock().await.len();
+        
+        // Get batch jobs count from Redis
+        let batch_jobs_count = {
+            use tokio::time::{timeout, Duration as TokioDuration};
+            match timeout(TokioDuration::from_millis(1000), async {
+                let redis = self.redis_client.lock().await;
+                redis.get_batch_job_stats().await
+            }).await {
+                Ok(Ok(stats)) => stats.total_jobs,
+                Ok(Err(_)) => {
+                    warn!("Redis unavailable for batch jobs count");
+                    0
+                },
+                Err(_) => {
+                    warn!("Redis batch jobs count check timed out");
+                    0
+                }
+            }
+        };
 
         Ok(OrchestratorStatus {
             discovery_queue_size: queue_size,
@@ -830,7 +937,6 @@ impl Clone for JobOrchestrator {
             birdeye_client: self.birdeye_client.clone(),
             redis_client: self.redis_client.clone(),
             running_jobs: self.running_jobs.clone(),
-            batch_jobs: self.batch_jobs.clone(),
         }
     }
 }

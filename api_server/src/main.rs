@@ -160,6 +160,7 @@ async fn create_router(state: AppState) -> Router {
         .route("/api/pnl/batch/results/:job_id", get(get_batch_job_results))
         .route("/api/pnl/batch/results/:job_id/export.csv", get(export_batch_results_csv))
         .route("/api/pnl/batch/results/:job_id/traders", get(filter_copy_traders))
+        .route("/api/pnl/batch/history", get(get_batch_job_history))
         
         // Continuous mode endpoints
         .route("/api/pnl/continuous/discovered-wallets", get(get_discovered_wallets))

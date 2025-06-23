@@ -499,3 +499,46 @@ pub struct ServicesComponentHealth {
     pub wallet_discovery: String, // "Running", "Stopped", "Error"
     pub pnl_analysis: String,     // "Running", "Stopped", "Error"
 }
+
+// =====================================
+// Batch Job History Types
+// =====================================
+
+/// Query parameters for batch job history listing
+#[derive(Debug, Deserialize)]
+pub struct BatchJobHistoryQuery {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub status: Option<String>, // Filter by status
+}
+
+/// Summary of a batch job for history listing
+#[derive(Debug, Serialize)]
+pub struct BatchJobSummary {
+    pub id: Uuid,
+    pub wallet_count: usize,
+    pub status: JobStatus,
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub success_count: usize,
+    pub failure_count: usize,
+}
+
+/// Batch job history response
+#[derive(Debug, Serialize)]
+pub struct BatchJobHistoryResponse {
+    pub jobs: Vec<BatchJobSummary>,
+    pub pagination: PaginationInfo,
+    pub summary: BatchJobHistorySummary,
+}
+
+/// Summary statistics for batch job history
+#[derive(Debug, Serialize)]
+pub struct BatchJobHistorySummary {
+    pub total_jobs: u64,
+    pub pending_jobs: u64,
+    pub running_jobs: u64,
+    pub completed_jobs: u64,
+    pub failed_jobs: u64,
+}

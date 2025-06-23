@@ -163,6 +163,60 @@ pub async fn get_batch_job_results(
     Ok(Json(SuccessResponse::new(response)))
 }
 
+/// Get batch job history with pagination
+pub async fn get_batch_job_history(
+    State(state): State<AppState>,
+    Query(query): Query<BatchJobHistoryQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let limit = query.limit.unwrap_or(50).min(200) as usize; // Max 200 per request
+    let offset = query.offset.unwrap_or(0) as usize;
+    
+    // Get batch jobs from the orchestrator
+    let (jobs, total_count) = state
+        .orchestrator
+        .get_all_batch_jobs(limit, offset)
+        .await?;
+    
+    // Convert to response format
+    let job_summaries: Vec<BatchJobSummary> = jobs
+        .into_iter()
+        .map(|job| BatchJobSummary {
+            id: job.id,
+            wallet_count: job.wallet_addresses.len(),
+            status: job.status,
+            created_at: job.created_at,
+            started_at: job.started_at,
+            completed_at: job.completed_at,
+            success_count: job.results.values().filter(|r| r.is_ok()).count(),
+            failure_count: job.results.values().filter(|r| r.is_err()).count(),
+        })
+        .collect();
+    
+    let pagination = PaginationInfo {
+        total_count: total_count as u64,
+        limit: limit as u32,
+        offset: offset as u32,
+        has_more: offset + limit < total_count,
+    };
+    
+    // Calculate summary statistics before moving job_summaries
+    let summary = BatchJobHistorySummary {
+        total_jobs: total_count as u64,
+        pending_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Pending).count() as u64,
+        running_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Running).count() as u64,
+        completed_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Completed).count() as u64,
+        failed_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Failed).count() as u64,
+    };
+    
+    let response = BatchJobHistoryResponse {
+        jobs: job_summaries,
+        pagination,
+        summary,
+    };
+    
+    Ok(Json(SuccessResponse::new(response)))
+}
+
 /// Export batch job results as CSV
 pub async fn export_batch_results_csv(
     State(state): State<AppState>,
