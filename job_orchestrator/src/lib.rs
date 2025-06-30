@@ -1,10 +1,10 @@
 use chrono::Utc;
 use config_manager::SystemConfig;
 use futures::future::join_all;
-use dex_client::{BirdEyeClient, BirdEyeConfig, BirdEyeError, TraderTransaction, GeneralTraderTransaction};
+use dex_client::{BirdEyeClient, BirdEyeError, TraderTransaction, GeneralTraderTransaction};
 use pnl_core::{FinancialEvent, EventType, EventMetadata};
 use persistence_layer::{PersistenceError, RedisClient, DiscoveredWalletToken};
-use pnl_core::{AnalysisTimeframe, PnLFilters, PnLReport, calculate_pnl_with_embedded_prices};
+use pnl_core::{AnalysisTimeframe, PnLFilters, PnLReport, calculate_pnl_with_embedded_prices, enhance_report_with_current_prices};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ pub mod birdeye_trending_orchestrator;
 
 // Legacy trending orchestrator removed - use BirdEye instead
 // pub use trending_orchestrator::{TrendingOrchestrator, TrendingCycleStats};
-pub use birdeye_trending_orchestrator::{BirdEyeTrendingOrchestrator, BirdEyeTrendingConfig, DiscoveryStats};
+pub use birdeye_trending_orchestrator::{BirdEyeTrendingOrchestrator, DiscoveryStats};
 
 #[derive(Error, Debug, Clone)]
 pub enum OrchestratorError {
@@ -204,6 +204,7 @@ pub struct JobOrchestrator {
     redis_client: Arc<Mutex<RedisClient>>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     // batch_jobs now stored in Redis via persistence_layer
+    continuous_mode_filters: Arc<Mutex<Option<PnLFilters>>>,  // Runtime config for continuous mode
 }
 
 impl JobOrchestrator {
@@ -213,12 +214,7 @@ impl JobOrchestrator {
         let redis_client = Arc::new(Mutex::new(redis_client));
 
         // Initialize BirdEye client and price fetcher
-        let birdeye_config = BirdEyeConfig {
-            api_key: config.birdeye.api_key.clone(),
-            api_base_url: config.birdeye.api_base_url.clone(),
-            request_timeout_seconds: config.birdeye.request_timeout_seconds,
-            rate_limit_per_second: config.birdeye.rate_limit_per_second,
-        };
+        let birdeye_config = config.birdeye.clone();
         
         let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
 
@@ -227,6 +223,7 @@ impl JobOrchestrator {
             birdeye_client,
             redis_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
+            continuous_mode_filters: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -334,8 +331,8 @@ impl JobOrchestrator {
         info!("Processing discovered wallet-token pair: {} for {} ({})", 
               pair.wallet_address, pair.token_symbol, pair.token_address);
 
-        // Create P&L filters from configuration
-        let filters = self.create_pnl_filters_from_config();
+        // Get effective P&L filters (user override or config default)
+        let filters = self.get_effective_continuous_filters().await;
 
         // Process the wallet-token pair using targeted BirdEye transactions
         match self.process_single_wallet_token_pair(&pair, filters).await {
@@ -346,21 +343,41 @@ impl JobOrchestrator {
                 // Store the P&L result in Redis for later retrieval
                 {
                     let redis = self.redis_client.lock().await;
-                    if let Err(e) = redis.store_pnl_result(
+                    match redis.store_pnl_result(
                         &pair.wallet_address,
                         &pair.token_address,
                         &pair.token_symbol,
                         &report,
                     ).await {
-                        warn!("Failed to store P&L result for wallet {}: {}", pair.wallet_address, e);
-                    } else {
-                        debug!("Stored P&L result for wallet {} token {}", pair.wallet_address, pair.token_symbol);
+                        Ok(_) => {
+                            // Mark wallet as successfully processed
+                            if let Err(e) = redis.mark_wallet_as_processed(&pair.wallet_address).await {
+                                warn!("Failed to mark wallet {} as processed: {}", pair.wallet_address, e);
+                            } else {
+                                debug!("Marked wallet {} as processed and stored P&L result", pair.wallet_address);
+                            }
+                        }
+                        Err(e) => {
+                            // Mark wallet as failed if storage fails
+                            if let Err(mark_err) = redis.mark_wallet_as_failed(&pair.wallet_address).await {
+                                warn!("Failed to mark wallet {} as failed: {}", pair.wallet_address, mark_err);
+                            }
+                            warn!("Failed to store P&L result for wallet {}: {}", pair.wallet_address, e);
+                        }
                     }
                 }
                 
                 Ok(true)
             }
             Err(e) => {
+                // Mark wallet as failed
+                {
+                    let redis = self.redis_client.lock().await;
+                    if let Err(mark_err) = redis.mark_wallet_as_failed(&pair.wallet_address).await {
+                        warn!("Failed to mark wallet {} as failed: {}", pair.wallet_address, mark_err);
+                    }
+                }
+                
                 warn!("Failed to process wallet {} for token {}: {}", 
                       pair.wallet_address, pair.token_symbol, e);
                 Ok(true) // Still processed (even if failed)
@@ -368,66 +385,173 @@ impl JobOrchestrator {
         }
     }
 
-    /// Process wallet-token pairs discovered by BirdEye
+    /// Process wallet-token pairs discovered by BirdEye (PARALLEL VERSION)
     async fn process_discovered_wallets(&self) -> Result<()> {
-        let mut processed_count = 0;
-
+        let mut total_processed_count = 0;
+        
+        // Configurable batch size for parallel processing
+        let batch_size = self.config.system.pnl_parallel_batch_size.unwrap_or(10);
+        
         loop {
-            // Pop a wallet-token pair from the discovery queue
-            let wallet_token_pair = {
+            // Pop multiple wallet-token pairs from the discovery queue for parallel processing
+            let wallet_token_pairs = {
                 let redis = self.redis_client.lock().await;
-                redis.pop_discovered_wallet_token_pair(1).await?
+                redis.pop_discovered_wallet_token_pairs(batch_size).await?
             };
 
-            let pair = match wallet_token_pair {
-                Some(pair) => pair,
-                None => {
-                    debug!("No more wallet-token pairs in discovery queue");
-                    break;
-                }
-            };
-
-            info!("Processing discovered wallet-token pair: {} for {} ({})", 
-                  pair.wallet_address, pair.token_symbol, pair.token_address);
-
-            // Create P&L filters from configuration
-            let filters = self.create_pnl_filters_from_config();
-
-            // Process the wallet-token pair using targeted BirdEye transactions
-            match self.process_single_wallet_token_pair(&pair, filters).await {
-                Ok(report) => {
-                    info!("Successfully processed wallet {} for token {}: P&L = {} USD", 
-                          pair.wallet_address, pair.token_symbol, report.summary.total_pnl_usd);
-                    
-                    // Store the P&L result in Redis for later retrieval
-                    {
-                        let redis = self.redis_client.lock().await;
-                        if let Err(e) = redis.store_pnl_result(
-                            &pair.wallet_address,
-                            &pair.token_address,
-                            &pair.token_symbol,
-                            &report,
-                        ).await {
-                            warn!("Failed to store P&L result for wallet {}: {}", pair.wallet_address, e);
-                        } else {
-                            debug!("Stored P&L result for wallet {} token {}", pair.wallet_address, pair.token_symbol);
-                        }
-                    }
-                    
-                    processed_count += 1;
-                }
-                Err(e) => {
-                    warn!("Failed to process wallet {} for token {}: {}", 
-                          pair.wallet_address, pair.token_symbol, e);
-                }
+            if wallet_token_pairs.is_empty() {
+                debug!("No more wallet-token pairs in discovery queue");
+                break;
             }
 
-            // Small delay between wallet processing
-            sleep(Duration::from_millis(100)).await;
+            info!("🚀 Processing {} wallet-token pairs in parallel...", wallet_token_pairs.len());
+
+            // Get effective P&L filters (user override or config default)
+            let filters = self.get_effective_continuous_filters().await;
+
+            // Process wallet-token pairs in parallel with timeout
+            let futures = wallet_token_pairs.iter().map(|pair| {
+                let filters = filters.clone();
+                let pair_clone = pair.clone();
+                async move {
+                    info!("Processing discovered wallet-token pair: {} for {} ({})", 
+                          pair_clone.wallet_address, pair_clone.token_symbol, pair_clone.token_address);
+                    
+                    // Add timeout for each wallet processing (5 minutes max for queue processing)
+                    let timeout_duration = Duration::from_secs(300);
+                    let result = match tokio::time::timeout(
+                        timeout_duration, 
+                        self.process_single_wallet_token_pair(&pair_clone, filters)
+                    ).await {
+                        Ok(Ok(report)) => {
+                            // Store the P&L result in Redis for later retrieval
+                            let store_result = {
+                                let redis = self.redis_client.lock().await;
+                                redis.store_pnl_result(
+                                    &pair_clone.wallet_address,
+                                    &pair_clone.token_address,
+                                    &pair_clone.token_symbol,
+                                    &report,
+                                ).await
+                            };
+                            
+                            match store_result {
+                                Ok(_) => {
+                                    // Mark wallet as successfully processed
+                                    let redis = self.redis_client.lock().await;
+                                    if let Err(e) = redis.mark_wallet_as_processed(&pair_clone.wallet_address).await {
+                                        warn!("Failed to mark wallet {} as processed: {}", pair_clone.wallet_address, e);
+                                    }
+                                    
+                                    info!("✅ Successfully processed wallet {} for token {}: P&L = {} USD", 
+                                          pair_clone.wallet_address, pair_clone.token_symbol, report.summary.total_pnl_usd);
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    // Mark wallet as failed
+                                    let redis = self.redis_client.lock().await;
+                                    if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
+                                        warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
+                                    }
+                                    
+                                    warn!("Failed to store P&L result for wallet {}: {}", pair_clone.wallet_address, e);
+                                    Err(OrchestratorError::Persistence(e.to_string()))
+                                }
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            // Mark wallet as failed
+                            let redis = self.redis_client.lock().await;
+                            if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
+                                warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
+                            }
+                            
+                            warn!("Failed to process wallet {} for token {}: {}", 
+                                  pair_clone.wallet_address, pair_clone.token_symbol, e);
+                            Err(e)
+                        }
+                        Err(_) => {
+                            // Mark wallet as failed due to timeout
+                            let redis = self.redis_client.lock().await;
+                            if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
+                                warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
+                            }
+                            
+                            warn!("⏰ Wallet {} for token {} timed out after {} seconds", 
+                                  pair_clone.wallet_address, pair_clone.token_symbol, timeout_duration.as_secs());
+                            Err(OrchestratorError::JobExecution(
+                                format!("Wallet processing timed out after {} seconds", timeout_duration.as_secs())
+                            ))
+                        }
+                    };
+                    (pair_clone.wallet_address.clone(), pair_clone.token_symbol.clone(), result)
+                }
+            });
+
+            // Execute all wallet processing tasks in parallel
+            let results = join_all(futures).await;
+            
+            // Categorize results and collect failed wallets for retry
+            let mut success_count = 0;
+            let mut _failed_count = 0;
+            let mut rate_limited_count = 0;
+            let mut other_failed_count = 0;
+            let mut wallets_to_retry = Vec::new();
+            
+            for ((wallet, token, result), original_pair) in results.into_iter().zip(wallet_token_pairs.iter()) {
+                match result {
+                    Ok(_) => success_count += 1,
+                    Err(e) => {
+                        _failed_count += 1;
+                        let error_msg = e.to_string();
+                        
+                        // Check if this is a rate limit error that should be retried
+                        if error_msg.contains("Rate limit exceeded") || error_msg.contains("rate limit") {
+                            rate_limited_count += 1;
+                            wallets_to_retry.push(original_pair.clone());
+                            debug!("Rate-limited wallet {} for token {} will be retried", wallet, token);
+                        } else {
+                            other_failed_count += 1;
+                            warn!("Wallet {} for token {} failed permanently: {}", wallet, token, error_msg);
+                        }
+                    }
+                }
+            }
+            
+            // Push rate-limited wallets back to the front of the queue for retry
+            if !wallets_to_retry.is_empty() {
+                let redis = self.redis_client.lock().await;
+                if let Err(e) = redis.push_failed_wallet_token_pairs_for_retry(&wallets_to_retry).await {
+                    warn!("Failed to push {} rate-limited wallets back to queue: {}", wallets_to_retry.len(), e);
+                } else {
+                    info!("🔄 Pushed {} rate-limited wallets back to queue for retry", wallets_to_retry.len());
+                }
+            }
+            
+            total_processed_count += wallet_token_pairs.len();
+            
+            info!("📊 Parallel batch completed: {}/{} successful, {} rate-limited (retrying), {} permanently failed", 
+                  success_count, wallet_token_pairs.len(), rate_limited_count, other_failed_count);
+
+            // Adaptive delay between parallel batches based on rate limiting
+            let delay_ms = if rate_limited_count > 0 {
+                // Longer delay if we hit rate limits to give API time to recover
+                let base_delay = 2000; // 2 seconds base
+                let additional_delay = rate_limited_count * 200; // +200ms per rate-limited wallet
+                base_delay + additional_delay
+            } else {
+                200 // Normal delay when no rate limits
+            };
+            
+            if rate_limited_count > 0 {
+                info!("⏱️ Applying extended delay of {}ms due to {} rate-limited wallets", delay_ms, rate_limited_count);
+            }
+            
+            sleep(Duration::from_millis(delay_ms)).await;
         }
 
-        if processed_count > 0 {
-            info!("Processed {} discovered wallet-token pairs", processed_count);
+        if total_processed_count > 0 {
+            info!("🎯 Total processed {} discovered wallet-token pairs using parallel processing", total_processed_count);
         }
 
         Ok(())
@@ -439,7 +563,7 @@ impl JobOrchestrator {
         wallet_addresses: Vec<String>,
         filters: Option<PnLFilters>,
     ) -> Result<Uuid> {
-        let filters = filters.unwrap_or_else(|| self.create_pnl_filters_from_config());
+        let filters = self.merge_filters_with_config(filters);
         let batch_job = BatchJob::new(wallet_addresses.clone(), filters);
         let job_id = batch_job.id;
 
@@ -524,6 +648,19 @@ impl JobOrchestrator {
 
             let success_count = job.results.values().filter(|r| r.is_ok()).count();
 
+            // Store the results separately in Redis
+            let results_map: HashMap<String, Result<PnLReport>> = results.into_iter().collect();
+            // Convert to anyhow::Error format expected by persistence layer
+            let anyhow_results: HashMap<String, std::result::Result<PnLReport, anyhow::Error>> = results_map
+                .into_iter()
+                .map(|(wallet, result)| {
+                    let anyhow_result = result.map_err(|e| anyhow::anyhow!("{}", e));
+                    (wallet, anyhow_result)
+                })
+                .collect();
+            redis.store_batch_job_results(&job_id.to_string(), &anyhow_results).await
+                .map_err(|e| anyhow::anyhow!("Failed to store batch job results: {}", e))?;
+
             // Update final status in Redis
             let updated_persistent_job = job.to_persistence_batch_job()?;
             redis.update_batch_job(&updated_persistent_job).await?;
@@ -558,6 +695,24 @@ impl JobOrchestrator {
         }
     }
 
+    /// Get batch job results from Redis
+    pub async fn get_batch_job_results(&self, job_id: &str) -> anyhow::Result<HashMap<String, Result<PnLReport>>> {
+        let redis = self.redis_client.lock().await;
+        let results = redis.get_batch_job_results(job_id).await
+            .map_err(|e| anyhow::anyhow!("Failed to load batch job results from Redis: {}", e))?;
+        
+        // Convert anyhow::Error to OrchestratorError for the HashMap
+        let converted_results: HashMap<String, Result<PnLReport>> = results
+            .into_iter()
+            .map(|(wallet, result)| {
+                let converted_result = result.map_err(|e| OrchestratorError::PnL(e.to_string()));
+                (wallet, converted_result)
+            })
+            .collect();
+        
+        Ok(converted_results)
+    }
+
     /// Get all batch jobs with pagination
     pub async fn get_all_batch_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
         let redis = self.redis_client.lock().await;
@@ -585,11 +740,18 @@ impl JobOrchestrator {
         debug!("Starting targeted P&L analysis for wallet: {} on token: {} ({})", 
                pair.wallet_address, pair.token_symbol, pair.token_address);
 
-        // Fetch all trading transactions for the wallet using BirdEye (same as general method)
-        let max_limit = 100; // BirdEye API limit is 100, not 1000
+        // Fetch all trading transactions for the wallet using BirdEye with pagination
+        let max_total_transactions = filters.max_transactions_to_fetch
+            .unwrap_or(self.config.birdeye.default_max_transactions);
+        
+        // Extract time bounds from filters for BirdEye API optimization
+        let (from_time, to_time) = Self::extract_time_bounds_for_birdeye(&filters);
+        debug!("Fetching up to {} transactions for wallet-token pair {} with time bounds: {:?} to {:?}", 
+               max_total_transactions, pair.wallet_address, from_time, to_time);
+        
         let transactions = self
             .birdeye_client
-            .get_all_trader_transactions(&pair.wallet_address, None, None, Some(max_limit))
+            .get_all_trader_transactions_paginated(&pair.wallet_address, from_time, to_time, max_total_transactions)
             .await?;
 
         if transactions.is_empty() {
@@ -614,8 +776,20 @@ impl JobOrchestrator {
         }
 
         // Calculate P&L using the targeted transactions with embedded prices
-        let report = calculate_pnl_with_embedded_prices(&pair.wallet_address, events, filters)
+        let mut report = calculate_pnl_with_embedded_prices(&pair.wallet_address, events, filters)
             .await?;
+
+        // Enhance with current market prices for accurate unrealized P&L and SOL fees
+        match enhance_report_with_current_prices(report.clone(), &self.birdeye_client).await {
+            Ok(enhanced_report) => {
+                report = enhanced_report;
+                debug!("Enhanced report with current market prices");
+            }
+            Err(e) => {
+                warn!("Failed to enhance report with current prices: {}", e);
+                // Continue with original report
+            }
+        }
 
         debug!("✅ Targeted P&L analysis completed for wallet: {} on token: {}", 
                pair.wallet_address, pair.token_symbol);
@@ -631,11 +805,18 @@ impl JobOrchestrator {
     ) -> Result<PnLReport> {
         debug!("Starting P&L analysis for wallet: {} using BirdEye API", wallet_address);
 
-        // Fetch all trading transactions for the wallet using BirdEye
-        let max_limit = 100; // BirdEye API limit is 100, not 1000
+        // Fetch all trading transactions for the wallet using BirdEye with pagination
+        let max_total_transactions = filters.max_transactions_to_fetch
+            .unwrap_or(self.config.birdeye.default_max_transactions);
+        
+        // Extract time bounds from filters for BirdEye API optimization
+        let (from_time, to_time) = Self::extract_time_bounds_for_birdeye(&filters);
+        debug!("Fetching up to {} transactions for wallet {} with time bounds: {:?} to {:?}", 
+               max_total_transactions, wallet_address, from_time, to_time);
+        
         let transactions = self
             .birdeye_client
-            .get_all_trader_transactions(wallet_address, None, None, Some(max_limit))
+            .get_all_trader_transactions_paginated(wallet_address, from_time, to_time, max_total_transactions)
             .await?;
 
         if transactions.is_empty() {
@@ -660,8 +841,20 @@ impl JobOrchestrator {
         }
 
         // Calculate P&L with embedded prices from BirdEye transactions
-        let report = calculate_pnl_with_embedded_prices(wallet_address, events, filters)
+        let mut report = calculate_pnl_with_embedded_prices(wallet_address, events, filters)
             .await?;
+
+        // Enhance with current market prices for accurate unrealized P&L and SOL fees
+        match enhance_report_with_current_prices(report.clone(), &self.birdeye_client).await {
+            Ok(enhanced_report) => {
+                report = enhanced_report;
+                debug!("Enhanced report with current market prices");
+            }
+            Err(e) => {
+                warn!("Failed to enhance report with current prices: {}", e);
+                // Continue with original report
+            }
+        }
 
         debug!("✅ P&L analysis completed for wallet: {} using BirdEye data", wallet_address);
 
@@ -669,6 +862,7 @@ impl JobOrchestrator {
     }
 
     /// Convert BirdEye transactions to FinancialEvents for P&L analysis
+    #[allow(dead_code)]
     fn convert_birdeye_transactions_to_events(
         &self,
         transactions: &[TraderTransaction],
@@ -734,87 +928,123 @@ impl JobOrchestrator {
         let mut events = Vec::new();
 
         for tx in transactions {
-            // Skip non-swap transactions
-            if tx.tx_type != "swap" {
-                debug!("Skipping non-swap transaction: {}", tx.tx_hash);
-                continue;
-            }
-
-            // Determine which side is the token and which is SOL/base currency
-            let (token_side, base_side, is_buy) = if tx.quote.type_swap == "to" {
-                // Buying token with SOL/base
-                (&tx.quote, &tx.base, true)
-            } else if tx.quote.type_swap == "from" {
-                // Selling token for SOL/base  
-                (&tx.quote, &tx.base, false)
-            } else {
-                debug!("Unclear swap direction for transaction: {}", tx.tx_hash);
-                continue;
+            // Process both swaps and transfers to match TypeScript logic
+            let main_operation = match tx.tx_type.as_str() {
+                "swap" => "swap",
+                _ => {
+                    // Check if this is a transfer based on transfer_type fields
+                    let is_transfer = tx.quote.transfer_type.as_ref()
+                        .map(|t| t.contains("transfer") || t.contains("mintTo") || t.contains("burn"))
+                        .unwrap_or(false)
+                        || tx.base.transfer_type.as_ref()
+                        .map(|t| t.contains("transfer") || t.contains("mintTo") || t.contains("burn"))
+                        .unwrap_or(false);
+                    
+                    if is_transfer {
+                        "transfer"
+                    } else {
+                        debug!("Skipping unknown transaction type: {} for {}", tx.tx_type, tx.tx_hash);
+                        continue;
+                    }
+                }
             };
-
-            let event_type = if is_buy { EventType::Buy } else { EventType::Sell };
+            
+            debug!("Processing {} transaction: {}", main_operation, tx.tx_hash);
 
             // Convert timestamp from Unix time to DateTime
             let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(tx.block_unix_time, 0)
                 .unwrap_or_else(|| chrono::Utc::now());
 
-            // Create extra metadata map for additional BirdEye data
-            let mut extra = HashMap::new();
-            extra.insert("token_symbol".to_string(), token_side.symbol.clone());
-            extra.insert("base_symbol".to_string(), base_side.symbol.clone());
-            extra.insert("source".to_string(), tx.source.clone());
-            extra.insert("program_address".to_string(), tx.address.clone());
-            if let Some(base_price) = tx.base_price {
-                extra.insert("base_price".to_string(), base_price.to_string());
+            // Create TWO FinancialEvents - one for each side of the transaction (like TypeScript)
+            // This matches the TypeScript approach where each transaction creates buy/sell pairs
+
+            // Process the "quote" side (usually the token being sold/transferred out)
+            if tx.quote.type_swap == "from" && tx.quote.ui_change_amount < 0.0 {
+                let quote_amount = Decimal::try_from(tx.quote.ui_amount.abs()).unwrap_or(Decimal::ZERO);
+                
+                // Get price for this side
+                let quote_price = if let Some(price) = tx.quote.price {
+                    Decimal::try_from(price).unwrap_or(Decimal::ZERO)
+                } else if let Some(nearest_price) = tx.quote.nearest_price {
+                    Decimal::try_from(nearest_price).unwrap_or(Decimal::ZERO)
+                } else {
+                    debug!("No price data for quote side of {}", tx.tx_hash);
+                    Decimal::ZERO
+                };
+
+                if quote_price > Decimal::ZERO {
+                    let mut extra = HashMap::new();
+                    extra.insert("token_symbol".to_string(), tx.quote.symbol.clone());
+                    extra.insert("source".to_string(), tx.source.clone());
+                    extra.insert("main_operation".to_string(), main_operation.to_string());
+                    extra.insert("transfer_type".to_string(), tx.quote.transfer_type.clone().unwrap_or_default());
+
+                    let quote_event = FinancialEvent {
+                        id: Uuid::new_v4(),
+                        transaction_id: tx.tx_hash.clone(),
+                        wallet_address: wallet_address.to_string(),
+                        event_type: if main_operation == "transfer" { EventType::TransferOut } else { EventType::Sell },
+                        token_mint: tx.quote.address.clone(),
+                        token_amount: quote_amount,
+                        sol_amount: quote_amount * quote_price, // SOL equivalent value
+                        timestamp,
+                        transaction_fee: Decimal::ZERO,
+                        metadata: EventMetadata {
+                            program_id: Some(tx.address.clone()),
+                            instruction_index: None,
+                            exchange: Some(tx.source.clone()),
+                            price_per_token: Some(quote_price),
+                            extra: extra.clone(),
+                        },
+                    };
+                    
+                    events.push(quote_event);
+                }
             }
 
-            // Calculate token amount and price
-            let token_amount = Decimal::try_from(token_side.ui_amount).unwrap_or(Decimal::ZERO);
-            let token_price = if let Some(price) = token_side.price {
-                Decimal::try_from(price).unwrap_or(Decimal::ZERO)
-            } else {
-                Decimal::try_from(token_side.nearest_price).unwrap_or(Decimal::ZERO)
-            };
-
-            // Calculate SOL amount from base side
-            let sol_amount = if base_side.symbol == "SOL" {
-                Decimal::try_from(base_side.ui_amount.abs()).unwrap_or(Decimal::ZERO)
-            } else {
-                // If base is not SOL, try to calculate from base price
-                if let Some(base_price) = tx.base_price {
-                    let base_amount = Decimal::try_from(base_side.ui_amount.abs()).unwrap_or(Decimal::ZERO);
-                    let base_price_decimal = Decimal::try_from(base_price).unwrap_or(Decimal::ZERO);
-                    // Convert to SOL equivalent (assuming SOL price around 144 based on our test data)
-                    if base_price_decimal > Decimal::ZERO {
-                        base_amount * base_price_decimal / Decimal::from(144)
-                    } else {
-                        Decimal::ZERO
-                    }
+            // Process the "base" side (usually the token being bought/transferred in)
+            if tx.base.type_swap == "to" && tx.base.ui_change_amount > 0.0 {
+                let base_amount = Decimal::try_from(tx.base.ui_amount.abs()).unwrap_or(Decimal::ZERO);
+                
+                // Get price for this side
+                let base_price = if let Some(price) = tx.base.price {
+                    Decimal::try_from(price).unwrap_or(Decimal::ZERO)
+                } else if let Some(nearest_price) = tx.base.nearest_price {
+                    Decimal::try_from(nearest_price).unwrap_or(Decimal::ZERO)
                 } else {
+                    debug!("No price data for base side of {}", tx.tx_hash);
                     Decimal::ZERO
+                };
+
+                if base_price > Decimal::ZERO {
+                    let mut extra = HashMap::new();
+                    extra.insert("token_symbol".to_string(), tx.base.symbol.clone());
+                    extra.insert("source".to_string(), tx.source.clone());
+                    extra.insert("main_operation".to_string(), main_operation.to_string());
+                    extra.insert("transfer_type".to_string(), tx.base.transfer_type.clone().unwrap_or_default());
+
+                    let base_event = FinancialEvent {
+                        id: Uuid::new_v4(),
+                        transaction_id: tx.tx_hash.clone(),
+                        wallet_address: wallet_address.to_string(),
+                        event_type: if main_operation == "transfer" { EventType::TransferIn } else { EventType::Buy },
+                        token_mint: tx.base.address.clone(),
+                        token_amount: base_amount,
+                        sol_amount: base_amount * base_price, // SOL equivalent value
+                        timestamp,
+                        transaction_fee: Decimal::ZERO,
+                        metadata: EventMetadata {
+                            program_id: Some(tx.address.clone()),
+                            instruction_index: None,
+                            exchange: Some(tx.source.clone()),
+                            price_per_token: Some(base_price),
+                            extra,
+                        },
+                    };
+                    
+                    events.push(base_event);
                 }
-            };
-
-            let event = FinancialEvent {
-                id: Uuid::new_v4(),
-                transaction_id: tx.tx_hash.clone(),
-                wallet_address: wallet_address.to_string(),
-                event_type,
-                token_mint: token_side.address.clone(),
-                token_amount,
-                sol_amount,
-                timestamp,
-                transaction_fee: Decimal::ZERO, // BirdEye doesn't provide detailed fee info
-                metadata: EventMetadata {
-                    program_id: Some(tx.address.clone()),
-                    instruction_index: None,
-                    exchange: Some(tx.source.clone()),
-                    price_per_token: Some(token_price),
-                    extra,
-                },
-            };
-
-            events.push(event);
+            }
         }
 
         info!("✅ Converted {} general BirdEye transactions to {} financial events for wallet {}", 
@@ -865,9 +1095,115 @@ impl JobOrchestrator {
             min_hold_minutes: Decimal::from_f64_retain(self.config.pnl.aggregator_min_hold_minutes).unwrap_or(Decimal::ZERO),
             min_trades: self.config.pnl.amount_trades,
             min_win_rate: Decimal::from_f64_retain(self.config.pnl.win_rate).unwrap_or(Decimal::ZERO),
-            max_signatures: Some(1000),
+            max_signatures: Some(self.config.birdeye.default_max_transactions),
+            max_transactions_to_fetch: Some(self.config.birdeye.default_max_transactions),
             timeframe_filter,
         }
+    }
+
+    /// Merge user-provided filters with config defaults, preserving user overrides
+    fn merge_filters_with_config(&self, user_filters: Option<PnLFilters>) -> PnLFilters {
+        let config_filters = self.create_pnl_filters_from_config();
+        
+        let mut effective = match user_filters {
+            Some(mut user) => {
+                // Only use config defaults for fields that user didn't explicitly set
+                if user.min_capital_sol == Decimal::ZERO {
+                    user.min_capital_sol = config_filters.min_capital_sol;
+                }
+                if user.min_hold_minutes == Decimal::ZERO {
+                    user.min_hold_minutes = config_filters.min_hold_minutes;
+                }
+                if user.min_trades == 0 {
+                    user.min_trades = config_filters.min_trades;
+                }
+                if user.min_win_rate == Decimal::ZERO {
+                    user.min_win_rate = config_filters.min_win_rate;
+                }
+                if user.max_signatures.is_none() {
+                    user.max_signatures = config_filters.max_signatures;
+                }
+                if user.max_transactions_to_fetch.is_none() {
+                    user.max_transactions_to_fetch = config_filters.max_transactions_to_fetch;
+                }
+                if user.timeframe_filter.is_none() {
+                    user.timeframe_filter = config_filters.timeframe_filter;
+                }
+                user
+            }
+            None => config_filters,
+        };
+
+        // Validate and fix parameter conflicts
+        self.validate_and_fix_filters(&mut effective);
+        
+        effective
+    }
+
+    /// Validate filter parameters and fix conflicts
+    fn validate_and_fix_filters(&self, filters: &mut PnLFilters) {
+        // Fix conflict: max_signatures cannot exceed max_transactions_to_fetch
+        if let (Some(fetch_limit), Some(sig_limit)) = (filters.max_transactions_to_fetch, filters.max_signatures) {
+            if sig_limit > fetch_limit {
+                warn!("max_signatures ({}) > max_transactions_to_fetch ({}), adjusting max_signatures to match fetch limit", 
+                      sig_limit, fetch_limit);
+                filters.max_signatures = Some(fetch_limit);
+            }
+        }
+
+        // Validate timeframe bounds
+        if let Some(ref timeframe) = filters.timeframe_filter {
+            if let (Some(start), Some(end)) = (timeframe.start_time, timeframe.end_time) {
+                if start >= end {
+                    warn!("Invalid timeframe: start_time ({}) >= end_time ({}), clearing end_time", 
+                          start, end);
+                    // Fix by clearing end_time to make it "from start_time to now"
+                    if let Some(ref mut tf) = filters.timeframe_filter {
+                        tf.end_time = None;
+                    }
+                }
+            }
+        }
+
+        // Validate numeric ranges
+        if filters.min_win_rate > Decimal::from(100) {
+            warn!("min_win_rate ({}) > 100%, capping at 100%", filters.min_win_rate);
+            filters.min_win_rate = Decimal::from(100);
+        }
+
+        if filters.min_win_rate < Decimal::ZERO {
+            warn!("min_win_rate ({}) < 0%, setting to 0%", filters.min_win_rate);
+            filters.min_win_rate = Decimal::ZERO;
+        }
+    }
+
+    /// Extract time bounds from PnL filters for BirdEye API calls
+    /// Returns (from_time, to_time) as Unix timestamps in seconds
+    fn extract_time_bounds_for_birdeye(filters: &PnLFilters) -> (Option<i64>, Option<i64>) {
+        match &filters.timeframe_filter {
+            Some(timeframe) => {
+                let from_time = timeframe.start_time.map(|dt| dt.timestamp());
+                let to_time = timeframe.end_time.map(|dt| dt.timestamp());
+                debug!("Extracted time bounds for BirdEye API: from_time={:?}, to_time={:?}", from_time, to_time);
+                (from_time, to_time)
+            }
+            None => {
+                debug!("No timeframe filter specified, fetching all transactions");
+                (None, None)
+            }
+        }
+    }
+
+    /// Set runtime filters for continuous mode
+    pub async fn set_continuous_mode_filters(&self, filters: Option<PnLFilters>) {
+        let mut continuous_filters = self.continuous_mode_filters.lock().await;
+        *continuous_filters = filters;
+    }
+
+    /// Get effective filters for continuous mode (user override or config default)
+    async fn get_effective_continuous_filters(&self) -> PnLFilters {
+        let continuous_filters = self.continuous_mode_filters.lock().await;
+        self.merge_filters_with_config(continuous_filters.clone())
     }
 
     /// Get system status
@@ -937,6 +1273,7 @@ impl Clone for JobOrchestrator {
             birdeye_client: self.birdeye_client.clone(),
             redis_client: self.redis_client.clone(),
             running_jobs: self.running_jobs.clone(),
+            continuous_mode_filters: self.continuous_mode_filters.clone(),
         }
     }
 }

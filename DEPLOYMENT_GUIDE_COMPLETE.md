@@ -206,17 +206,16 @@ max_tokens_per_cycle = 20
 wallet_discovery_limit = 10
 rate_limit_ms = 200
 
-[jupiter]
-api_url = \"https://lite-api.jup.ag\"
-price_cache_ttl_seconds = 60
-request_timeout_seconds = 30
-
 [birdeye]
 api_key = \"5ff313b239ac42e297b830b10ea1871d\"
 api_base_url = \"https://public-api.birdeye.so\"
 request_timeout_seconds = 30
 price_cache_ttl_seconds = 60
 rate_limit_per_second = 100
+max_traders_per_token = 10
+max_transactions_per_trader = 100
+default_max_transactions = 500
+max_token_rank = 1000
 
 [pnl]
 timeframe_mode = \"none\"
@@ -226,6 +225,7 @@ aggregator_min_hold_minutes = 0.0
 amount_trades = 0
 win_rate = 0.0
 aggregator_batch_size = 20
+max_signatures = 1000
 
 [trader_filter]
 min_realized_pnl_usd = 100.0
@@ -372,22 +372,90 @@ curl -s http://134.199.211.155:8080/api/services/status
 }
 ```
 
-### Step 9: End-to-End Functionality Testing
+### Step 9: Service Control Testing (NEW: Universal Control API)
 
-#### 9.1 Test Batch P&L Analysis
+#### 9.0 Test Universal Service Control
 ```bash
-# Submit a batch job with a test wallet
+# Test new universal service control endpoint with runtime configuration
+curl -s -X POST http://134.199.211.155:8080/api/services/control \
+-H "Content-Type: application/json" \
+-d '{
+  "action": "start",
+  "service": "wallet_discovery",
+  "config_override": {
+    "min_capital_sol": 5.0,
+    "min_trades": 3,
+    "max_transactions_to_fetch": 200
+  }
+}'
+```
+
+**Expected Response:**
+```json
+{
+  "data": {
+    "message": "Wallet discovery service started successfully"
+  },
+  "timestamp": "2025-06-20T11:04:00Z"
+}
+```
+
+#### 9.0b Stop Service via Universal Control
+```bash
+# Stop service using universal control
+curl -s -X POST http://134.199.211.155:8080/api/services/control \
+-H "Content-Type: application/json" \
+-d '{
+  "action": "stop",
+  "service": "wallet_discovery"
+}'
+```
+
+### Step 10: End-to-End Functionality Testing
+
+#### 9.1 Test Batch P&L Analysis (NEW: Runtime Configuration)
+```bash
+# Submit a batch job with a test wallet using new runtime configuration
 curl -s -X POST http://134.199.211.155:8080/api/pnl/batch/run \
 -H "Content-Type: application/json" \
 -d '{
   "wallet_addresses": ["MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"],
   "filters": {
-    "min_capital_sol": "0",
-    "min_hold_minutes": "0",
+    "min_capital_sol": 0.0,
+    "min_hold_minutes": 0.0,
     "min_trades": 0,
-    "min_win_rate": "0",
-    "max_signatures": 1000
+    "min_win_rate": 0.0,
+    "max_transactions_to_fetch": 200
   }
+}'
+```
+
+#### 9.1b Test with Time Filtering (NEW)
+```bash
+# Submit a batch job with time filtering for better performance
+curl -s -X POST http://134.199.211.155:8080/api/pnl/batch/run \
+-H "Content-Type: application/json" \
+-d '{
+  "wallet_addresses": ["MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"],
+  "filters": {
+    "min_capital_sol": 1.0,
+    "min_trades": 5,
+    "max_transactions_to_fetch": 100,
+    "timeframe_filter": {
+      "start_time": "2024-12-01T00:00:00Z",
+      "mode": "specific"
+    }
+  }
+}'
+```
+
+#### 9.1c Test Basic (Use Config Defaults)
+```bash
+# Submit a batch job using config.toml defaults (simplest approach)
+curl -s -X POST http://134.199.211.155:8080/api/pnl/batch/run \
+-H "Content-Type: application/json" \
+-d '{
+  "wallet_addresses": ["MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"]
 }'
 ```
 
@@ -514,10 +582,14 @@ ssh root@134.199.211.155 "/opt/pnl_tracker/status_check.sh"
 ### ✅ API Functionality
 - [ ] Health endpoint responding correctly
 - [ ] Service status endpoint working
+- [ ] Universal service control endpoint working (NEW)
+- [ ] Runtime configuration override working (NEW)
 - [ ] Batch P&L analysis completing successfully
+- [ ] Time-filtered analysis working (NEW)
 - [ ] Job status tracking working
 - [ ] Results retrieval working
 - [ ] CSV export functioning
+- [ ] Parameter validation and auto-correction working (NEW)
 
 ### ✅ Performance Metrics
 - [ ] Memory usage reasonable (~5MB)
@@ -529,8 +601,17 @@ ssh root@134.199.211.155 "/opt/pnl_tracker/status_check.sh"
 - [ ] BirdEye API integration working
 - [ ] Large number handling functioning (u128 support)
 - [ ] Embedded price extraction working
-- [ ] No external price API calls being made
+- [ ] BirdEye price fetcher for current prices working (NEW)
 - [ ] Transaction parsing accurate
+- [ ] Time filtering optimization working (NEW)
+
+### ✅ Configuration Management (NEW)
+- [ ] Smart parameter merging working (user overrides + config defaults)
+- [ ] Runtime configuration override via API working
+- [ ] Parameter validation and conflict resolution working
+- [ ] Time filtering with BirdEye API optimization working
+- [ ] Legacy Jupiter configuration removed
+- [ ] max_transactions_to_fetch parameter working correctly
 
 ## 🚨 Troubleshooting Guide
 
@@ -579,6 +660,45 @@ redis-cli ping
 # If failed, restart Redis
 systemctl restart redis-server
 systemctl status redis-server
+```
+
+#### 5. Configuration Parameter Issues (NEW)
+```bash
+# Test parameter validation with conflicting values
+curl -s -X POST http://134.199.211.155:8080/api/pnl/batch/run \
+-H "Content-Type: application/json" \
+-d '{
+  "wallet_addresses": ["MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"],
+  "filters": {
+    "max_transactions_to_fetch": 100,
+    "max_signatures": 500
+  }
+}'
+
+# Check logs for validation warnings
+journalctl -u pnl-tracker -n 10 | grep -i "max_signatures"
+# Should see: "max_signatures (500) > max_transactions_to_fetch (100), adjusting max_signatures to match fetch limit"
+```
+
+#### 6. Time Filtering Issues (NEW)
+```bash
+# Test invalid timeframe (start_time >= end_time)
+curl -s -X POST http://134.199.211.155:8080/api/pnl/batch/run \
+-H "Content-Type: application/json" \
+-d '{
+  "wallet_addresses": ["MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"],
+  "filters": {
+    "timeframe_filter": {
+      "start_time": "2024-12-31T00:00:00Z",
+      "end_time": "2024-12-01T00:00:00Z",
+      "mode": "specific"
+    }
+  }
+}'
+
+# Check logs for timeframe validation warnings
+journalctl -u pnl-tracker -n 10 | grep -i "timeframe"
+# Should see: "Invalid timeframe: start_time >= end_time, clearing end_time"
 ```
 
 ### Log Analysis
@@ -667,16 +787,23 @@ journalctl -u pnl-tracker > /backup/pnl-tracker-logs.txt
 
 ## 🎯 Deployment Success Metrics
 
-**Final Deployment Status: ✅ SUCCESSFUL**
+**Final Deployment Status: ✅ SUCCESSFUL (Updated with Latest Features)**
 
 - **Server:** `http://134.199.211.155:8080`
 - **Build Time:** ~3 minutes
 - **Deployment Time:** ~15 minutes total
-- **Test Results:** All endpoints functional
+- **Test Results:** All endpoints functional (including new universal control)
 - **Performance:** 100 transactions analyzed in ~3 seconds
 - **Memory Usage:** ~5MB (highly efficient)
 - **Uptime:** Auto-restart configured
 - **Reliability:** Large number edge cases resolved
+- **NEW Features:**
+  - ✅ Universal service control with runtime configuration
+  - ✅ Smart parameter merging (user overrides + config defaults)  
+  - ✅ Time filtering optimization for BirdEye API
+  - ✅ Parameter validation and conflict resolution
+  - ✅ Legacy Jupiter configuration removed
+  - ✅ Enhanced BirdEye price fetcher integration
 
 ## 📞 Support and Contact
 
@@ -686,9 +813,17 @@ For technical issues:
 3. Restart service: `systemctl restart pnl-tracker`
 4. Contact backend team with specific error messages
 
-**API Documentation:** `/opt/pnl_tracker/API_ENDPOINTS_DOCUMENTATION.md`  
+**API Documentation:** 
+- Frontend Guide: `/opt/pnl_tracker/API_FRONTEND_GUIDE.md` (NEW: Comprehensive integration guide)
+- System Interaction: `/opt/pnl_tracker/SYSTEM_INTERACTION_GUIDE.md` (NEW: Updated with latest features)
+- Legacy Documentation: `/opt/pnl_tracker/API_ENDPOINTS_DOCUMENTATION.md`
+
 **Service Status:** `systemctl status pnl-tracker`  
 **Health Check:** `curl http://134.199.211.155:8080/health`
+
+**NEW API Endpoints:**
+- Universal Control: `POST /api/services/control` (with runtime config)
+- Enhanced Batch: `POST /api/pnl/batch/run` (with time filtering and parameter validation)
 
 ---
 

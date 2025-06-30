@@ -38,6 +38,9 @@ pub struct TxRecord {
     /// Transaction ID
     pub txid: String,
     
+    /// Token mint address - CRITICAL for proper FIFO grouping
+    pub token_mint: String,
+    
     /// Buy or sell operation
     pub operation: String, // "buy" | "sell"
     

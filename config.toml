@@ -3,6 +3,7 @@ debug_mode = true
 redis_mode = true
 process_loop_ms = 30000
 output_csv_file = "pnl_results.csv"
+pnl_parallel_batch_size = 20
 
 [redis]
 url = "redis://localhost:6379"
@@ -29,17 +30,16 @@ max_tokens_per_cycle = 20
 wallet_discovery_limit = 10
 rate_limit_ms = 200
 
-[jupiter]
-api_url = "https://lite-api.jup.ag"
-price_cache_ttl_seconds = 60
-request_timeout_seconds = 30
-
 [birdeye]
 api_key = "5ff313b239ac42e297b830b10ea1871d"
 api_base_url = "https://public-api.birdeye.so"
 request_timeout_seconds = 30
 price_cache_ttl_seconds = 60
 rate_limit_per_second = 100
+max_traders_per_token = 10
+max_transactions_per_trader = 100
+default_max_transactions = 500  # Default maximum transactions to fetch/analyze per wallet
+max_token_rank = 1000
 
 [pnl]
 timeframe_mode = "none"
@@ -49,6 +49,7 @@ aggregator_min_hold_minutes = 0.0
 amount_trades = 0
 win_rate = 0.0
 aggregator_batch_size = 20
+max_signatures = 1000  # NOTE: This value is now ignored - automatically set to match birdeye.default_max_transactions
 
 # Advanced trader filtering for copy trading (more lenient for testing)
 [trader_filter]

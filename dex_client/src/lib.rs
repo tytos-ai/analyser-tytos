@@ -3,8 +3,11 @@
 
 pub mod birdeye_client;
 
+// Re-export BirdEyeConfig from config_manager
+pub use config_manager::BirdEyeConfig;
+
 pub use birdeye_client::{
-    BirdEyeClient, BirdEyeConfig, BirdEyeError, TopTrader, TopTraderFilter, 
+    BirdEyeClient, BirdEyeError, TopTrader, TopTraderFilter, 
     TrendingToken, TrendingTokenFilter, TraderTransaction, HistoricalPriceResponse, PriceResponse,
     GeneralTraderTransaction, GeneralTraderTransactionsResponse, TokenTransactionSide
 };
@@ -26,7 +29,17 @@ mod tests {
 
     #[test]
     fn test_config_creation() {
-        let config = BirdEyeConfig::default();
+        // BirdEyeConfig now comes from config_manager with different defaults
+        let config = BirdEyeConfig {
+            api_key: "test".to_string(),
+            api_base_url: "https://public-api.birdeye.so".to_string(),
+            request_timeout_seconds: 30,
+            price_cache_ttl_seconds: 60,
+            rate_limit_per_second: 100,
+            max_traders_per_token: 10,
+            max_transactions_per_trader: 100,
+            max_token_rank: 1000,
+        };
         assert_eq!(config.api_base_url, "https://public-api.birdeye.so");
         assert_eq!(config.request_timeout_seconds, 30);
     }

@@ -12,6 +12,7 @@ use crate::{
 
 /// FIFO-based P&L calculation engine
 pub struct FifoPnLEngine<P: PriceFetcher> {
+    #[allow(dead_code)]
     price_fetcher: P,
 }
 
@@ -211,17 +212,23 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
         let mut tx_records = Vec::new();
         
         for event in events {
-            // Only convert buy/sell events, skip transfers and fees for now
+            // Convert buy/sell events and transfers for P&L processing
             match event.event_type {
                 EventType::Buy => {
                     // Get price for this transaction
                     let price = self.get_event_price(event)?;
                     let sol_cost = event.token_amount * price; // Positive cost in SOL
                     
+                    // Extract main_operation from metadata if available
+                    let main_operation = event.metadata.extra.get("main_operation")
+                        .cloned()
+                        .unwrap_or_else(|| "swap".to_string());
+                    
                     let tx_record = TxRecord {
                         txid: event.transaction_id.clone(),
+                        token_mint: event.token_mint.clone(), // CRITICAL: Preserve token mint
                         operation: "buy".to_string(),
-                        main_operation: "swap".to_string(),
+                        main_operation,
                         mint_change: event.token_amount, // Positive for buy
                         sol: -sol_cost, // Negative for buy (outflow)
                         block_time: event.timestamp,
@@ -234,10 +241,16 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
                     let price = self.get_event_price(event)?;
                     let sol_revenue = event.token_amount * price; // Positive revenue in SOL
                     
+                    // Extract main_operation from metadata if available
+                    let main_operation = event.metadata.extra.get("main_operation")
+                        .cloned()
+                        .unwrap_or_else(|| "swap".to_string());
+                    
                     let tx_record = TxRecord {
                         txid: event.transaction_id.clone(),
+                        token_mint: event.token_mint.clone(), // CRITICAL: Preserve token mint
                         operation: "sell".to_string(),
-                        main_operation: "swap".to_string(),
+                        main_operation,
                         mint_change: -event.token_amount, // Negative for sell
                         sol: sol_revenue, // Positive for sell (inflow)
                         block_time: event.timestamp,
@@ -246,12 +259,36 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
                     tx_records.push(tx_record);
                 }
                 EventType::TransferOut => {
+                    // Extract main_operation from metadata if available
+                    let main_operation = event.metadata.extra.get("main_operation")
+                        .cloned()
+                        .unwrap_or_else(|| "transfer".to_string());
+                    
                     let tx_record = TxRecord {
                         txid: event.transaction_id.clone(),
+                        token_mint: event.token_mint.clone(), // CRITICAL: Preserve token mint
                         operation: "sell".to_string(),
-                        main_operation: "transfer".to_string(),
+                        main_operation,
                         mint_change: -event.token_amount, // Negative for transfer out
-                        sol: Decimal::ZERO, // No SOL change for transfer
+                        sol: Decimal::ZERO, // No SOL change for transfer (will be calculated later)
+                        block_time: event.timestamp,
+                    };
+                    
+                    tx_records.push(tx_record);
+                }
+                EventType::TransferIn => {
+                    // Extract main_operation from metadata if available
+                    let main_operation = event.metadata.extra.get("main_operation")
+                        .cloned()
+                        .unwrap_or_else(|| "transfer".to_string());
+                    
+                    let tx_record = TxRecord {
+                        txid: event.transaction_id.clone(),
+                        token_mint: event.token_mint.clone(), // CRITICAL: Preserve token mint
+                        operation: "buy".to_string(),
+                        main_operation,
+                        mint_change: event.token_amount, // Positive for transfer in
+                        sol: Decimal::ZERO, // No SOL change for transfer (will be calculated later)
                         block_time: event.timestamp,
                     };
                     
@@ -270,15 +307,20 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
     
     /// Group TxRecords by token mint
     fn group_tx_records_by_mint(&self, tx_records: Vec<TxRecord>) -> HashMap<String, Vec<TxRecord>> {
-        // Since TxRecord doesn't have mint field, we need to get it from the original events
-        // For now, we'll use a simplified approach - this would need to be enhanced
-        // to properly map transactions to their token mints
-        
-        // TODO: This is a simplified implementation
-        // In a real implementation, we'd need to maintain the mint information
-        // through the conversion process
         let mut groups = HashMap::new();
-        groups.insert("default".to_string(), tx_records);
+        
+        for record in tx_records {
+            groups
+                .entry(record.token_mint.clone()) // FIXED: Group by actual token mint
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+        
+        debug!("Grouped transactions into {} token mints", groups.len());
+        for (mint, records) in &groups {
+            debug!("Token {}: {} transactions", mint, records.len());
+        }
+        
         groups
     }
     

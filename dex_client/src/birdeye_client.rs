@@ -1,11 +1,16 @@
 use anyhow::Result;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use config_manager::BirdEyeConfig;
+use pnl_core::{PriceFetcher, Result as PnLResult};
 use reqwest::Client;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, info, error};
+use tracing::{debug, info, error, warn};
 
 #[derive(Error, Debug)]
 pub enum BirdEyeError {
@@ -21,29 +26,7 @@ pub enum BirdEyeError {
     Auth,
 }
 
-/// BirdEye API client configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BirdEyeConfig {
-    /// API base URL
-    pub api_base_url: String,
-    /// API key for authentication
-    pub api_key: String,
-    /// Request timeout in seconds
-    pub request_timeout_seconds: u64,
-    /// Rate limit per second
-    pub rate_limit_per_second: u32,
-}
-
-impl Default for BirdEyeConfig {
-    fn default() -> Self {
-        Self {
-            api_base_url: "https://public-api.birdeye.so".to_string(),
-            api_key: "".to_string(),
-            request_timeout_seconds: 30,
-            rate_limit_per_second: 100, // Conservative default
-        }
-    }
-}
+// BirdEye API client configuration moved to config_manager crate
 
 /// Trending token response from BirdEye
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +161,7 @@ pub struct GeneralTraderTransaction {
     #[serde(rename = "base_price")]
     pub base_price: Option<f64>,
     #[serde(rename = "quote_price")]
+    #[serde(deserialize_with = "deserialize_nullable_f64")]
     pub quote_price: f64,
     #[serde(rename = "tx_hash")]
     pub tx_hash: String,
@@ -185,32 +169,44 @@ pub struct GeneralTraderTransaction {
     #[serde(rename = "block_unix_time")]
     pub block_unix_time: i64,
     #[serde(rename = "tx_type")]
+    #[serde(default = "default_tx_type")]
     pub tx_type: String, // "swap"
+    #[serde(default)]
     pub address: String, // Program address
+    #[serde(default)]
     pub owner: String,   // Wallet address
 }
 
 /// Token side of a transaction (quote or base)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenTransactionSide {
-    pub symbol: String,
+    #[serde(default = "default_symbol")]
+    pub symbol: String, // Make resilient to missing symbol
+    #[serde(default)]
     pub decimals: u32,
-    pub address: String,
+    #[serde(deserialize_with = "deserialize_nullable_string")]
+    pub address: String, // Make resilient to null values
     #[serde(deserialize_with = "deserialize_amount")]
     pub amount: u128,
     #[serde(rename = "type")]
-    pub transfer_type: String, // "transfer", "transferChecked"
+    pub transfer_type: Option<String>, // "transfer", "transferChecked", "split", "burn", "mintTo", etc.
     #[serde(rename = "type_swap")]
-    pub type_swap: String, // "from", "to"
+    #[serde(deserialize_with = "deserialize_nullable_string")]
+    pub type_swap: String, // "from", "to" - Make resilient to null values
     #[serde(rename = "ui_amount")]
-    pub ui_amount: f64,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_optional_nullable_f64")]
+    pub ui_amount: f64, // Make resilient to missing/null values
     pub price: Option<f64>,
     #[serde(rename = "nearest_price")]
-    pub nearest_price: f64,
+    pub nearest_price: Option<f64>,
     #[serde(rename = "change_amount")]
+    #[serde(deserialize_with = "deserialize_signed_amount")]
     pub change_amount: i128,
     #[serde(rename = "ui_change_amount")]
-    pub ui_change_amount: f64,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_optional_nullable_f64")]
+    pub ui_change_amount: f64, // Make resilient to missing/null values
     #[serde(rename = "fee_info")]
     pub fee_info: Option<serde_json::Value>,
 }
@@ -245,6 +241,27 @@ pub struct PriceData {
     pub update_unix_time: i64,
     #[serde(rename = "updateHumanTime")]
     pub update_human_time: String,
+}
+
+/// Multi-price response from BirdEye
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiPriceResponse {
+    pub success: bool,
+    pub data: HashMap<String, TokenPriceData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenPriceData {
+    pub value: f64,
+    #[serde(rename = "updateUnixTime")]
+    pub update_unix_time: i64,
+    #[serde(rename = "updateHumanTime")]
+    pub update_human_time: String,
+    #[serde(rename = "priceChange24h")]
+    pub price_change_24h: Option<f64>,
+    #[serde(rename = "priceInNative")]
+    pub price_in_native: Option<f64>,
+    pub liquidity: Option<f64>,
 }
 
 /// BirdEye API client
@@ -475,6 +492,266 @@ impl BirdEyeClient {
         debug!("Retrieved {} general transactions from BirdEye for wallet {}", 
                general_txs_response.data.items.len(), wallet_address);
         Ok(general_txs_response.data.items)
+    }
+
+    /// Get all trader transactions for a wallet with pagination (fetches all available transactions)
+    pub async fn get_all_trader_transactions_paginated(
+        &self,
+        wallet_address: &str,
+        from_time: Option<i64>,
+        to_time: Option<i64>,
+        max_total_transactions: u32,
+    ) -> Result<Vec<GeneralTraderTransaction>, BirdEyeError> {
+        let mut all_transactions = Vec::new();
+        let mut offset = 0u32;
+        let limit = 100u32; // Maximum allowed by BirdEye API
+        let max_offset_limit = 10000u32; // BirdEye API constraint: offset + limit <= 10000
+        
+        debug!("Starting paginated fetch for wallet {} with max_total_transactions: {}", 
+               wallet_address, max_total_transactions);
+        
+        loop {
+            // Check BirdEye API constraint: offset + limit <= 10000
+            if offset + limit > max_offset_limit {
+                warn!("Reached BirdEye API constraint (offset + limit > 10000) for wallet {} at offset {}", 
+                     wallet_address, offset);
+                break;
+            }
+            
+            // Check if we've fetched enough transactions
+            if all_transactions.len() >= max_total_transactions as usize {
+                debug!("Reached max_total_transactions limit ({}) for wallet {}", 
+                       max_total_transactions, wallet_address);
+                break;
+            }
+            
+            // Calculate how many transactions we still need
+            let remaining_needed = max_total_transactions.saturating_sub(all_transactions.len() as u32);
+            let current_limit = std::cmp::min(limit, remaining_needed);
+            
+            // Ensure we don't violate the API constraint with the current limit
+            let adjusted_limit = if offset + current_limit > max_offset_limit {
+                max_offset_limit - offset
+            } else {
+                current_limit
+            };
+            
+            if adjusted_limit == 0 {
+                debug!("Cannot make request with limit 0, stopping pagination for wallet {}", wallet_address);
+                break;
+            }
+            
+            debug!("Fetching batch for wallet {} (offset: {}, limit: {})", 
+                   wallet_address, offset, adjusted_limit);
+            
+            // Make the API call with offset and retry logic
+            let (batch_transactions, has_next) = match self.get_all_trader_transactions_with_offset_retry(
+                wallet_address,
+                from_time,
+                to_time,
+                Some(adjusted_limit),
+                Some(offset),
+            ).await {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!("Failed to fetch batch for wallet {} at offset {}: {}. Continuing with next batch.", 
+                          wallet_address, offset, e);
+                    // Continue pagination despite this batch failure
+                    (Vec::new(), true)
+                }
+            };
+            
+            let batch_size = batch_transactions.len();
+            debug!("Retrieved {} transactions in batch for wallet {} (has_next: {})", 
+                   batch_size, wallet_address, has_next);
+            
+            // If no transactions returned, we've reached the end
+            if batch_size == 0 {
+                debug!("No more transactions available for wallet {}", wallet_address);
+                break;
+            }
+            
+            // Add to our collection
+            all_transactions.extend(batch_transactions);
+            
+            // Check has_next field from API response - this is the reliable indicator
+            if !has_next {
+                debug!("API indicates no more transactions available (has_next=false) for wallet {}", wallet_address);
+                break;
+            }
+            
+            // Move to next page by incrementing offset by the standard limit size (100)
+            // This follows standard offset pagination: offset=0,100,200,300...
+            // Always use the standard limit, not adjusted_limit, to maintain consistent pagination
+            offset += limit;
+            
+            // Respect BirdEye rate limit: 10 req/sec = 100ms between requests (conservative)
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        
+        info!("Completed paginated fetch for wallet {}: {} total transactions", 
+              wallet_address, all_transactions.len());
+        
+        Ok(all_transactions)
+    }
+
+    /// Private helper function that includes offset parameter
+    /// Returns tuple of (transactions, has_next)
+    async fn get_all_trader_transactions_with_offset(
+        &self,
+        wallet_address: &str,
+        from_time: Option<i64>,
+        to_time: Option<i64>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<(Vec<GeneralTraderTransaction>, bool), BirdEyeError> {
+        let url = format!("{}/trader/txs/seek_by_time", self.config.api_base_url);
+        
+        let mut query_params = vec![
+            ("address", wallet_address),
+        ];
+        
+        let from_string;
+        let to_string;
+        let limit_string;
+        let offset_string;
+        
+        if let Some(from) = from_time {
+            from_string = from.to_string();
+            query_params.push(("after_time", &from_string));
+        }
+        if let Some(to) = to_time {
+            to_string = to.to_string();
+            query_params.push(("before_time", &to_string));
+        }
+        if let Some(limit_val) = limit {
+            limit_string = limit_val.to_string();
+            query_params.push(("limit", &limit_string));
+        }
+        if let Some(offset_val) = offset {
+            offset_string = offset_val.to_string();
+            query_params.push(("offset", &offset_string));
+        }
+
+        let request = self.http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", "solana")
+            .query(&query_params);
+            
+        info!("🔄 Making BirdEye API request to: {} with params: {:?}", url, query_params);
+        
+        let response = request.send().await?;
+
+        info!("📡 BirdEye API response status: {} for wallet: {}", response.status(), wallet_address);
+
+        if response.status() == 429 {
+            error!("🚫 Rate limit hit (429) for wallet {}", wallet_address);
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            error!("❌ BirdEye API error for wallet {}: HTTP {} - Body: {}", wallet_address, status, error_body);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_body)));
+        }
+
+        let response_text = response.text().await?;
+        
+        info!("📄 BirdEye API response size: {} bytes for wallet: {}", response_text.len(), wallet_address);
+        
+        // Log first and last 100 chars to debug JSON corruption
+        let preview_start = if response_text.len() > 100 {
+            &response_text[..100]
+        } else {
+            &response_text
+        };
+        let preview_end = if response_text.len() > 200 {
+            &response_text[response_text.len()-100..]
+        } else {
+            ""
+        };
+        
+        info!("📄 Response preview - Start: {}...", preview_start.replace('\n', " "));
+        if !preview_end.is_empty() {
+            info!("📄 Response preview - End: ...{}", preview_end.replace('\n', " "));
+        }
+        
+        let general_txs_response: GeneralTraderTransactionsResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("💥 JSON parsing failed for wallet {}: {}", wallet_address, e);
+                error!("💥 Response length: {} bytes", response_text.len());
+                
+                // Log the problematic section for debugging
+                if let Some(column) = extract_column_from_error(&e.to_string()) {
+                    let start = column.saturating_sub(100);
+                    let end = std::cmp::min(column + 100, response_text.len());
+                    if start < response_text.len() {
+                        let snippet = &response_text[start..end];
+                        error!("💥 Error context (column {}): ...{}...", column, snippet.replace('\n', " "));
+                    }
+                }
+                
+                BirdEyeError::Api(format!("JSON parsing error: {}", e))
+            })?;
+        
+        if !general_txs_response.success {
+            error!("❌ BirdEye API returned success=false for wallet {}", wallet_address);
+            return Err(BirdEyeError::Api("API returned success=false".to_string()));
+        }
+
+        let has_next = general_txs_response.data.has_next.unwrap_or(false);
+        let items_count = general_txs_response.data.items.len();
+        
+        info!("✅ Successfully parsed {} transactions, has_next={} for wallet {}", 
+              items_count, has_next, wallet_address);
+        
+        Ok((general_txs_response.data.items, has_next))
+    }
+
+    /// Retry wrapper with exponential backoff for rate limit handling
+    async fn get_all_trader_transactions_with_offset_retry(
+        &self,
+        wallet_address: &str,
+        from_time: Option<i64>,
+        to_time: Option<i64>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<(Vec<GeneralTraderTransaction>, bool), BirdEyeError> {
+        let max_retries = 3;
+        let mut attempt: u32 = 0;
+        
+        loop {
+            attempt += 1;
+            
+            match self.get_all_trader_transactions_with_offset(
+                wallet_address, from_time, to_time, limit, offset
+            ).await {
+                Ok(result) => return Ok(result),
+                Err(BirdEyeError::RateLimit) if attempt <= max_retries => {
+                    let delay_ms = 1000 * attempt.pow(2); // Exponential backoff: 1s, 4s, 9s
+                    warn!("Rate limit hit for wallet {} (attempt {}), retrying in {}ms", 
+                          wallet_address, attempt, delay_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms as u64)).await;
+                    continue;
+                }
+                Err(BirdEyeError::Api(ref msg)) if msg.contains("JSON parsing error") && attempt <= max_retries => {
+                    let delay_ms = 500 * attempt; // Linear backoff for JSON errors: 500ms, 1s, 1.5s
+                    warn!("JSON parsing error for wallet {} (attempt {}): {}. Retrying in {}ms", 
+                          wallet_address, attempt, msg, delay_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms as u64)).await;
+                    continue;
+                }
+                Err(e) => {
+                    if attempt > max_retries {
+                        error!("Max retries exceeded for wallet {} at offset {:?}: {}", 
+                               wallet_address, offset, e);
+                    }
+                    return Err(e);
+                }
+            }
+        }
     }
 
     /// Get historical price for a token at a specific timestamp
@@ -806,6 +1083,322 @@ where
     }
 
     deserializer.deserialize_any(AmountVisitor)
+}
+
+/// Custom deserializer for signed amount fields that can be either string or number
+fn deserialize_signed_amount<'de, D>(deserializer: D) -> Result<i128, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct SignedAmountVisitor;
+
+    impl<'de> Visitor<'de> for SignedAmountVisitor {
+        type Value = i128;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or number representing a signed amount")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as i128)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as i128)
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            if value.is_finite() {
+                let truncated = if value >= 0.0 { value.floor() } else { value.ceil() };
+                if truncated >= (i128::MIN as f64) && truncated <= (i128::MAX as f64) {
+                    Ok(truncated as i128)
+                } else {
+                    // If the number is too large for i128, use appropriate limit
+                    if value > 0.0 {
+                        debug!("Large positive amount {} truncated to i128::MAX", value);
+                        Ok(i128::MAX)
+                    } else {
+                        debug!("Large negative amount {} truncated to i128::MIN", value);
+                        Ok(i128::MIN)
+                    }
+                }
+            } else {
+                Err(Error::invalid_value(Unexpected::Float(value), &self))
+            }
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            value.parse::<i128>().map_err(|_| {
+                Error::invalid_value(Unexpected::Str(value), &self)
+            })
+        }
+    }
+
+    deserializer.deserialize_any(SignedAmountVisitor)
+}
+
+/// Default value for missing symbol field
+fn default_symbol() -> String {
+    "UNKNOWN".to_string()
+}
+
+/// Default value for missing tx_type field
+fn default_tx_type() -> String {
+    "unknown".to_string()
+}
+
+/// Custom deserializer for nullable f64 fields
+fn deserialize_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct NullableF64Visitor;
+
+    impl<'de> Visitor<'de> for NullableF64Visitor {
+        type Value = f64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a number or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            value.parse::<f64>().map_err(|_| {
+                Error::invalid_value(Unexpected::Str(value), &self)
+            })
+        }
+    }
+
+    deserializer.deserialize_any(NullableF64Visitor)
+}
+
+/// Deserialize a string that might be null
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+
+    struct NullableStringVisitor;
+
+    impl<'de> Visitor<'de> for NullableStringVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return empty string for null values
+            Ok(String::new())
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return empty string for null values
+            Ok(String::new())
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value.to_string())
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value)
+        }
+    }
+
+    deserializer.deserialize_any(NullableStringVisitor)
+}
+
+/// Deserialize an optional f64 that might be missing or null
+fn deserialize_optional_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+
+    struct OptionalNullableF64Visitor;
+
+    impl<'de> Visitor<'de> for OptionalNullableF64Visitor {
+        type Value = f64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a number, null, or missing field")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            match value.parse::<f64>() {
+                Ok(parsed) => Ok(parsed),
+                Err(_) => {
+                    warn!("Could not parse '{}' as f64, using 0.0", value);
+                    Ok(0.0)
+                }
+            }
+        }
+    }
+
+    deserializer.deserialize_any(OptionalNullableF64Visitor)
+}
+
+/// Extract column number from JSON error message for better debugging
+fn extract_column_from_error(error_msg: &str) -> Option<usize> {
+    use regex::Regex;
+    
+    // Look for patterns like "at line 1 column 123" or "column 123"
+    let re = Regex::new(r"column\s+(\d+)").unwrap();
+    if let Some(captures) = re.captures(error_msg) {
+        if let Some(column_match) = captures.get(1) {
+            return column_match.as_str().parse::<usize>().ok();
+        }
+    }
+    None
+}
+
+/// Implementation of PriceFetcher trait for BirdEye
+#[async_trait]
+impl PriceFetcher for BirdEyeClient {
+    async fn fetch_prices(
+        &self,
+        token_mints: &[String],
+        _vs_token: Option<&str>,
+    ) -> PnLResult<HashMap<String, Decimal>> {
+        match self.get_current_prices(token_mints).await {
+            Ok(prices) => {
+                let mut result = HashMap::new();
+                for (mint, price) in prices {
+                    result.insert(mint, Decimal::from_f64_retain(price).unwrap_or(Decimal::ZERO));
+                }
+                Ok(result)
+            }
+            Err(e) => {
+                warn!("Failed to fetch prices from BirdEye: {}", e);
+                Err(pnl_core::PnLError::PriceFetch(format!("BirdEye error: {}", e)))
+            }
+        }
+    }
+
+    async fn fetch_historical_price(
+        &self,
+        token_mint: &str,
+        _timestamp: DateTime<Utc>,
+        _vs_token: Option<&str>,
+    ) -> PnLResult<Option<Decimal>> {
+        // Historical prices should use embedded data from transactions
+        // This method should not be called for embedded price systems
+        debug!("Historical price requested for {} - should use embedded transaction prices instead", token_mint);
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

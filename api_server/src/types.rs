@@ -389,6 +389,14 @@ pub struct TraderPnLSummary {
 // Service Management Types
 // =====================================
 
+/// Service control request
+#[derive(Debug, Deserialize)]
+pub struct ServiceControlRequest {
+    pub action: String,  // "start" | "stop" | "restart"
+    pub service: String, // "wallet_discovery" | "pnl_analysis"
+    pub config_override: Option<PnLFilters>,  // Optional runtime configuration
+}
+
 /// Simple message response
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
@@ -411,7 +419,9 @@ pub struct DiscoveryCycleResponse {
 pub struct AllResultsQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
+    #[allow(dead_code)]
     pub sort_by: Option<String>, // "pnl", "analyzed_at", "wallet_address"
+    #[allow(dead_code)]
     pub order: Option<String>,   // "asc", "desc"
 }
 
@@ -509,6 +519,7 @@ pub struct ServicesComponentHealth {
 pub struct BatchJobHistoryQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    #[allow(dead_code)]
     pub status: Option<String>, // Filter by status
 }
 

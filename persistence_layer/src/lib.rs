@@ -260,6 +260,99 @@ impl RedisClient {
         Ok(())
     }
 
+    /// Push discovered wallet-token pairs with deduplication to prevent reprocessing
+    pub async fn push_discovered_wallet_token_pairs_deduplicated(&self, wallet_tokens: &[DiscoveredWalletToken]) -> Result<usize> {
+        if wallet_tokens.is_empty() {
+            return Ok(0);
+        }
+        
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let processed_wallets_key = "processed_wallets";
+        let pending_wallets_key = "pending_wallets";
+        let mut conn = self.get_connection().await?;
+        
+        let mut new_wallet_tokens = Vec::new();
+        let mut duplicate_count = 0;
+        
+        // Check each wallet for duplicates
+        for wallet_token in wallet_tokens {
+            let wallet_address = &wallet_token.wallet_address;
+            
+            // Check if wallet is already processed or pending
+            let is_processed: bool = conn.sismember(processed_wallets_key, wallet_address).await?;
+            let is_pending: bool = conn.sismember(pending_wallets_key, wallet_address).await?;
+            
+            if is_processed || is_pending {
+                duplicate_count += 1;
+                debug!("⭕ Skipping duplicate wallet: {} (already processed or pending)", wallet_address);
+                continue;
+            }
+            
+            // Add to pending set and queue for processing
+            let _: () = conn.sadd(pending_wallets_key, wallet_address).await?;
+            new_wallet_tokens.push(wallet_token.clone());
+        }
+        
+        if new_wallet_tokens.is_empty() {
+            info!("⭕ All {} wallets were duplicates, skipped", duplicate_count);
+            return Ok(0);
+        }
+        
+        // Serialize and push new wallets only
+        let json_pairs: Result<Vec<String>> = new_wallet_tokens
+            .iter()
+            .map(|wt| serde_json::to_string(wt).map_err(PersistenceError::from))
+            .collect();
+        
+        let json_pairs = json_pairs?;
+        let _: () = conn.lpush(queue_key, json_pairs).await?;
+        
+        info!("✅ Pushed {} new wallets to discovery queue, skipped {} duplicates", 
+              new_wallet_tokens.len(), duplicate_count);
+        
+        Ok(new_wallet_tokens.len())
+    }
+
+    /// Mark a wallet as processed (move from pending to processed)
+    pub async fn mark_wallet_as_processed(&self, wallet_address: &str) -> Result<()> {
+        let processed_wallets_key = "processed_wallets";
+        let pending_wallets_key = "pending_wallets";
+        let mut conn = self.get_connection().await?;
+        
+        // Move from pending to processed
+        let _: () = conn.srem(pending_wallets_key, wallet_address).await?;
+        let _: () = conn.sadd(processed_wallets_key, wallet_address).await?;
+        
+        debug!("✅ Marked wallet {} as processed", wallet_address);
+        Ok(())
+    }
+
+    /// Mark a wallet as failed processing (remove from pending, don't add to processed)
+    pub async fn mark_wallet_as_failed(&self, wallet_address: &str) -> Result<()> {
+        let pending_wallets_key = "pending_wallets";
+        let mut conn = self.get_connection().await?;
+        
+        // Remove from pending (can be retried later)
+        let _: () = conn.srem(pending_wallets_key, wallet_address).await?;
+        
+        debug!("❌ Marked wallet {} as failed (removed from pending)", wallet_address);
+        Ok(())
+    }
+
+    /// Get deduplication statistics
+    pub async fn get_deduplication_stats(&self) -> Result<(u64, u64, u64)> {
+        let processed_wallets_key = "processed_wallets";
+        let pending_wallets_key = "pending_wallets";
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let mut conn = self.get_connection().await?;
+        
+        let processed_count: u64 = conn.scard(processed_wallets_key).await?;
+        let pending_count: u64 = conn.scard(pending_wallets_key).await?;
+        let queue_count: u64 = conn.llen(queue_key).await?;
+        
+        Ok((processed_count, pending_count, queue_count))
+    }
+
     /// Pop a wallet-token pair from the queue (blocking with timeout)
     pub async fn pop_discovered_wallet_token_pair(&self, timeout_seconds: u64) -> Result<Option<DiscoveredWalletToken>> {
         let queue_key = "discovered_wallet_token_pairs_queue";
@@ -281,12 +374,77 @@ impl RedisClient {
         }
     }
 
+    /// Pop multiple wallet-token pairs from the discovery queue for parallel processing
+    pub async fn pop_discovered_wallet_token_pairs(&self, batch_size: usize) -> Result<Vec<DiscoveredWalletToken>> {
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let mut conn = self.get_connection().await?;
+        let mut wallet_tokens = Vec::new();
+        
+        // Pop up to batch_size items from the queue
+        for _ in 0..batch_size {
+            let result: Option<Vec<String>> = conn
+                .brpop(queue_key, 0.1) // Very short timeout for batching
+                .await?;
+            
+            match result {
+                Some(mut items) if items.len() >= 2 => {
+                    // brpop returns [key, value]
+                    let json_data = items.pop().unwrap();
+                    match serde_json::from_str::<DiscoveredWalletToken>(&json_data) {
+                        Ok(wallet_token) => {
+                            debug!("Popped wallet-token pair from queue: {} for token {}", 
+                                   wallet_token.wallet_address, wallet_token.token_symbol);
+                            wallet_tokens.push(wallet_token);
+                        }
+                        Err(e) => {
+                            warn!("Failed to deserialize wallet-token pair: {}", e);
+                        }
+                    }
+                }
+                _ => {
+                    // No more items available, break early
+                    break;
+                }
+            }
+        }
+        
+        if !wallet_tokens.is_empty() {
+            debug!("Popped {} wallet-token pairs from queue for parallel processing", wallet_tokens.len());
+        }
+        
+        Ok(wallet_tokens)
+    }
+
     /// Get the current size of the wallet-token pairs queue
     pub async fn get_wallet_token_pairs_queue_size(&self) -> Result<u64> {
         let queue_key = "discovered_wallet_token_pairs_queue";
         let mut conn = self.get_connection().await?;
         let size: u64 = conn.llen(queue_key).await?;
         Ok(size)
+    }
+
+    /// Push failed wallet-token pairs back to the front of the queue for retry
+    pub async fn push_failed_wallet_token_pairs_for_retry(&self, wallet_tokens: &[DiscoveredWalletToken]) -> Result<()> {
+        if wallet_tokens.is_empty() {
+            return Ok(());
+        }
+
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let mut conn = self.get_connection().await?;
+        
+        // Serialize each wallet-token pair as JSON
+        let json_pairs: Result<Vec<String>> = wallet_tokens
+            .iter()
+            .map(|wt| serde_json::to_string(wt).map_err(PersistenceError::from))
+            .collect();
+        
+        let json_pairs = json_pairs?;
+        
+        // Push to the FRONT of the queue (lpush) so they get retried sooner
+        let _: () = conn.lpush(queue_key, json_pairs).await?;
+        
+        debug!("Pushed {} failed wallet-token pairs back to front of queue for retry", wallet_tokens.len());
+        Ok(())
     }
 
     // =====================================
@@ -1187,6 +1345,95 @@ impl RedisClient {
             failed_jobs: failed_count,
             cancelled_jobs: cancelled_count,
         })
+    }
+
+    // =====================================
+    // Batch Job Result Storage
+    // =====================================
+
+    /// Store results for a batch job
+    pub async fn store_batch_job_results(&self, job_id: &str, results: &std::collections::HashMap<String, std::result::Result<pnl_core::PnLReport, anyhow::Error>>) -> Result<()> {
+        let results_key = format!("batch_job_results:{}", job_id);
+        let mut conn = self.get_connection().await?;
+        
+        // Convert results to a serializable format
+        let mut serializable_results = std::collections::HashMap::new();
+        for (wallet, result) in results {
+            match result {
+                Ok(report) => {
+                    let report_json = serde_json::to_string(report)?;
+                    serializable_results.insert(wallet.clone(), serde_json::json!({
+                        "success": true,
+                        "data": report_json
+                    }));
+                }
+                Err(error) => {
+                    serializable_results.insert(wallet.clone(), serde_json::json!({
+                        "success": false,
+                        "error": error.to_string()
+                    }));
+                }
+            }
+        }
+        
+        let results_json = serde_json::to_string(&serializable_results)?;
+        let _: () = conn.set(&results_key, &results_json).await?;
+        
+        debug!("Stored batch job results for {} ({} wallets)", job_id, results.len());
+        Ok(())
+    }
+
+    /// Get results for a batch job
+    pub async fn get_batch_job_results(&self, job_id: &str) -> Result<std::collections::HashMap<String, std::result::Result<pnl_core::PnLReport, anyhow::Error>>> {
+        let results_key = format!("batch_job_results:{}", job_id);
+        let mut conn = self.get_connection().await?;
+        
+        let results_json: Option<String> = conn.get(&results_key).await?;
+        
+        match results_json {
+            Some(json) => {
+                let serializable_results: std::collections::HashMap<String, serde_json::Value> = serde_json::from_str(&json)?;
+                let mut results = std::collections::HashMap::new();
+                
+                for (wallet, result_data) in serializable_results {
+                    if let Some(success) = result_data.get("success").and_then(|v| v.as_bool()) {
+                        if success {
+                            if let Some(data_str) = result_data.get("data").and_then(|v| v.as_str()) {
+                                match serde_json::from_str::<pnl_core::PnLReport>(data_str) {
+                                    Ok(report) => {
+                                        results.insert(wallet, Ok(report));
+                                    }
+                                    Err(e) => {
+                                        results.insert(wallet, Err(anyhow::anyhow!("Failed to deserialize report: {}", e)));
+                                    }
+                                }
+                            } else {
+                                results.insert(wallet, Err(anyhow::anyhow!("Missing report data")));
+                            }
+                        } else {
+                            let error_msg = result_data.get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Unknown error");
+                            results.insert(wallet, Err(anyhow::anyhow!("{}", error_msg)));
+                        }
+                    } else {
+                        results.insert(wallet, Err(anyhow::anyhow!("Invalid result format")));
+                    }
+                }
+                
+                Ok(results)
+            }
+            None => Ok(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Delete batch job results
+    pub async fn delete_batch_job_results(&self, job_id: &str) -> Result<bool> {
+        let results_key = format!("batch_job_results:{}", job_id);
+        let mut conn = self.get_connection().await?;
+        
+        let deleted: i32 = conn.del(&results_key).await?;
+        Ok(deleted > 0)
     }
 }
 

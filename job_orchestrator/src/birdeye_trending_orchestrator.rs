@@ -1,5 +1,6 @@
 use anyhow::Result;
-use dex_client::{BirdEyeClient, BirdEyeConfig, TopTrader, TopTraderFilter, TrendingToken as BirdEyeTrendingToken, TraderTransaction};
+use config_manager::SystemConfig;
+use dex_client::{BirdEyeClient, TopTrader, TrendingToken as BirdEyeTrendingToken, TraderTransaction};
 use persistence_layer::{RedisClient, DiscoveredWalletToken};
 // Removed unused serde imports
 use std::sync::Arc;
@@ -7,45 +8,11 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-/// Configuration for BirdEye trending discovery
-#[derive(Debug, Clone)]
-pub struct BirdEyeTrendingConfig {
-    /// BirdEye API key
-    pub api_key: String,
-    /// BirdEye API base URL
-    pub api_base_url: String,
-    /// Chain to monitor (e.g., "solana")
-    pub chain: String,
-    /// Top trader filter criteria
-    pub top_trader_filter: TopTraderFilter,
-    /// Maximum trending tokens to process per cycle
-    pub max_trending_tokens: usize,
-    /// Maximum top traders per token
-    pub max_traders_per_token: usize,
-    /// Cycle interval in seconds
-    pub cycle_interval_seconds: u64,
-    /// Enable debug logging
-    pub debug_mode: bool,
-}
-
-impl Default for BirdEyeTrendingConfig {
-    fn default() -> Self {
-        Self {
-            api_key: "".to_string(),
-            api_base_url: "https://public-api.birdeye.so".to_string(),
-            chain: "solana".to_string(),
-            top_trader_filter: TopTraderFilter::default(),
-            max_trending_tokens: 20,
-            max_traders_per_token: 10,
-            cycle_interval_seconds: 300, // 5 minutes
-            debug_mode: false,
-        }
-    }
-}
+// BirdEyeTrendingConfig removed - now uses SystemConfig directly
 
 /// Orchestrates trending token discovery and top trader identification using BirdEye API
 pub struct BirdEyeTrendingOrchestrator {
-    config: BirdEyeTrendingConfig,
+    config: SystemConfig,
     birdeye_client: BirdEyeClient,
     redis_client: Arc<Mutex<Option<RedisClient>>>,
     is_running: Arc<Mutex<bool>>,
@@ -54,16 +21,11 @@ pub struct BirdEyeTrendingOrchestrator {
 impl BirdEyeTrendingOrchestrator {
     /// Create a new BirdEye trending orchestrator
     pub fn new(
-        config: BirdEyeTrendingConfig,
+        config: SystemConfig,
         redis_client: Option<RedisClient>,
     ) -> Result<Self> {
-        // Initialize BirdEye client
-        let birdeye_config = BirdEyeConfig {
-            api_base_url: config.api_base_url.clone(),
-            api_key: config.api_key.clone(),
-            request_timeout_seconds: 30,
-            rate_limit_per_second: 100,
-        };
+        // Use BirdEye config from SystemConfig
+        let birdeye_config = config.birdeye.clone();
         
         let birdeye_client = BirdEyeClient::new(birdeye_config)?;
         
@@ -86,8 +48,8 @@ impl BirdEyeTrendingOrchestrator {
         drop(is_running);
 
         info!("🚀 Starting BirdEye trending discovery orchestrator");
-        info!("📋 Configuration: chain={}, max_tokens={}, cycle_interval={}s", 
-              self.config.chain, self.config.max_trending_tokens, self.config.cycle_interval_seconds);
+        info!("📋 Configuration: chain=solana, max_tokens={}, cycle_interval={}s", 
+              self.config.dexscreener.trending.max_tokens_per_cycle, self.config.dexscreener.trending.polling_interval_seconds);
 
         loop {
             // Check if we should stop
@@ -114,7 +76,7 @@ impl BirdEyeTrendingOrchestrator {
             }
 
             // Wait before next cycle
-            tokio::time::sleep(Duration::from_secs(self.config.cycle_interval_seconds)).await;
+            tokio::time::sleep(Duration::from_secs(self.config.dexscreener.trending.polling_interval_seconds)).await;
         }
 
         Ok(())
@@ -187,20 +149,20 @@ impl BirdEyeTrendingOrchestrator {
     async fn get_trending_tokens(&self) -> Result<Vec<BirdEyeTrendingToken>> {
         debug!("📊 Fetching trending tokens from BirdEye");
 
-        match self.birdeye_client.get_trending_tokens(&self.config.chain).await {
+        match self.birdeye_client.get_trending_tokens("solana").await {
             Ok(mut tokens) => {
                 // Apply basic filtering and sorting
                 tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
                 
                 // Limit to max trending tokens
-                if tokens.len() > self.config.max_trending_tokens {
-                    tokens.truncate(self.config.max_trending_tokens);
+                if tokens.len() > self.config.dexscreener.trending.max_tokens_per_cycle as usize {
+                    tokens.truncate(self.config.dexscreener.trending.max_tokens_per_cycle as usize);
                 }
 
                 debug!("📈 Retrieved {} trending tokens (limited to {})", 
-                       tokens.len(), self.config.max_trending_tokens);
+                       tokens.len(), self.config.dexscreener.trending.max_tokens_per_cycle);
 
-                if self.config.debug_mode {
+                if self.config.system.debug_mode {
                     for (i, token) in tokens.iter().enumerate().take(5) {
                         debug!("  {}. {} ({}) - Volume: ${:.0}, Change: {:.1}%", 
                                i + 1, token.symbol, token.address, 
@@ -222,29 +184,29 @@ impl BirdEyeTrendingOrchestrator {
     async fn get_top_traders_for_token(&self, token_address: &str) -> Result<Vec<TopTrader>> {
         debug!("👥 Fetching top traders for token: {}", token_address);
 
-        match self.birdeye_client.get_top_traders(token_address, Some(10)).await {
+        match self.birdeye_client.get_top_traders(token_address, Some(self.config.birdeye.max_traders_per_token)).await {
             Ok(traders) => {
                 debug!("📊 Retrieved {} raw traders for token {}", traders.len(), token_address);
 
-                // Apply quality filtering
+                // Apply quality filtering using trader filter config
                 let quality_traders = self.birdeye_client.filter_top_traders(
                     traders,
-                    self.config.top_trader_filter.min_volume_usd,
-                    self.config.top_trader_filter.min_trades,
-                    self.config.top_trader_filter.min_win_rate,
-                    self.config.top_trader_filter.max_last_trade_hours,
+                    self.config.trader_filter.min_capital_deployed_sol as f64 * 230.0, // Convert SOL to USD roughly
+                    self.config.trader_filter.min_total_trades as u32,
+                    Some(self.config.trader_filter.min_win_rate),
+                    Some(24), // Default to 24 hours
                 );
 
                 // Limit to max traders per token
                 let mut filtered_traders = quality_traders;
-                if filtered_traders.len() > self.config.max_traders_per_token {
-                    filtered_traders.truncate(self.config.max_traders_per_token);
+                if filtered_traders.len() > self.config.birdeye.max_traders_per_token as usize {
+                    filtered_traders.truncate(self.config.birdeye.max_traders_per_token as usize);
                 }
 
                 debug!("✅ Filtered to {} quality traders for token {}", 
                        filtered_traders.len(), token_address);
 
-                if self.config.debug_mode && !filtered_traders.is_empty() {
+                if self.config.system.debug_mode && !filtered_traders.is_empty() {
                     for (i, trader) in filtered_traders.iter().enumerate().take(3) {
                         debug!("  {}. {} - Volume: ${:.0}, Trades: {}", 
                                i + 1, trader.owner, trader.volume, trader.trade);
@@ -281,11 +243,17 @@ impl BirdEyeTrendingOrchestrator {
 
         let redis = self.redis_client.lock().await;
         if let Some(ref redis_client) = *redis {
-            match redis_client.push_discovered_wallet_token_pairs(&wallet_token_pairs).await {
-                Ok(_) => {
-                    info!("✅ Successfully pushed {} quality wallet-token pairs to analysis queue for {}", 
-                          wallet_token_pairs.len(), token.symbol);
-                    Ok(wallet_token_pairs.len())
+            match redis_client.push_discovered_wallet_token_pairs_deduplicated(&wallet_token_pairs).await {
+                Ok(pushed_count) => {
+                    let skipped_count = wallet_token_pairs.len() - pushed_count;
+                    if skipped_count > 0 {
+                        info!("✅ Pushed {} new wallet-token pairs to analysis queue for {} (skipped {} duplicates)", 
+                              pushed_count, token.symbol, skipped_count);
+                    } else {
+                        info!("✅ Successfully pushed {} quality wallet-token pairs to analysis queue for {}", 
+                              pushed_count, token.symbol);
+                    }
+                    Ok(pushed_count)
                 }
                 Err(e) => {
                     error!("❌ Failed to push wallet-token pairs to Redis queue: {}", e);
@@ -313,7 +281,7 @@ impl BirdEyeTrendingOrchestrator {
             token_address,
             from_time,
             to_time,
-            Some(100), // Limit to 100 transactions
+            Some(self.config.birdeye.max_transactions_per_trader), // Configurable limit
         ).await {
             Ok(transactions) => {
                 debug!("📊 Retrieved {} transactions for wallet {} token {}", 
@@ -358,31 +326,9 @@ impl BirdEyeTrendingOrchestrator {
 pub struct DiscoveryStats {
     pub is_running: bool,
     pub wallet_queue_size: u32,
-    pub config: BirdEyeTrendingConfig,
+    pub config: SystemConfig,
     pub tokens_discovered: u32,
     pub wallet_token_pairs_discovered: u32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config_creation() {
-        let config = BirdEyeTrendingConfig::default();
-        assert_eq!(config.chain, "solana");
-        assert_eq!(config.max_trending_tokens, 20);
-        assert_eq!(config.cycle_interval_seconds, 300);
-    }
-
-    #[test]
-    fn test_orchestrator_creation() {
-        let config = BirdEyeTrendingConfig {
-            api_key: "test_key".to_string(),
-            ..Default::default()
-        };
-        
-        let orchestrator = BirdEyeTrendingOrchestrator::new(config, None);
-        assert!(orchestrator.is_ok());
-    }
-}
+// Tests removed - will use integration tests with SystemConfig

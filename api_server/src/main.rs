@@ -105,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     info!("🎯 API Server ready - services can be controlled via API endpoints");
     info!("📋 Available endpoints:");
+    info!("   • POST /api/services/control - Universal service control with optional config");
     info!("   • POST /api/services/config - Configure services");
     info!("   • POST /api/services/discovery/start - Start wallet discovery");
     info!("   • POST /api/services/discovery/stop - Stop wallet discovery");
@@ -136,6 +137,7 @@ async fn create_router(state: AppState) -> Router {
         .route("/api/services/status", get(get_services_status))
         .route("/api/services/config", get(get_services_config))
         .route("/api/services/config", post(update_services_config))
+        .route("/api/services/control", post(control_service))  // NEW: Universal service control with optional config
         .route("/api/services/discovery/start", post(start_wallet_discovery))
         .route("/api/services/discovery/stop", post(stop_wallet_discovery))
         .route("/api/services/discovery/trigger", post(trigger_discovery_cycle))

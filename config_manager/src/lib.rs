@@ -29,9 +29,6 @@ pub struct SystemConfig {
     /// BirdEye API configuration
     pub birdeye: BirdEyeConfig,
     
-    /// Jupiter API configuration (legacy - use BirdEye instead)
-    pub jupiter: JupiterConfig,
-    
     /// P&L calculation settings
     pub pnl: PnLConfig,
     
@@ -55,6 +52,9 @@ pub struct SystemSettings {
     
     /// Output CSV file path
     pub output_csv_file: String,
+    
+    /// Parallel batch size for P&L queue processing (defaults to 10)
+    pub pnl_parallel_batch_size: Option<usize>,
 }
 
 
@@ -140,18 +140,18 @@ pub struct BirdEyeConfig {
     
     /// Rate limit per second
     pub rate_limit_per_second: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JupiterConfig {
-    /// Jupiter API base URL
-    pub api_url: String,
     
-    /// Price cache TTL in seconds
-    pub price_cache_ttl_seconds: u64,
+    /// Maximum traders to fetch per token (API supports max 100)
+    pub max_traders_per_token: u32,
     
-    /// Request timeout in seconds
-    pub request_timeout_seconds: u64,
+    /// Maximum transactions per trader (API supports max 100)
+    pub max_transactions_per_trader: u32,
+    
+    /// Default maximum transactions to fetch/analyze per trader (across all paginated calls)
+    pub default_max_transactions: u32,
+    
+    /// Maximum rank for top tokens (used in trending discovery)
+    pub max_token_rank: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +179,9 @@ pub struct PnLConfig {
     
     /// Batch size for processing
     pub aggregator_batch_size: u32,
+    
+    /// Maximum number of transaction signatures to analyze per wallet
+    pub max_signatures: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +243,7 @@ impl Default for SystemConfig {
                 redis_mode: false,
                 process_loop_ms: 60000,
                 output_csv_file: "final_output.csv".to_string(),
+                pnl_parallel_batch_size: Some(10),
             },
             redis: RedisConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
@@ -271,11 +275,10 @@ impl Default for SystemConfig {
                 request_timeout_seconds: 30,
                 price_cache_ttl_seconds: 60,
                 rate_limit_per_second: 100,
-            },
-            jupiter: JupiterConfig {
-                api_url: "https://lite-api.jup.ag".to_string(),
-                price_cache_ttl_seconds: 60,
-                request_timeout_seconds: 30,
+                max_traders_per_token: 10,        // Default to 10 traders per token
+                max_transactions_per_trader: 100, // BirdEye API limit is 100
+                default_max_transactions: 1000, // Default to 1000 total transactions
+                max_token_rank: 1000,             // Top 1000 ranked tokens
             },
             pnl: PnLConfig {
                 timeframe_mode: "none".to_string(),
@@ -286,6 +289,7 @@ impl Default for SystemConfig {
                 amount_trades: 0,
                 win_rate: 0.0,
                 aggregator_batch_size: 20,
+                max_signatures: 1000,
             },
             trader_filter: TraderFilterConfig {
                 min_realized_pnl_usd: 0.10,
@@ -307,6 +311,19 @@ impl Default for SystemConfig {
                 request_timeout_seconds: 30,
             },
         }
+    }
+}
+
+impl BirdEyeConfig {
+    /// Validate BirdEye configuration values against API limits
+    pub fn validate(&self) -> Result<()> {
+        if self.max_traders_per_token > 100 {
+            return Err(ConfigurationError::InvalidValue("max_traders_per_token cannot exceed 100 (BirdEye API limit)".to_string()));
+        }
+        if self.max_transactions_per_trader > 100 {
+            return Err(ConfigurationError::InvalidValue("max_transactions_per_trader cannot exceed 100 (BirdEye API limit)".to_string()));
+        }
+        Ok(())
     }
 }
 

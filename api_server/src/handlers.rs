@@ -146,7 +146,7 @@ pub async fn get_batch_job_results(
     State(state): State<AppState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let job = state
+    let mut job = state
         .orchestrator
         .get_batch_job_status(job_id)
         .await
@@ -158,6 +158,16 @@ pub async fn get_batch_job_results(
             job_id, job.status
         )));
     }
+
+    // Load the results separately from Redis
+    let results = state
+        .orchestrator
+        .get_batch_job_results(&job_id.to_string())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load batch job results: {}", e)))?;
+
+    // Populate the job results for conversion
+    job.results = results;
 
     let response: BatchJobResultsResponse = job.into();
     Ok(Json(SuccessResponse::new(response)))
@@ -177,10 +187,23 @@ pub async fn get_batch_job_history(
         .get_all_batch_jobs(limit, offset)
         .await?;
     
-    // Convert to response format
-    let job_summaries: Vec<BatchJobSummary> = jobs
-        .into_iter()
-        .map(|job| BatchJobSummary {
+    // Convert to response format with loaded results
+    let mut job_summaries = Vec::new();
+    for mut job in jobs {
+        // Load results for each completed job to get accurate counts
+        if job.status == job_orchestrator::JobStatus::Completed {
+            match state.orchestrator.get_batch_job_results(&job.id.to_string()).await {
+                Ok(results) => {
+                    job.results = results;
+                }
+                Err(e) => {
+                    // Log error but continue with empty results
+                    tracing::warn!("Failed to load results for job {}: {}", job.id, e);
+                }
+            }
+        }
+        
+        let job_summary = BatchJobSummary {
             id: job.id,
             wallet_count: job.wallet_addresses.len(),
             status: job.status,
@@ -189,8 +212,9 @@ pub async fn get_batch_job_history(
             completed_at: job.completed_at,
             success_count: job.results.values().filter(|r| r.is_ok()).count(),
             failure_count: job.results.values().filter(|r| r.is_err()).count(),
-        })
-        .collect();
+        };
+        job_summaries.push(job_summary);
+    }
     
     let pagination = PaginationInfo {
         total_count: total_count as u64,
@@ -775,4 +799,69 @@ pub async fn enhanced_health_check(
     };
     
     Json(SuccessResponse::new(response))
+}
+
+/// Universal service control handler with optional configuration
+pub async fn control_service(
+    State(state): State<AppState>,
+    Json(request): Json<ServiceControlRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let response = match (request.action.as_str(), request.service.as_str()) {
+        ("start", "wallet_discovery") => {
+            state.service_manager
+                .start_wallet_discovery_with_config(request.config_override)
+                .await
+                .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+            MessageResponse {
+                message: "Wallet discovery service started successfully".to_string(),
+            }
+        }
+        ("stop", "wallet_discovery") => {
+            state.service_manager.stop_wallet_discovery().await
+                .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+            MessageResponse {
+                message: "Wallet discovery service stopped successfully".to_string(),
+            }
+        }
+        ("start", "pnl_analysis") => {
+            state.service_manager.start_pnl_analysis().await
+                .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+            MessageResponse {
+                message: "P&L analysis service started successfully".to_string(),
+            }
+        }
+        ("stop", "pnl_analysis") => {
+            state.service_manager.stop_pnl_analysis().await
+                .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+            MessageResponse {
+                message: "P&L analysis service stopped successfully".to_string(),
+            }
+        }
+        ("restart", service) => {
+            // Stop then start
+            match service {
+                "wallet_discovery" => {
+                    let _ = state.service_manager.stop_wallet_discovery().await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    state.service_manager
+                        .start_wallet_discovery_with_config(request.config_override)
+                        .await
+                        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+                }
+                "pnl_analysis" => {
+                    let _ = state.service_manager.stop_pnl_analysis().await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                    state.service_manager.start_pnl_analysis().await
+                        .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
+                }
+                _ => return Err(ApiError::Validation(format!("Unknown service: {}", service)))
+            }
+            MessageResponse {
+                message: format!("{} service restarted successfully", service),
+            }
+        }
+        _ => return Err(ApiError::Validation(format!("Invalid action '{}' for service '{}'", request.action, request.service)))
+    };
+
+    Ok(Json(SuccessResponse::new(response)))
 }

@@ -1,6 +1,5 @@
 use anyhow::Result;
-use job_orchestrator::{JobOrchestrator, BirdEyeTrendingOrchestrator, BirdEyeTrendingConfig};
-use dex_client::TopTraderFilter;
+use job_orchestrator::{JobOrchestrator, BirdEyeTrendingOrchestrator};
 use config_manager::SystemConfig;
 use persistence_layer::RedisClient;
 use std::sync::Arc;
@@ -26,45 +25,16 @@ pub struct ServiceConfig {
     pub enable_wallet_discovery: bool,
     /// Enable P&L analysis service
     pub enable_pnl_analysis: bool,
-    /// BirdEye trending configuration
-    pub birdeye_config: BirdEyeTrendingServiceConfig,
+    // birdeye_config removed - using SystemConfig.dexscreener.trending + SystemConfig.birdeye directly
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BirdEyeTrendingServiceConfig {
-    /// Maximum trending tokens to analyze per cycle
-    pub max_trending_tokens: usize,
-    /// Maximum traders to discover per token
-    pub max_traders_per_token: usize,
-    /// Discovery cycle interval in seconds
-    pub cycle_interval_seconds: u64,
-    /// Minimum volume threshold for traders (USD)
-    pub min_trader_volume_usd: f64,
-    /// Minimum trades threshold for traders
-    pub min_trader_trades: u32,
-    /// Enable debug logging
-    pub debug_mode: bool,
-}
-
-impl Default for BirdEyeTrendingServiceConfig {
-    fn default() -> Self {
-        Self {
-            max_trending_tokens: 20,
-            max_traders_per_token: 10,
-            cycle_interval_seconds: 300, // 5 minutes
-            min_trader_volume_usd: 1000.0,
-            min_trader_trades: 5,
-            debug_mode: false,
-        }
-    }
-}
+// BirdEyeTrendingServiceConfig removed - using SystemConfig directly
 
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             enable_wallet_discovery: false,
             enable_pnl_analysis: false,
-            birdeye_config: BirdEyeTrendingServiceConfig::default(),
         }
     }
 }
@@ -183,6 +153,11 @@ impl ServiceManager {
 
     /// Start wallet discovery service
     pub async fn start_wallet_discovery(&self) -> Result<()> {
+        self.start_wallet_discovery_with_config(None).await
+    }
+
+    /// Start wallet discovery service with optional runtime configuration
+    pub async fn start_wallet_discovery_with_config(&self, runtime_filters: Option<pnl_core::PnLFilters>) -> Result<()> {
         let config = self.config.read().await;
         if !config.enable_wallet_discovery {
             return Err(anyhow::anyhow!("Wallet discovery service is disabled in configuration"));
@@ -196,28 +171,20 @@ impl ServiceManager {
         *state = ServiceState::Starting;
         drop(state);
 
+        // Set runtime filters for continuous mode if provided
+        if let Some(filters) = runtime_filters {
+            info!("🔧 Setting runtime configuration for continuous mode");
+            self.orchestrator.set_continuous_mode_filters(Some(filters)).await;
+        } else {
+            // Clear any previous runtime filters
+            self.orchestrator.set_continuous_mode_filters(None).await;
+        }
+
         info!("🚀 Starting BirdEye wallet discovery service");
 
-        // Create BirdEye trending orchestrator
-        let birdeye_config = BirdEyeTrendingConfig {
-            api_key: self.system_config.birdeye.api_key.clone(),
-            api_base_url: self.system_config.birdeye.api_base_url.clone(),
-            chain: "solana".to_string(),
-            top_trader_filter: TopTraderFilter {
-                min_volume_usd: config.birdeye_config.min_trader_volume_usd,
-                min_trades: config.birdeye_config.min_trader_trades,
-                min_win_rate: None, // BirdEye doesn't provide this
-                max_last_trade_hours: None, // BirdEye doesn't provide this
-                max_traders: Some(config.birdeye_config.max_traders_per_token),
-            },
-            max_trending_tokens: config.birdeye_config.max_trending_tokens,
-            max_traders_per_token: config.birdeye_config.max_traders_per_token,
-            cycle_interval_seconds: config.birdeye_config.cycle_interval_seconds,
-            debug_mode: config.birdeye_config.debug_mode,
-        };
-
+        // Create BirdEye trending orchestrator using SystemConfig directly
         let redis_client = RedisClient::new(&self.system_config.redis.url).await?;
-        let orchestrator = BirdEyeTrendingOrchestrator::new(birdeye_config, Some(redis_client))?;
+        let orchestrator = BirdEyeTrendingOrchestrator::new(self.system_config.clone(), Some(redis_client))?;
 
         // Store the orchestrator instance
         {
@@ -229,7 +196,7 @@ impl ServiceManager {
         let birdeye_orch_clone = self.birdeye_orchestrator.clone();
         let state_clone = self.wallet_discovery_state.clone();
         let _stats_clone = self.stats.clone();
-        let cycle_interval = config.birdeye_config.cycle_interval_seconds;
+        let cycle_interval = self.system_config.dexscreener.trending.polling_interval_seconds;
 
         let handle = tokio::spawn(async move {
             // Update state to running

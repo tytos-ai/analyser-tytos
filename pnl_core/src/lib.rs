@@ -293,6 +293,10 @@ pub struct PnLFilters {
     /// Maximum signatures processed
     pub max_signatures: Option<u32>,
     
+    /// Maximum transactions to fetch from external APIs (BirdEye, etc.)
+    /// If None, uses system default from config
+    pub max_transactions_to_fetch: Option<u32>,
+    
     /// Timeframe filter
     pub timeframe_filter: Option<AnalysisTimeframe>,
 }
@@ -315,6 +319,7 @@ pub trait PriceFetcher: Send + Sync {
         vs_token: Option<&str>,
     ) -> Result<Option<Decimal>>;
 }
+
 
 /// Main P&L calculation engine
 pub struct PnLEngine<P: PriceFetcher> {
@@ -786,8 +791,77 @@ pub async fn calculate_pnl_with_embedded_prices(
     let fifo_engine = FifoPnLEngine::new(EmbeddedPriceFetcher);
     let report = fifo_engine.calculate_pnl(wallet_address, events_with_prices, filters).await?;
     
+    // TODO: Add post-processing to fix current pricing issues:
+    // 1. Fix hardcoded SOL price for fees
+    // 2. Fix zero unrealized P&L using current prices 
+    // 3. Enable transfer pricing
+    
     let elapsed = start_time.elapsed();
     info!("P&L calculation completed in {:?} using embedded prices", elapsed);
+    
+    Ok(report)
+}
+
+/// Enhance P&L report with current market prices for accurate unrealized P&L and fees
+pub async fn enhance_report_with_current_prices<P: PriceFetcher>(
+    mut report: PnLReport,
+    price_fetcher: &P,
+) -> Result<PnLReport> {
+    info!("Enhancing P&L report with current market prices");
+    
+    // Collect all token mints that need current pricing
+    let mut tokens_to_price = Vec::new();
+    
+    // Add SOL for fee calculation
+    const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+    tokens_to_price.push(SOL_MINT.to_string());
+    
+    // Add all token mints from holdings for unrealized P&L
+    for holding in &report.current_holdings {
+        if !tokens_to_price.contains(&holding.token_mint) {
+            tokens_to_price.push(holding.token_mint.clone());
+        }
+    }
+    
+    // Fetch current prices in batch
+    let current_prices = match price_fetcher.fetch_prices(&tokens_to_price, None).await {
+        Ok(prices) => prices,
+        Err(e) => {
+            warn!("Failed to fetch current prices for enhancement: {}", e);
+            return Ok(report); // Return original report if pricing fails
+        }
+    };
+    
+    // 1. Fix SOL price for fees
+    if let Some(sol_price) = current_prices.get(SOL_MINT) {
+        let old_fees = report.summary.total_fees_usd;
+        report.summary.total_fees_usd = report.summary.total_fees_sol * sol_price;
+        debug!("Updated fee calculation: SOL price {} (was using ~$145), fees: ${} -> ${}", 
+               sol_price, old_fees, report.summary.total_fees_usd);
+    }
+    
+    // 2. Fix unrealized P&L for holdings using current prices
+    for holding in &mut report.current_holdings {
+        if let Some(current_price) = current_prices.get(&holding.token_mint) {
+            holding.current_price_usd = *current_price;
+            holding.current_value_usd = holding.amount * current_price;
+            holding.unrealized_pnl_usd = holding.current_value_usd - holding.total_cost_basis_usd;
+            
+            debug!("Updated holding {}: current_price=${}, unrealized_pnl=${}", 
+                   holding.token_mint, current_price, holding.unrealized_pnl_usd);
+        }
+    }
+    
+    // Recalculate total unrealized P&L
+    let total_unrealized_pnl = report.current_holdings.iter()
+        .map(|h| h.unrealized_pnl_usd)
+        .sum();
+    
+    report.summary.unrealized_pnl_usd = total_unrealized_pnl;
+    report.summary.total_pnl_usd = report.summary.realized_pnl_usd + total_unrealized_pnl;
+    
+    info!("Enhanced report with current prices: unrealized P&L=${}, total P&L=${}", 
+          report.summary.unrealized_pnl_usd, report.summary.total_pnl_usd);
     
     Ok(report)
 }
