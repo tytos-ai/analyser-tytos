@@ -215,9 +215,8 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
             // Convert buy/sell events and transfers for P&L processing
             match event.event_type {
                 EventType::Buy => {
-                    // Get price for this transaction
-                    let price = self.get_event_price(event)?;
-                    let sol_cost = event.token_amount * price; // Positive cost in SOL
+                    // Use embedded USD value instead of recalculating
+                    let usd_cost = event.usd_value; // Already calculated with embedded prices
                     
                     // Extract main_operation from metadata if available
                     let main_operation = event.metadata.extra.get("main_operation")
@@ -230,16 +229,15 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
                         operation: "buy".to_string(),
                         main_operation,
                         mint_change: event.token_amount, // Positive for buy
-                        sol: -sol_cost, // Negative for buy (outflow)
+                        sol: -usd_cost, // Negative USD cost (FIFO engine uses USD in sol field)
                         block_time: event.timestamp,
                     };
                     
                     tx_records.push(tx_record);
                 }
                 EventType::Sell => {
-                    // Get price for this transaction
-                    let price = self.get_event_price(event)?;
-                    let sol_revenue = event.token_amount * price; // Positive revenue in SOL
+                    // Use embedded USD value instead of recalculating
+                    let usd_revenue = event.usd_value; // Already calculated with embedded prices
                     
                     // Extract main_operation from metadata if available
                     let main_operation = event.metadata.extra.get("main_operation")
@@ -252,7 +250,7 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
                         operation: "sell".to_string(),
                         main_operation,
                         mint_change: -event.token_amount, // Negative for sell
-                        sol: sol_revenue, // Positive for sell (inflow)
+                        sol: usd_revenue, // Positive USD revenue (FIFO engine uses USD in sol field)
                         block_time: event.timestamp,
                     };
                     
@@ -379,9 +377,8 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
         for event in &token_events {
             match event.event_type {
                 EventType::Buy => {
-                    let price = self.get_event_price(event)?;
                     total_bought += event.token_amount;
-                    total_buy_cost += event.token_amount * price;
+                    total_buy_cost += event.usd_value; // Use embedded USD value
                     buy_count += 1;
                     
                     if first_buy_time.is_none() {
@@ -389,9 +386,8 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
                     }
                 }
                 EventType::Sell => {
-                    let price = self.get_event_price(event)?;
                     total_sold += event.token_amount;
-                    total_sell_revenue += event.token_amount * price;
+                    total_sell_revenue += event.usd_value; // Use embedded USD value
                     sell_count += 1;
                     
                     last_sell_time = Some(event.timestamp);
@@ -546,10 +542,11 @@ impl<P: PriceFetcher> FifoPnLEngine<P> {
             Decimal::ZERO
         };
         
-        // Calculate total capital deployed
+        // Calculate total capital deployed using actual SOL amounts only
+        // This now correctly sums only SOL quantities, not USD values
         let total_capital_deployed_sol = events.iter()
             .filter(|e| matches!(e.event_type, EventType::Buy))
-            .map(|e| e.sol_amount)
+            .map(|e| e.sol_amount)  // Now contains actual SOL quantities, not USD values
             .sum();
         
         let roi_percentage = if total_capital_deployed_sol > Decimal::ZERO {

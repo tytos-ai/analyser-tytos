@@ -891,21 +891,25 @@ impl JobOrchestrator {
             }
             extra.insert("volume_usd".to_string(), tx.volume_usd.to_string());
 
+            let token_amount = Decimal::try_from(tx.token_amount).unwrap_or(Decimal::ZERO);
+            let token_price_usd = Decimal::try_from(tx.token_price).unwrap_or(Decimal::ZERO);
+
             let event = FinancialEvent {
                 id: Uuid::new_v4(),
                 transaction_id: tx.tx_hash.clone(),
                 wallet_address: wallet_address.to_string(),
                 event_type,
                 token_mint: tx.token_address.clone(),
-                token_amount: Decimal::try_from(tx.token_amount).unwrap_or(Decimal::ZERO),
-                sol_amount: Decimal::ZERO, // BirdEye doesn't provide SOL amount directly
+                token_amount,
+                sol_amount: Decimal::ZERO, // Legacy BirdEye doesn't provide SOL-specific data
+                usd_value: token_amount * token_price_usd, // USD value calculated from amount × price
                 timestamp,
                 transaction_fee: Decimal::ZERO, // BirdEye doesn't provide fees
                 metadata: EventMetadata {
                     program_id: tx.source.clone(),
                     instruction_index: None,
                     exchange: tx.source.clone(), // Use source as exchange identifier
-                    price_per_token: Some(Decimal::try_from(tx.token_price).unwrap_or(Decimal::ZERO)),
+                    price_per_token: Some(token_price_usd),
                     extra,
                 },
             };
@@ -962,8 +966,8 @@ impl JobOrchestrator {
             if tx.quote.type_swap == "from" && tx.quote.ui_change_amount < 0.0 {
                 let quote_amount = Decimal::try_from(tx.quote.ui_amount.abs()).unwrap_or(Decimal::ZERO);
                 
-                // Get price for this side
-                let quote_price = if let Some(price) = tx.quote.price {
+                // Get USD price for this side
+                let quote_price_usd = if let Some(price) = tx.quote.price {
                     Decimal::try_from(price).unwrap_or(Decimal::ZERO)
                 } else if let Some(nearest_price) = tx.quote.nearest_price {
                     Decimal::try_from(nearest_price).unwrap_or(Decimal::ZERO)
@@ -972,7 +976,15 @@ impl JobOrchestrator {
                     Decimal::ZERO
                 };
 
-                if quote_price > Decimal::ZERO {
+                if quote_price_usd > Decimal::ZERO {
+                    // Calculate actual SOL amount involved (only if quote token is SOL)
+                    let sol_mint = "So11111111111111111111111111111111111111112";
+                    let actual_sol_amount = if tx.quote.address == sol_mint {
+                        quote_amount  // This IS SOL, so use the actual SOL quantity
+                    } else {
+                        Decimal::ZERO  // This is NOT SOL, so no SOL amount
+                    };
+
                     let mut extra = HashMap::new();
                     extra.insert("token_symbol".to_string(), tx.quote.symbol.clone());
                     extra.insert("source".to_string(), tx.source.clone());
@@ -986,14 +998,15 @@ impl JobOrchestrator {
                         event_type: if main_operation == "transfer" { EventType::TransferOut } else { EventType::Sell },
                         token_mint: tx.quote.address.clone(),
                         token_amount: quote_amount,
-                        sol_amount: quote_amount * quote_price, // SOL equivalent value
+                        sol_amount: actual_sol_amount,  // FIXED: Contains actual SOL quantity, not USD value
+                        usd_value: quote_amount * quote_price_usd,  // ADD: Store USD value separately  
                         timestamp,
                         transaction_fee: Decimal::ZERO,
                         metadata: EventMetadata {
                             program_id: Some(tx.address.clone()),
                             instruction_index: None,
                             exchange: Some(tx.source.clone()),
-                            price_per_token: Some(quote_price),
+                            price_per_token: Some(quote_price_usd),
                             extra: extra.clone(),
                         },
                     };
@@ -1006,8 +1019,8 @@ impl JobOrchestrator {
             if tx.base.type_swap == "to" && tx.base.ui_change_amount > 0.0 {
                 let base_amount = Decimal::try_from(tx.base.ui_amount.abs()).unwrap_or(Decimal::ZERO);
                 
-                // Get price for this side
-                let base_price = if let Some(price) = tx.base.price {
+                // Get USD price for this side
+                let base_price_usd = if let Some(price) = tx.base.price {
                     Decimal::try_from(price).unwrap_or(Decimal::ZERO)
                 } else if let Some(nearest_price) = tx.base.nearest_price {
                     Decimal::try_from(nearest_price).unwrap_or(Decimal::ZERO)
@@ -1016,7 +1029,15 @@ impl JobOrchestrator {
                     Decimal::ZERO
                 };
 
-                if base_price > Decimal::ZERO {
+                if base_price_usd > Decimal::ZERO {
+                    // Calculate actual SOL amount involved (only if base token is SOL)
+                    let sol_mint = "So11111111111111111111111111111111111111112";
+                    let actual_sol_amount = if tx.base.address == sol_mint {
+                        base_amount  // This IS SOL, so use the actual SOL quantity
+                    } else {
+                        Decimal::ZERO  // This is NOT SOL, so no SOL amount
+                    };
+
                     let mut extra = HashMap::new();
                     extra.insert("token_symbol".to_string(), tx.base.symbol.clone());
                     extra.insert("source".to_string(), tx.source.clone());
@@ -1030,14 +1051,15 @@ impl JobOrchestrator {
                         event_type: if main_operation == "transfer" { EventType::TransferIn } else { EventType::Buy },
                         token_mint: tx.base.address.clone(),
                         token_amount: base_amount,
-                        sol_amount: base_amount * base_price, // SOL equivalent value
+                        sol_amount: actual_sol_amount,  // FIXED: Contains actual SOL quantity, not USD value
+                        usd_value: base_amount * base_price_usd,  // ADD: Store USD value separately
                         timestamp,
                         transaction_fee: Decimal::ZERO,
                         metadata: EventMetadata {
                             program_id: Some(tx.address.clone()),
                             instruction_index: None,
                             exchange: Some(tx.source.clone()),
-                            price_per_token: Some(base_price),
+                            price_per_token: Some(base_price_usd),
                             extra,
                         },
                     };

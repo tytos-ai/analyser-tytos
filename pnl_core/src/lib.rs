@@ -53,8 +53,11 @@ pub struct FinancialEvent {
     /// Amount of tokens involved
     pub token_amount: Decimal,
     
-    /// SOL amount (for fees, or if SOL is the token)
+    /// SOL amount (for fees, or if SOL is the token) - ACTUAL SOL quantities only
     pub sol_amount: Decimal,
+    
+    /// USD value of the transaction (calculated from token_amount × embedded_price)
+    pub usd_value: Decimal,
     
     /// Timestamp of the event
     pub timestamp: DateTime<Utc>,
@@ -938,6 +941,7 @@ mod tests {
                 token_mint: "test_token".to_string(),
                 token_amount: Decimal::from(100),
                 sol_amount: Decimal::from(2),
+                usd_value: Decimal::from(200), // 100 tokens × $2 = $200 USD value
                 timestamp: Utc::now(),
                 transaction_fee: "0.005".parse().unwrap(),
                 metadata: EventMetadata::default(),

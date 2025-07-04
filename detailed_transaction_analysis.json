@@ -1,0 +1,2652 @@
+[
+  {
+    "tx_hash": "4HZp47N5nBKZ9HbsVPTEf3bsVA6vgAnZ2ixZ1V8wTfG1bZ69LRf3H8Gx81Sc3iwtSVkFmmmTZeDaVnBkGbzNfyQG",
+    "basic_info": {
+      "source": "meteora_dlmm",
+      "tx_type": "swap",
+      "block_time": 1751567048,
+      "volume_usd": 3675.2603658157077,
+      "volume": 0.03358432
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "log",
+      "type_swap": "to",
+      "ui_change_amount": 24.317382899,
+      "price": 151.13716723055938,
+      "nearest_price": 151.13716723055938
+    },
+    "base": {
+      "symbol": "WBTC",
+      "address": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",
+      "type": "log",
+      "type_swap": "from",
+      "ui_change_amount": -0.03358432,
+      "price": 109433.81809772261,
+      "nearest_price": 109417.14497451326
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "WBTC",
+      "token_out": "SOL",
+      "amount_in": 0.03358432,
+      "amount_out": 24.317382899,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 3675.2603658157077,
+        "base_usd": 3675.2603658157077,
+        "reported_volume_usd": 3675.2603658157077,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4MizfEhsY9gmPRzdCEdR8JSJaDGbYMSezYryZJq8WqEH8jwQPKo33iejvxi7V5uVGnH1nUUYLuHErerXBxkswc9c",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567048,
+      "volume_usd": 2468.3796875,
+      "volume": 16.332259796
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -2468.75,
+      "price": 0.99985,
+      "nearest_price": 0.99985
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 16.332259796,
+      "price": 151.13716723055938,
+      "nearest_price": 151.13716723055938
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "SOL",
+      "amount_in": 2468.75,
+      "amount_out": 16.332259796,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 2468.3796875,
+        "base_usd": 2468.4114800409934,
+        "reported_volume_usd": 2468.3796875,
+        "quote_base_diff": 0.03179254099359241,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.03179254099359241
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2LWxGqevtigsrJaKXe2pt2j1Yto9cjcnz2Ct7gTAMC81WtitpMvMN9mfLRcJAcFWgXrkqJ2rWkgHRT6ZmLgovvUn",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567048,
+      "volume_usd": 55.607442713992015,
+      "volume": 0.367926988
+    },
+    "quote": {
+      "symbol": "EURC",
+      "address": "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -47.330755,
+      "price": 1.1747643285375498,
+      "nearest_price": 1.1747643285375498
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 0.367926988,
+      "price": 151.13716723055938,
+      "nearest_price": 151.13716723055938
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "EURC",
+      "token_out": "SOL",
+      "amount_in": 47.330755,
+      "amount_out": 0.367926988,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 55.60248261675028,
+        "base_usd": 55.607442713992015,
+        "reported_volume_usd": 55.607442713992015,
+        "quote_base_diff": 0.004960097241735184,
+        "volume_quote_diff": 0.004960097241735184,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5k2WR3PLPZSb8LtgVJuY8Kbb4FhhLuAoGpWX17a5skzMXkobNSRpdd4sSGtCrp2GeWoS3ns7absQMwXYTLej7XQo",
+    "basic_info": {
+      "source": "raydium",
+      "tx_type": "swap",
+      "block_time": 1751567046,
+      "volume_usd": 684.3381957484318,
+      "volume": 540.79742497
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -4.528116222,
+      "price": 151.13088140793568,
+      "nearest_price": 151.13088140793568
+    },
+    "base": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 540.79742497,
+      "price": 1.265424286712154,
+      "nearest_price": 1.2656949147815568
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 4.528116222,
+      "amount_out": 540.79742497,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 684.3381957484318,
+        "base_usd": 684.3381957484318,
+        "reported_volume_usd": 684.3381957484318,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4xcZZRU1y4Y4DFSdXxYx42Te52t9WFPy9Y2t8YjLsG4AKK5rVfrqfTJFjEdySiV2i32eoSQWrkXSBRSUbQPzYvxx",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567044,
+      "volume_usd": 42.506902,
+      "volume": 0.01646947
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -42.506902,
+      "price": 0.99990135,
+      "nearest_price": 0.99990135
+    },
+    "base": {
+      "symbol": "WETH",
+      "address": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 0.01646947,
+      "price": 2580.696810165579,
+      "nearest_price": 2580.395219589931
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "WETH",
+      "amount_in": 42.506902,
+      "amount_out": 0.01646947,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 42.5027086941177,
+        "base_usd": 42.50270869411769,
+        "reported_volume_usd": 42.506902,
+        "quote_base_diff": 7.105427357601002e-15,
+        "volume_quote_diff": 0.004193305882296272,
+        "volume_base_diff": 0.0041933058823033775
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "342APAoqn5wQLyVjgk6pUae7FnHSiXBBYWWeHHf4urcJZr92ZwrSRxJeRvgWs8U77JDxgT5nKRMiwbfjiG7zYkMJ",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567044,
+      "volume_usd": 69.75347414836499,
+      "volume": 0.461563493
+    },
+    "quote": {
+      "symbol": "USDT",
+      "address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -69.73001,
+      "price": 1.0003365,
+      "nearest_price": 1.0003365
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 0.461563493,
+      "price": 151.12403431149195,
+      "nearest_price": 151.12403431149195
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDT",
+      "token_out": "SOL",
+      "amount_in": 69.73001,
+      "amount_out": 0.461563493,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 69.75347414836499,
+        "base_usd": 69.75333715306408,
+        "reported_volume_usd": 69.75347414836499,
+        "quote_base_diff": 0.00013699530090605094,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.00013699530090605094
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2JaE7kKNQQXmc3Mp4YvVYZmMGGAQhvzPwLzbTSNGgLfmWQtjDaUmktLD2RoRcYrHD4ZqqGyk3DCFrSk3tEECQwb",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567044,
+      "volume_usd": 557.812502,
+      "volume": 557.812502
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 440.7104727,
+      "price": 1.2655870653120462,
+      "nearest_price": 1.2652697868466178
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -557.812502,
+      "price": 0.99990135,
+      "nearest_price": 0.99988028
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 557.812502,
+      "amount_out": 440.7104727,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 557.7574737966777,
+        "base_usd": 557.7574737966777,
+        "reported_volume_usd": 557.812502,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0550282033223084,
+        "volume_base_diff": 0.0550282033223084
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3VniUtFYYRoY9gL8NdjgHA9Ka7GmVoKbBUQUPj8AvQJr12jnA2TCXR2p8c6rQhhJp7u6JGR8sZUjy3cKuczaKqJt",
+    "basic_info": {
+      "source": "meteora_dlmm",
+      "tx_type": "swap",
+      "block_time": 1751567044,
+      "volume_usd": 412.45061549999997,
+      "volume": 345.98907
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "log",
+      "type_swap": "from",
+      "ui_change_amount": -412.5,
+      "price": 0.99988028,
+      "nearest_price": 0.99988028
+    },
+    "base": {
+      "symbol": "Fartcoin ",
+      "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+      "type": "log",
+      "type_swap": "to",
+      "ui_change_amount": 345.98907,
+      "price": 1.1923243989808234,
+      "nearest_price": 1.1923243989808234
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "Fartcoin ",
+      "amount_in": 412.5,
+      "amount_out": 345.98907,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 412.45061549999997,
+        "base_usd": 412.5312099416841,
+        "reported_volume_usd": 412.45061549999997,
+        "quote_base_diff": 0.0805944416841271,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0805944416841271
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5vT8evbnmH8oXnCLnMocvvrByjgSc5u5woaxAa6UKXLCAEE53BeXgo8hbzrBPC75YmqJQVhLS6aTZ3LyAZeQDiQW",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567044,
+      "volume_usd": 95.3125,
+      "volume": 95.3125
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 75.29705327,
+      "price": 1.2656949147815568,
+      "nearest_price": 1.2655870653120462
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -95.3125,
+      "price": 0.99990135,
+      "nearest_price": 0.99990135
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 95.3125,
+      "amount_out": 75.29705327,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 95.30309742187501,
+        "base_usd": 95.30309742187501,
+        "reported_volume_usd": 95.3125,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.009402578124991123,
+        "volume_base_diff": 0.009402578124991123
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3wJqiiDXaxqiCAcF1K24wMR8rNJx3PGD9qTnGNHJFaWXdFkHJ9qUCYYPubmNSJWqm9Xa194x3FdEmbAXeN9xbXZK",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567044,
+      "volume_usd": 226.54656594818087,
+      "volume": 1.499077013
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 178.95495853,
+      "price": 1.2655870653120462,
+      "nearest_price": 1.2655870653120462
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -1.499077013,
+      "price": 151.12403431149195,
+      "nearest_price": 151.12403431149195
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 1.499077013,
+      "amount_out": 178.95495853,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 226.48308078902164,
+        "base_usd": 226.54656594818087,
+        "reported_volume_usd": 226.54656594818087,
+        "quote_base_diff": 0.06348515915922803,
+        "volume_quote_diff": 0.06348515915922803,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4cb5s6FHTqVN5vGPgk5i2LWy5xnpLXgWptatMx9HqCcsAZdEfVQfkHJ74ZuYfoRjWrtirNECzgjLVAm5AazV7jzc",
+    "basic_info": {
+      "source": "meteora_dlmm",
+      "tx_type": "swap",
+      "block_time": 1751567044,
+      "volume_usd": 820.231576171875,
+      "volume": 688.046851
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "log",
+      "type_swap": "from",
+      "ui_change_amount": -820.3125,
+      "price": 0.99990135,
+      "nearest_price": 0.99990135
+    },
+    "base": {
+      "symbol": "Fartcoin ",
+      "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+      "type": "log",
+      "type_swap": "to",
+      "ui_change_amount": 688.046851,
+      "price": 1.1923243989808234,
+      "nearest_price": 1.1923243989808234
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "Fartcoin ",
+      "amount_in": 820.3125,
+      "amount_out": 688.046851,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 820.231576171875,
+        "base_usd": 820.3750480892231,
+        "reported_volume_usd": 820.231576171875,
+        "quote_base_diff": 0.14347191734816533,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.14347191734816533
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5kBPyAb3hTCHAsVoSEGTzwLcQAAC97eQXDFdKTNfMvGQaqDFwUDqTNLfdWyGX3RxgPAduwrjjbMAq8QuUufK6Hez",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567043,
+      "volume_usd": 282.03125,
+      "volume": 0.10928461
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -282.03125,
+      "price": 0.99988028,
+      "nearest_price": 0.99988028
+    },
+    "base": {
+      "symbol": "WETH",
+      "address": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 0.10928461,
+      "price": 2580.395219589931,
+      "nearest_price": 2580.1720314464696
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "WETH",
+      "amount_in": 282.03125,
+      "amount_out": 0.10928461,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 281.99748521875,
+        "base_usd": 281.99748521875,
+        "reported_volume_usd": 282.03125,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.03376478124999949,
+        "volume_base_diff": 0.03376478124999949
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "62jjgcztuXJAdifML9frboAcr4T1pZhLPZeEDmfzt78ADgQEc5mPrAKjXeFFju28iV5bJwi3eMDiJAS3b8qjswKg",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567042,
+      "volume_usd": 11259.765625,
+      "volume": 74.504449972
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -11259.765625,
+      "price": 0.99988028,
+      "nearest_price": 0.99988028
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 74.504449972,
+      "price": 151.11067339052195,
+      "nearest_price": 151.0999417582938
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "SOL",
+      "amount_in": 11259.765625,
+      "amount_out": 74.504449972,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 11258.417605859375,
+        "base_usd": 11258.417605859375,
+        "reported_volume_usd": 11259.765625,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 1.3480191406251834,
+        "volume_base_diff": 1.3480191406251834
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5i7zmh432WNjy7CqRptSb32fieZPTWgo11o49kvXt2CzkjuuV4mooGbPmMSWespFhx49xqZ2GiLuEHczhgcUVBXj",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567042,
+      "volume_usd": 548.3504427283248,
+      "volume": 3.628800206
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 433.39479711,
+      "price": 1.2652697868466178,
+      "nearest_price": 1.2652697868466178
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -3.628800206,
+      "price": 151.11067339052195,
+      "nearest_price": 151.11067339052195
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 3.628800206,
+      "amount_out": 433.39479711,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 548.3613425598029,
+        "base_usd": 548.3504427283248,
+        "reported_volume_usd": 548.3504427283248,
+        "quote_base_diff": 0.010899831478127453,
+        "volume_quote_diff": 0.010899831478127453,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2oD4u9HwmoWXX736tfJ664EaNmzYpW9zP9aec3kqv19eBnsVQxnqx4mB6JdGTRHyr7fAj6Apkr5jGhnnq3ieb3EA",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567042,
+      "volume_usd": 1093.6190562499999,
+      "volume": 7.237602713
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -1093.75,
+      "price": 0.99988028,
+      "nearest_price": 0.99988028
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 7.237602713,
+      "price": 151.10210827762728,
+      "nearest_price": 151.10210827762728
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "SOL",
+      "amount_in": 1093.75,
+      "amount_out": 7.237602713,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 1093.6190562499999,
+        "base_usd": 1093.617028810175,
+        "reported_volume_usd": 1093.6190562499999,
+        "quote_base_diff": 0.002027439824814792,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.002027439824814792
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4Vvwm8x5jBqjvEPc254awJzbvyh8XVCyTkuxUNNrV5V9VpuVNoAZ8cuZanpf4qaX8bE3HPszRxo5tY1DMwpLkuqK",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567042,
+      "volume_usd": 68.10800589732885,
+      "volume": 0.450741599
+    },
+    "quote": {
+      "symbol": "EURC",
+      "address": "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -57.964557,
+      "price": 1.1747643285375498,
+      "nearest_price": 1.1747643285375498
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 0.450741599,
+      "price": 151.10210827762728,
+      "nearest_price": 151.10210827762728
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "EURC",
+      "token_out": "SOL",
+      "amount_in": 57.964557,
+      "amount_out": 0.450741599,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 68.09469388308153,
+        "base_usd": 68.10800589732885,
+        "reported_volume_usd": 68.10800589732885,
+        "quote_base_diff": 0.01331201424731887,
+        "volume_quote_diff": 0.01331201424731887,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4mdUMYSsYQ1ecEDv7ogw9ybyhTEjw8NKhb5uqiz6Yxgp3oWBkkiQ3N2kRP8FUPy2pcYPpGwvoyqberQu98WYzDWL",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567042,
+      "volume_usd": 49.99312626425482,
+      "volume": 0.330891072
+    },
+    "quote": {
+      "symbol": "USDT",
+      "address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -49.980545,
+      "price": 1.0002517232306054,
+      "nearest_price": 1.0002517232306054
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 0.330891072,
+      "price": 151.10210827762728,
+      "nearest_price": 151.10210827762728
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDT",
+      "token_out": "SOL",
+      "amount_in": 49.980545,
+      "amount_out": 0.330891072,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 49.99312626425482,
+        "base_usd": 49.99833858944417,
+        "reported_volume_usd": 49.99312626425482,
+        "quote_base_diff": 0.005212325189347666,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.005212325189347666
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4RRxxtLgsqZRyqRNJXXyRHaVVvMZDknouQ4KMDeLdo9AQjSZKuNsppuvfky1jzwTifE2zZiAv2aXa8AypGeAQGZj",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567041,
+      "volume_usd": 1202.291821,
+      "volume": 1202.291821
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 950.11190113,
+      "price": 1.2652697868466178,
+      "nearest_price": 1.265044611685172
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -1202.291821,
+      "price": 0.99988028,
+      "nearest_price": 0.99988028
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 1202.291821,
+      "amount_out": 950.11190113,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 1202.1478826231898,
+        "base_usd": 1202.1478826231898,
+        "reported_volume_usd": 1202.291821,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.1439383768101834,
+        "volume_base_diff": 0.1439383768101834
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5TxAW4pQzf9nXEBTCjaMvu4FqSm9oEJKEXzygpJWKioS9SsbvwQkkmrNVzySXT9ALgEQft4WpRe4UGKjAbhLoGaH",
+    "basic_info": {
+      "source": "meteora_dlmm",
+      "tx_type": "swap",
+      "block_time": 1751567038,
+      "volume_usd": 347.1880657850042,
+      "volume": 22522.845387
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "log",
+      "type_swap": "from",
+      "ui_change_amount": -2.299798054,
+      "price": 150.96458803465194,
+      "nearest_price": 150.96458803465194
+    },
+    "base": {
+      "symbol": "PENGU",
+      "address": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+      "type": "log",
+      "type_swap": "to",
+      "ui_change_amount": 22522.845387,
+      "price": 0.015421587941502954,
+      "nearest_price": 0.015421587941502954
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "PENGU",
+      "amount_in": 2.299798054,
+      "amount_out": 22522.845387,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 347.1880657850042,
+        "base_usd": 347.3380408284947,
+        "reported_volume_usd": 347.1880657850042,
+        "quote_base_diff": 0.1499750434904854,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.1499750434904854
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2AgMcrTzREJ8DZMd9Gta3fPGBtPjhgh75o7wCjF7aPUfhHqGgWjHiSzLzfARHHD8VTYfFM2ZcNHxXHa91EDHCUkD",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567038,
+      "volume_usd": 231.25295703834357,
+      "volume": 1.530602589
+    },
+    "quote": {
+      "symbol": "PENGU",
+      "address": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 14988.777839,
+      "price": 0.015428406473317372,
+      "nearest_price": 0.015421587941502954
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -1.530602589,
+      "price": 151.0862183954816,
+      "nearest_price": 151.0862183954816
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "SOL",
+      "token_out": "PENGU",
+      "amount_in": 1.530602589,
+      "amount_out": 14988.777839,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 231.25295703834357,
+        "base_usd": 231.25295703834357,
+        "reported_volume_usd": 231.25295703834357,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3XN2nmSQuE36jTREec77Y4uxdEJ8ejB9HgZ4b52V9W14JpLJJoqnNBgNfKiXZUUe2ruWzwYGNhnijCht6vZB6hdP",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567032,
+      "volume_usd": 276.5625,
+      "volume": 276.5625
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 218.70820594,
+      "price": 1.2643992923080534,
+      "nearest_price": 1.263265824990071
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -276.5625,
+      "price": 0.99989876,
+      "nearest_price": 0.99989876
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 276.5625,
+      "amount_out": 218.70820594,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 276.53450081249997,
+        "base_usd": 276.5345008125,
+        "reported_volume_usd": 276.5625,
+        "quote_base_diff": 5.684341886080802e-14,
+        "volume_quote_diff": 0.027999187500029166,
+        "volume_base_diff": 0.027999187499972322
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3kvpnCnWx3giFBq4Bdsuentqy58MapsQJwvAEeHchVhqZDG62p8Rz81DLeC7nMXftDk6bVGuszjqXEbtWTPBShmm",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567032,
+      "volume_usd": 321.875,
+      "volume": 321.875
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 254.52187247,
+      "price": 1.264498057678461,
+      "nearest_price": 1.2643992923080534
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -321.875,
+      "price": 0.99989876,
+      "nearest_price": 0.99989876
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 321.875,
+      "amount_out": 254.52187247,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 321.842413375,
+        "base_usd": 321.842413375,
+        "reported_volume_usd": 321.875,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.03258662500002174,
+        "volume_base_diff": 0.03258662500002174
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5nNo5osw6FKBuRowrm9JS7mEAsttJijKRsPJCt5469zLbDSc4kVjCPNuuN9bdma5pVHHLEhvEUhftvQkanJRuBjc",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567032,
+      "volume_usd": 140.625,
+      "volume": 140.625
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 111.19216385,
+      "price": 1.2645743931621491,
+      "nearest_price": 1.264498057678461
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -140.625,
+      "price": 0.99989876,
+      "nearest_price": 0.99989876
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 140.625,
+      "amount_out": 111.19216385,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 140.610763125,
+        "base_usd": 140.610763125,
+        "reported_volume_usd": 140.625,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.014236874999994598,
+        "volume_base_diff": 0.014236874999994598
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4kdcpufNqdnVsDKR9eBka65wnP9KtGPr3viBN4fydFjP4X2f4nCMTb6JzhM4hhemWq3brPDSxVGLqJtUwfcAZQ9K",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567031,
+      "volume_usd": 684.375,
+      "volume": 684.375
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 541.27802865,
+      "price": 1.2642407000737217,
+      "nearest_price": 1.2645743931621491
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -684.375,
+      "price": 0.99989876,
+      "nearest_price": 0.99989876
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 684.375,
+      "amount_out": 541.27802865,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 684.305713875,
+        "base_usd": 684.305713875,
+        "reported_volume_usd": 684.375,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.06928612499996234,
+        "volume_base_diff": 0.06928612499996234
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5WD3RRdT5szckyFqsDbfKkd8pHLPPFouqKGCZZkSG8jebuJUUWiw6MBdzSHpESHBf5L3Fr5osd95PHXbWdoyrghM",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567027,
+      "volume_usd": 274.462496019127,
+      "volume": 1.816809961
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -274.493102,
+      "price": 0.9998885,
+      "nearest_price": 0.9998885
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 1.816809961,
+      "price": 151.06939178159203,
+      "nearest_price": 151.06939178159203
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "SOL",
+      "amount_in": 274.493102,
+      "amount_out": 1.816809961,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 274.462496019127,
+        "base_usd": 274.4643757910079,
+        "reported_volume_usd": 274.462496019127,
+        "quote_base_diff": 0.0018797718809082653,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0018797718809082653
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4V8WRkJsfoLfV2ug2MGt82BRXgp3RTjwqBJsCCAmCdUE6JCAiYpyoipSuDRQ49dyZbAHtQGvv8quqZajnQueMMXv",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567027,
+      "volume_usd": 513.9828804093928,
+      "volume": 3.402674299
+    },
+    "quote": {
+      "symbol": "USDT",
+      "address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -513.862916,
+      "price": 1.0002334560554138,
+      "nearest_price": 1.0002334560554138
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 3.402674299,
+      "price": 151.06939178159203,
+      "nearest_price": 151.06939178159203
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDT",
+      "token_out": "SOL",
+      "amount_in": 513.862916,
+      "amount_out": 3.402674299,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 513.9828804093928,
+        "base_usd": 514.0399367807851,
+        "reported_volume_usd": 513.9828804093928,
+        "quote_base_diff": 0.05705637139226383,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.05705637139226383
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3AGo1pu2y4WfoxB5wCAaTg8ZosfUT8rNaK6skr2cg1T19aVuZeCAL6D2Tww9XsuKqpurNR5GZUN2gA9qtzAopwHv",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567026,
+      "volume_usd": 135.82987207412236,
+      "volume": 0.899895942
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 107.52026544,
+      "price": 1.2640990702138204,
+      "nearest_price": 1.2640990702138204
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -0.899895942,
+      "price": 150.9395317110146,
+      "nearest_price": 150.9395317110146
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 0.899895942,
+      "amount_out": 107.52026544,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 135.91626757184716,
+        "base_usd": 135.82987207412236,
+        "reported_volume_usd": 135.82987207412236,
+        "quote_base_diff": 0.08639549772479427,
+        "volume_quote_diff": 0.08639549772479427,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2rQjYEgCxW6L3UkAVXCLMqoWpFn1ibFtAA7SA6ikrCRi67RydYZSYasGMKCMhNc36u5S2P12YCvApCsLaytUdhpG",
+    "basic_info": {
+      "source": "raydium",
+      "tx_type": "swap",
+      "block_time": 1751567026,
+      "volume_usd": 140.51366068305651,
+      "volume": 111.23047731
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -0.930926836,
+      "price": 150.9395317110146,
+      "nearest_price": 150.9395317110146
+    },
+    "base": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 111.23047731,
+      "price": 1.263265824990071,
+      "nearest_price": 1.2640990702138204
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 0.930926836,
+      "amount_out": 111.23047731,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 140.51366068305651,
+        "base_usd": 140.51366068305651,
+        "reported_volume_usd": 140.51366068305651,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4DXbjzmcjEjzDsbCVECciucxqWrX9fV4Yg3sPmWh716EG5eQbbcPoookVdUyDdx84fQZuxfnmZBrDz15cVG18vor",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567025,
+      "volume_usd": 50,
+      "volume": 50
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 39.55020205,
+      "price": 1.2640750845418247,
+      "nearest_price": 1.2640585828287343
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -50,
+      "price": 0.9998885,
+      "nearest_price": 0.9998885
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 50,
+      "amount_out": 39.55020205,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 49.994425,
+        "base_usd": 49.994425,
+        "reported_volume_usd": 50,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.00557500000000033,
+        "volume_base_diff": 0.00557500000000033
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5JCMXKw1GpMG5jAph9rx4BxzxWJEc54LFHJh2KajHo7jXg3L1LtDrxX7xyCqtHmhw8HDDuTCLJTPTUdbHc7jH1Bf",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567025,
+      "volume_usd": 95.3125,
+      "volume": 95.3125
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 75.39114212,
+      "price": 1.2640990702138204,
+      "nearest_price": 1.2640750845418247
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -95.3125,
+      "price": 0.9998885,
+      "nearest_price": 0.9998885
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 95.3125,
+      "amount_out": 75.39114212,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 95.30187265624998,
+        "base_usd": 95.30187265625,
+        "reported_volume_usd": 95.3125,
+        "quote_base_diff": 1.4210854715202004e-14,
+        "volume_quote_diff": 0.010627343750016394,
+        "volume_base_diff": 0.010627343750002183
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2aU1LTdA6ujoZiEH51NqFnUDKYDU7gXmV6g4Mz6jSotUbxZr1oQxqx2meNz3QtbDmJUzfYnhnFMW23wUX4fbcDKg",
+    "basic_info": {
+      "source": "raydium",
+      "tx_type": "swap",
+      "block_time": 1751567024,
+      "volume_usd": 321.63114427415763,
+      "volume": 254.67948893
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -2.130860886,
+      "price": 150.9395317110146,
+      "nearest_price": 150.9395317110146
+    },
+    "base": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 254.67948893,
+      "price": 1.2628859341026857,
+      "nearest_price": 1.2639990363871236
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 2.130860886,
+      "amount_out": 254.67948893,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 321.63114427415763,
+        "base_usd": 321.63114427415763,
+        "reported_volume_usd": 321.63114427415763,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3GiD4XaZcLqVRAvmsbXcD2q5C6BENkMwFgroZzhNoaCrLE22xGoPcbCK993igWeHwdQHBHuPHfWX3zMJg5ffJusV",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567024,
+      "volume_usd": 276.34353260623936,
+      "volume": 1.830822777
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 218.80202446,
+      "price": 1.2631372140220753,
+      "nearest_price": 1.2631372140220753
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -1.830822777,
+      "price": 150.9395317110146,
+      "nearest_price": 150.9395317110146
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 1.830822777,
+      "amount_out": 218.80202446,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 276.3769795987944,
+        "base_usd": 276.34353260623936,
+        "reported_volume_usd": 276.34353260623936,
+        "quote_base_diff": 0.03344699255501382,
+        "volume_quote_diff": 0.03344699255501382,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "qqeTif8trJsPcDBZH5cCL77mDRJD4K2SYNTf6wXuUukUNprbakxXGDe8xaLjWSrJijSyPuBSWiTxvWg59M7mFQU",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567024,
+      "volume_usd": 50,
+      "volume": 50
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 39.55071836,
+      "price": 1.2640585828287343,
+      "nearest_price": 1.2631372140220753
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -50,
+      "price": 0.9998885,
+      "nearest_price": 0.9998885
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 50,
+      "amount_out": 39.55071836,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 49.994425,
+        "base_usd": 49.994425,
+        "reported_volume_usd": 50,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.00557500000000033,
+        "volume_base_diff": 0.00557500000000033
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2i8rNcbkBzZEQpgPpgeXEEVmfMuc59XeuTPAFttPE3wMgHiNx8ERdnnrbpuj7yLwvYKmVyH2TbmNXmDWY6mL4rvz",
+    "basic_info": {
+      "source": "raydium",
+      "tx_type": "swap",
+      "block_time": 1751567024,
+      "volume_usd": 49.96041263364159,
+      "volume": 39.5526409
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -0.330996208,
+      "price": 150.9395317110146,
+      "nearest_price": 150.9395317110146
+    },
+    "base": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 39.5526409,
+      "price": 1.2631372140220753,
+      "nearest_price": 1.2628859341026857
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "SPX",
+      "amount_in": 0.330996208,
+      "amount_out": 39.5526409,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 49.96041263364159,
+        "base_usd": 49.96041263364159,
+        "reported_volume_usd": 49.96041263364159,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3fLmw86jn7pVdhV2sw8bFD9UH8vDxzJsSRchqakQoXuZcv8xGydBjLtQWZbnAqnGutbfDwqBc7x6RdWzLtDr2Qd",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567023,
+      "volume_usd": 95.3125,
+      "volume": 95.3125
+    },
+    "quote": {
+      "symbol": "SPX",
+      "address": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 75.39498672,
+      "price": 1.2639990363871236,
+      "nearest_price": 1.2621447036051132
+    },
+    "base": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -95.3125,
+      "price": 0.99986036,
+      "nearest_price": 0.99986036
+    },
+    "pnl_patterns": {
+      "swap_direction": "base_to_quote",
+      "token_in": "USDC",
+      "token_out": "SPX",
+      "amount_in": 95.3125,
+      "amount_out": 75.39498672,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 95.29919056249999,
+        "base_usd": 95.2991905625,
+        "reported_volume_usd": 95.3125,
+        "quote_base_diff": 1.4210854715202004e-14,
+        "volume_quote_diff": 0.013309437500012677,
+        "volume_base_diff": 0.013309437499998467
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "56SNVqKJo5D8ip9iFtD7sVFFD6J2w2WdnZfry7hnnZg765NFLqwme4prHSH23oG9339dmnUsbHXcCWimyRhmGdJ6",
+    "basic_info": {
+      "source": "meteora_dlmm",
+      "tx_type": "swap",
+      "block_time": 1751567021,
+      "volume_usd": 367.1875,
+      "volume": 23806.642177
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "log",
+      "type_swap": "from",
+      "ui_change_amount": -367.1875,
+      "price": 0.99986036,
+      "nearest_price": 0.99986036
+    },
+    "base": {
+      "symbol": "PENGU",
+      "address": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+      "type": "log",
+      "type_swap": "to",
+      "ui_change_amount": 23806.642177,
+      "price": 0.01542158794204907,
+      "nearest_price": 0.015421587954893168
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "PENGU",
+      "amount_in": 367.1875,
+      "amount_out": 23806.642177,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 367.1362259375,
+        "base_usd": 367.13622593750006,
+        "reported_volume_usd": 367.1875,
+        "quote_base_diff": 5.684341886080802e-14,
+        "volume_quote_diff": 0.05127406249999922,
+        "volume_base_diff": 0.051274062499942374
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4mZ7Ns6TVCa4wiArwHUjDUEzWxkq1C2E3FGT2UBeQ4vMMeW5P7zypXaeXjov7vcRwXb3YcZTetJ9bkka48P8x2pr",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567019,
+      "volume_usd": 50.00291215052556,
+      "volume": 0.331029464
+    },
+    "quote": {
+      "symbol": "EURC",
+      "address": "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -42.556046,
+      "price": 1.1747643285375498,
+      "nearest_price": 1.1747643285375498
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 0.331029464,
+      "price": 151.05275387367197,
+      "nearest_price": 151.05275387367197
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "EURC",
+      "token_out": "SOL",
+      "amount_in": 42.556046,
+      "amount_out": 0.331029464,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 49.99332480440308,
+        "base_usd": 50.00291215052556,
+        "reported_volume_usd": 50.00291215052556,
+        "quote_base_diff": 0.0095873461224798,
+        "volume_quote_diff": 0.0095873461224798,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5XMv92fbUdybT1cUrFaGMgcuZ91MEmat3ujUtwwDqjeaiddCB2hhbFkwhz7XLnARaTLHcLDApU27jPGjfrjxeVQb",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567014,
+      "volume_usd": 135.92949240974417,
+      "volume": 299.329941
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -0.899860549,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "base": {
+      "symbol": "JUP",
+      "address": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 299.329941,
+      "price": 0.4541125821079962,
+      "nearest_price": 0.4540883923785402
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "JUP",
+      "amount_in": 0.899860549,
+      "amount_out": 299.329941,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 135.92949240974417,
+        "base_usd": 135.92949240974417,
+        "reported_volume_usd": 135.92949240974417,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4aD5zKVvTjNiPnr9gQsX6P3UgBASQjSBucKqmJFHQXU8xQAqPRSg8rvvRqvSxwbDu8VVytjBc3wq93YXR7Zf2Hjy",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567014,
+      "volume_usd": 231.2363829120177,
+      "volume": 509.232094
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -1.530797289,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "base": {
+      "symbol": "JUP",
+      "address": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 509.232094,
+      "price": 0.4540883923785402,
+      "nearest_price": 0.45406719009738283
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "JUP",
+      "amount_in": 1.530797289,
+      "amount_out": 509.232094,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 231.2363829120177,
+        "base_usd": 231.2363829120177,
+        "reported_volume_usd": 231.2363829120177,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3QUnFjEb5Wd2qrvkdDWVawKjdvw3jcddeFJne4hgh8kt9RUfv9jhzLmeab8rwwDHutER6DTmj1u65ZzHe45v4LSg",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567013,
+      "volume_usd": 33.25652336171966,
+      "volume": 0.220172845
+    },
+    "quote": {
+      "symbol": "USDT",
+      "address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -33.247676,
+      "price": 1.0002661046660724,
+      "nearest_price": 1.0002661046660724
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 0.220172845,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDT",
+      "token_out": "SOL",
+      "amount_in": 33.247676,
+      "amount_out": 0.220172845,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 33.25652336171966,
+        "base_usd": 33.258467766497546,
+        "reported_volume_usd": 33.25652336171966,
+        "quote_base_diff": 0.0019444047778875984,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0019444047778875984
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2JX2UjgZjWjEEoACX1yzAnEx47B1xFrugrG3QYACY4T4EPxU2Y82DFyWA5VH827oRefcPgQrgN4tVh4g4F7WQj5G",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567013,
+      "volume_usd": 85.09406650944725,
+      "volume": 187.38252
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -0.563327296,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "base": {
+      "symbol": "JUP",
+      "address": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 187.38252,
+      "price": 0.4540489715973096,
+      "nearest_price": 0.4540489715973096
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "JUP",
+      "amount_in": 0.563327296,
+      "amount_out": 187.38252,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 85.09406650944725,
+        "base_usd": 85.0808405013123,
+        "reported_volume_usd": 85.09406650944725,
+        "quote_base_diff": 0.013226008134950007,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.013226008134950007
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5axGF3JfgUTpKwih79pzXpXK84M61VmVWoJLR8ebt5zSq1ePMop65ynfHdTjvivhCacqEMFVb9XqrF7uvJYxgWnL",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567013,
+      "volume_usd": 185.926535996111,
+      "volume": 409.485645
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -1.230843666,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "base": {
+      "symbol": "JUP",
+      "address": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 409.485645,
+      "price": 0.4540489715973096,
+      "nearest_price": 0.4539445383744482
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "JUP",
+      "amount_in": 1.230843666,
+      "amount_out": 409.485645,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 185.926535996111,
+        "base_usd": 185.926535996111,
+        "reported_volume_usd": 185.926535996111,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "4rZJz75wrmUwciQzEpCBB79hSsiQvxTRAjsSXNEnjGurCLGkJFQwAtgRLQjkAHnZrrTRkWSygEVwkWyP6U2mkrbQ",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567013,
+      "volume_usd": 90.6196562188259,
+      "volume": 199.573231
+    },
+    "quote": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -0.599906997,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "base": {
+      "symbol": "JUP",
+      "address": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 199.573231,
+      "price": 0.45406719009738283,
+      "nearest_price": 0.4540489715973096
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "SOL",
+      "token_out": "JUP",
+      "amount_in": 0.599906997,
+      "amount_out": 199.573231,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 90.6196562188259,
+        "base_usd": 90.6196562188259,
+        "reported_volume_usd": 90.6196562188259,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2xHttyzxjzDLJjTToxSnead16SkmiKHWcS9oLDgiKyCfS1mAueYk4vL74usmAxZmNEMcJEwQRitoSWnHzwkrqEDE",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567013,
+      "volume_usd": 2593.4729096875,
+      "volume": 17.170266634
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -2593.75,
+      "price": 0.99989317,
+      "nearest_price": 0.99989317
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 17.170266634,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "SOL",
+      "amount_in": 2593.75,
+      "amount_out": 17.170266634,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 2593.4729096875,
+        "base_usd": 2593.674798493235,
+        "reported_volume_usd": 2593.4729096875,
+        "quote_base_diff": 0.2018888057350523,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.2018888057350523
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "5X8RNJcuEmcdtzCufJjRoasUhfnxScyH91pftLGjZqfeXuLA9gGRzaVPKh22qxPn34V8TnSGXAoWjBLFiLpFJ9fj",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567013,
+      "volume_usd": 475.3319584019577,
+      "volume": 3.147041703
+    },
+    "quote": {
+      "symbol": "USDT",
+      "address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -475.205504,
+      "price": 1.0002661046660724,
+      "nearest_price": 1.0002661046660724
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 3.147041703,
+      "price": 151.05284485559403,
+      "nearest_price": 151.05284485559403
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDT",
+      "token_out": "SOL",
+      "amount_in": 475.205504,
+      "amount_out": 3.147041703,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 475.3319584019577,
+        "base_usd": 475.36960211734345,
+        "reported_volume_usd": 475.3319584019577,
+        "quote_base_diff": 0.03764371538574096,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.03764371538574096
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "UiRa7jGJ5dYRacuEeJbtFwEpCQb98dMg3QzZ4pR6BqNFz9kgm7rnK3PULWP3W1BYAdFKbbdZyyPRVo3jENxGr5D",
+    "basic_info": {
+      "source": "raydium_clamm",
+      "tx_type": "swap",
+      "block_time": 1751567013,
+      "volume_usd": 127.32803457020587,
+      "volume": 0.843004845
+    },
+    "quote": {
+      "symbol": "USDT",
+      "address": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      "type": "transferChecked",
+      "type_swap": "from",
+      "ui_change_amount": -127.294161,
+      "price": 1.0002661046660724,
+      "nearest_price": 1.0002661046660724
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transferChecked",
+      "type_swap": "to",
+      "ui_change_amount": 0.843004845,
+      "price": 151.05617482708888,
+      "nearest_price": 151.05617482708888
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDT",
+      "token_out": "SOL",
+      "amount_in": 127.294161,
+      "amount_out": 0.843004845,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 127.32803457020587,
+        "base_usd": 127.34108724640295,
+        "reported_volume_usd": 127.32803457020587,
+        "quote_base_diff": 0.013052676197077062,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.013052676197077062
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "3rv1DMD7YaZSAZ8HePCKWJmy2ajjrwn5PCXwK7TCZQGXUDbKXy7pkictnZkDHszmKwkgEqnKQ6YegqtgsMvbWNFS",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567012,
+      "volume_usd": 1468.75,
+      "volume": 9.722884979
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -1468.75,
+      "price": 0.99989317,
+      "nearest_price": 0.99989317
+    },
+    "base": {
+      "symbol": "SOL",
+      "address": "So11111111111111111111111111111111111111112",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 9.722884979,
+      "price": 151.0449929840212,
+      "nearest_price": 151.0410765758217
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "SOL",
+      "amount_in": 1468.75,
+      "amount_out": 9.722884979,
+      "is_sol_involved": true,
+      "is_token_to_token": false,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 1468.5930934375,
+        "base_usd": 1468.5930934375,
+        "reported_volume_usd": 1468.75,
+        "quote_base_diff": 0.0,
+        "volume_quote_diff": 0.15690656249989843,
+        "volume_base_diff": 0.15690656249989843
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "msaDHQ2fBE3zYnwAB4ZtpQ8KF3a2igeyD6eFP689v2LAZdq5SoLjR9ZMQu8CzrCav1kB1sJWnhKd7Q4Z3CKAQ9E",
+    "basic_info": {
+      "source": "meteora_dlmm",
+      "tx_type": "swap",
+      "block_time": 1751567009,
+      "volume_usd": 3797.8662126033,
+      "volume": 0.03468574
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "log",
+      "type_swap": "from",
+      "ui_change_amount": -3798.435978,
+      "price": 0.99985,
+      "nearest_price": 0.99985
+    },
+    "base": {
+      "symbol": "cbBTC",
+      "address": "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+      "type": "log",
+      "type_swap": "to",
+      "ui_change_amount": 0.03468574,
+      "price": 109495.70105096992,
+      "nearest_price": 109495.70105096992
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "cbBTC",
+      "amount_in": 3798.435978,
+      "amount_out": 0.03468574,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 3797.8662126033,
+        "base_usd": 3797.9394177716695,
+        "reported_volume_usd": 3797.8662126033,
+        "quote_base_diff": 0.0732051683694408,
+        "volume_quote_diff": 0.0,
+        "volume_base_diff": 0.0732051683694408
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2ybsh4E3R1QHCxab15bX5whed9kLmX5JBnTiynpWTUL5jKNu1qQKqP6kBa6X2Nbymyg48vFH6bmxx1Tobw1Wkmu5",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567008,
+      "volume_usd": 127.34375,
+      "volume": 0.04935089
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -127.34375,
+      "price": 0.99985,
+      "nearest_price": 0.99985
+    },
+    "base": {
+      "symbol": "WETH",
+      "address": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 0.04935089,
+      "price": 2579.9868743501893,
+      "nearest_price": 2578.941838347412
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "WETH",
+      "amount_in": 127.34375,
+      "amount_out": 0.04935089,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 127.3246484375,
+        "base_usd": 127.32464843750002,
+        "reported_volume_usd": 127.34375,
+        "quote_base_diff": 1.4210854715202004e-14,
+        "volume_quote_diff": 0.019101562499997726,
+        "volume_base_diff": 0.019101562499983515
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  },
+  {
+    "tx_hash": "2rYRE6iuQEfoZa7E7qErL1xXcEygmBLgFRZfTA84fWmsLskFfzhqJksYqqK6yYbuTmRTpxFHbu9fGbqu4tqPKbye",
+    "basic_info": {
+      "source": "whirlpool",
+      "tx_type": "swap",
+      "block_time": 1751567007,
+      "volume_usd": 127.34375,
+      "volume": 0.04935458
+    },
+    "quote": {
+      "symbol": "USDC",
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "transfer",
+      "type_swap": "from",
+      "ui_change_amount": -127.34375,
+      "price": 0.99984,
+      "nearest_price": 0.99984
+    },
+    "base": {
+      "symbol": "WETH",
+      "address": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+      "type": "transfer",
+      "type_swap": "to",
+      "ui_change_amount": 0.04935458,
+      "price": 2579.76817956915,
+      "nearest_price": 2578.5071896982668
+    },
+    "pnl_patterns": {
+      "swap_direction": "quote_to_base",
+      "token_in": "USDC",
+      "token_out": "WETH",
+      "amount_in": 127.34375,
+      "amount_out": 0.04935458,
+      "is_sol_involved": false,
+      "is_token_to_token": true,
+      "price_source": "embedded"
+    },
+    "math_check": {
+      "volume_usd_match": true,
+      "price_consistency": true,
+      "change_amount_signs": true,
+      "calculations": {
+        "quote_usd": 127.323375,
+        "base_usd": 127.32337499999998,
+        "reported_volume_usd": 127.34375,
+        "quote_base_diff": 1.4210854715202004e-14,
+        "volume_quote_diff": 0.020375000000001364,
+        "volume_base_diff": 0.020375000000015575
+      },
+      "discrepancies": []
+    },
+    "edge_cases": []
+  }
+]
