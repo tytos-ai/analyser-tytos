@@ -1,12 +1,17 @@
 use anyhow::Result;
 use config_manager::SystemConfig;
-use dex_client::{BirdEyeClient, TopTrader, TrendingToken as BirdEyeTrendingToken, TraderTransaction};
+use dex_client::{BirdEyeClient, TopTrader, TrendingToken as BirdEyeTrendingToken, GeneralTraderTransaction};
 use persistence_layer::{RedisClient, DiscoveredWalletToken};
-// Removed unused serde imports
+use pnl_core::{FinancialEvent, EventType, EventMetadata};
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
+use chrono::{DateTime, Utc};
 
 // BirdEyeTrendingConfig removed - now uses SystemConfig directly
 
@@ -49,7 +54,7 @@ impl BirdEyeTrendingOrchestrator {
 
         info!("🚀 Starting BirdEye trending discovery orchestrator");
         info!("📋 Configuration: chain=solana, max_tokens={}, cycle_interval={}s", 
-              self.config.dexscreener.trending.max_tokens_per_cycle, self.config.dexscreener.trending.polling_interval_seconds);
+              20, 60); // Hardcoded BirdEye trending values
 
         loop {
             // Check if we should stop
@@ -76,7 +81,7 @@ impl BirdEyeTrendingOrchestrator {
             }
 
             // Wait before next cycle
-            tokio::time::sleep(Duration::from_secs(self.config.dexscreener.trending.polling_interval_seconds)).await;
+            tokio::time::sleep(Duration::from_secs(60)).await; // BirdEye polling interval
         }
 
         Ok(())
@@ -155,12 +160,12 @@ impl BirdEyeTrendingOrchestrator {
                 tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
                 
                 // Limit to max trending tokens
-                if tokens.len() > self.config.dexscreener.trending.max_tokens_per_cycle as usize {
-                    tokens.truncate(self.config.dexscreener.trending.max_tokens_per_cycle as usize);
+                if tokens.len() > 20 {
+                    tokens.truncate(20);
                 }
 
                 debug!("📈 Retrieved {} trending tokens (limited to {})", 
-                       tokens.len(), self.config.dexscreener.trending.max_tokens_per_cycle);
+                       tokens.len(), 20);
 
                 if self.config.system.debug_mode {
                     for (i, token) in tokens.iter().enumerate().take(5) {
@@ -191,8 +196,8 @@ impl BirdEyeTrendingOrchestrator {
                 // Apply quality filtering using trader filter config
                 let quality_traders = self.birdeye_client.filter_top_traders(
                     traders,
-                    self.config.trader_filter.min_capital_deployed_sol as f64 * 230.0, // Convert SOL to USD roughly
-                    self.config.trader_filter.min_total_trades as u32,
+                    self.config.trader_filter.min_capital_deployed_sol * 230.0, // Convert SOL to USD roughly
+                    self.config.trader_filter.min_total_trades,
                     Some(self.config.trader_filter.min_win_rate),
                     Some(24), // Default to 24 hours
                 );
@@ -266,35 +271,7 @@ impl BirdEyeTrendingOrchestrator {
         }
     }
 
-    /// Get wallet transaction history for a specific wallet and token (optional utility method)
-    pub async fn get_wallet_transaction_history(
-        &self,
-        wallet_address: &str,
-        token_address: &str,
-        from_time: Option<i64>,
-        to_time: Option<i64>,
-    ) -> Result<Vec<TraderTransaction>> {
-        debug!("📜 Fetching transaction history for wallet {} token {}", wallet_address, token_address);
-
-        match self.birdeye_client.get_trader_transactions(
-            wallet_address,
-            token_address,
-            from_time,
-            to_time,
-            Some(self.config.birdeye.max_transactions_per_trader), // Configurable limit
-        ).await {
-            Ok(transactions) => {
-                debug!("📊 Retrieved {} transactions for wallet {} token {}", 
-                       transactions.len(), wallet_address, token_address);
-                Ok(transactions)
-            }
-            Err(e) => {
-                warn!("❌ Failed to fetch transaction history for wallet {} token {}: {}", 
-                      wallet_address, token_address, e);
-                Err(e.into())
-            }
-        }
-    }
+    // get_wallet_transaction_history method removed - was unused and relied on removed get_trader_transactions
 
     /// Get statistics about the current discovery state
     pub async fn get_discovery_stats(&self) -> Result<DiscoveryStats> {
@@ -329,6 +306,140 @@ pub struct DiscoveryStats {
     pub config: SystemConfig,
     pub tokens_discovered: u32,
     pub wallet_token_pairs_discovered: u32,
+}
+
+/// Processed swap transaction for BirdEye data analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessedSwap {
+    pub token_in: String,
+    pub token_out: String,
+    pub amount_in: Decimal,
+    pub amount_out: Decimal,
+    pub sol_equivalent: Decimal,
+    pub price_per_token: Decimal,
+    pub tx_hash: String,
+    pub timestamp: i64,
+    pub source: String,
+}
+
+impl ProcessedSwap {
+    /// Process BirdEye transactions into ProcessedSwap format
+    pub fn from_birdeye_transactions(transactions: &[GeneralTraderTransaction]) -> Result<Vec<ProcessedSwap>> {
+        let mut processed_swaps = Vec::new();
+        
+        for tx in transactions {
+            // Determine which token is being sold (from) and which is being bought (to)
+            let (token_in, amount_in, token_out, amount_out) = if tx.quote.type_swap == "from" {
+                // Quote token is being sold, base token is being bought
+                (
+                    tx.quote.address.clone(),
+                    Decimal::from_f64_retain(tx.quote.ui_amount).unwrap_or_default(),
+                    tx.base.address.clone(),
+                    Decimal::from_f64_retain(tx.base.ui_amount).unwrap_or_default(),
+                )
+            } else {
+                // Base token is being sold, quote token is being bought  
+                (
+                    tx.base.address.clone(),
+                    Decimal::from_f64_retain(tx.base.ui_amount).unwrap_or_default(),
+                    tx.quote.address.clone(),
+                    Decimal::from_f64_retain(tx.quote.ui_amount).unwrap_or_default(),
+                )
+            };
+            
+            // Calculate SOL equivalent and price
+            let sol_mint = "So11111111111111111111111111111111111111112";
+            let sol_equivalent = if token_in == sol_mint {
+                amount_in
+            } else if token_out == sol_mint {
+                amount_out
+            } else {
+                // Use quote price to estimate SOL equivalent
+                Decimal::from_f64_retain(tx.quote_price).unwrap_or_default() * amount_in
+            };
+            
+            let price_per_token = if token_out == sol_mint {
+                // Selling token for SOL
+                if amount_out > Decimal::ZERO {
+                    amount_out / amount_in
+                } else {
+                    Decimal::ZERO
+                }
+            } else if token_in == sol_mint {
+                // Buying token with SOL
+                tx.base.price.map(|p| Decimal::from_f64_retain(p).unwrap_or_default())
+                    .unwrap_or_else(|| {
+                        if amount_in > Decimal::ZERO {
+                            amount_out / amount_in
+                        } else {
+                            Decimal::ZERO
+                        }
+                    })
+            } else {
+                // Token to token swap - use base price
+                tx.base.price.map(|p| Decimal::from_f64_retain(p).unwrap_or_default())
+                    .unwrap_or_default()
+            };
+            
+            processed_swaps.push(ProcessedSwap {
+                token_in,
+                token_out,
+                amount_in,
+                amount_out,
+                sol_equivalent,
+                price_per_token,
+                tx_hash: tx.tx_hash.clone(),
+                timestamp: tx.block_unix_time,
+                source: tx.source.clone(),
+            });
+        }
+        
+        Ok(processed_swaps)
+    }
+    
+    /// Convert ProcessedSwap to FinancialEvent
+    pub fn to_financial_event(&self, wallet_address: &str) -> FinancialEvent {
+        // Determine if this is a buy or sell based on the token being acquired
+        let sol_mint = "So11111111111111111111111111111111111111112";
+        let event_type = if self.token_out == sol_mint {
+            EventType::Sell // Selling token for SOL
+        } else {
+            EventType::Buy // Buying token with something else
+        };
+        
+        let (token_mint, token_amount, sol_amount) = if event_type == EventType::Buy {
+            (self.token_out.clone(), self.amount_out, -self.sol_equivalent)
+        } else {
+            (self.token_in.clone(), self.amount_in, self.sol_equivalent)
+        };
+        
+        let timestamp = DateTime::from_timestamp(self.timestamp, 0)
+            .unwrap_or_else(Utc::now);
+        
+        let mut extra = HashMap::new();
+        extra.insert("source".to_string(), self.source.clone());
+        extra.insert("tx_hash".to_string(), self.tx_hash.clone());
+        
+        FinancialEvent {
+            id: Uuid::new_v4(),
+            transaction_id: self.tx_hash.clone(),
+            wallet_address: wallet_address.to_string(),
+            event_type,
+            token_mint,
+            token_amount,
+            sol_amount,
+            usd_value: self.price_per_token * token_amount,
+            timestamp,
+            transaction_fee: Decimal::ZERO,
+            metadata: EventMetadata {
+                program_id: None,
+                instruction_index: None,
+                exchange: Some(self.source.clone()),
+                price_per_token: Some(self.price_per_token),
+                extra,
+            },
+        }
+    }
 }
 
 // Tests removed - will use integration tests with SystemConfig

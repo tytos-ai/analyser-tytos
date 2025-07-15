@@ -141,7 +141,6 @@ pub struct WalletResult {
 
 /// Query parameters for discovered wallets endpoint
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct DiscoveredWalletsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -192,7 +191,6 @@ pub struct DiscoveredWalletsSummary {
 
 /// Configuration update request
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct ConfigUpdateRequest {
     pub pnl_filters: Option<PnLFiltersUpdate>,
     pub system_settings: Option<SystemSettingsUpdate>,
@@ -200,7 +198,6 @@ pub struct ConfigUpdateRequest {
 
 /// P&L filters update
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct PnLFiltersUpdate {
     pub timeframe_mode: Option<String>,
     pub timeframe_general: Option<String>,
@@ -213,7 +210,6 @@ pub struct PnLFiltersUpdate {
 
 /// System settings update
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct SystemSettingsUpdate {
     pub max_signatures: Option<u32>,
     pub process_loop_ms: Option<u64>,
@@ -223,7 +219,6 @@ pub struct SystemSettingsUpdate {
 
 /// System logs query parameters
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct LogsQuery {
     pub level: Option<String>, // "error", "warn", "info", "debug"
     pub limit: Option<u32>,
@@ -419,10 +414,8 @@ pub struct DiscoveryCycleResponse {
 pub struct AllResultsQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
-    #[allow(dead_code)]
-    pub sort_by: Option<String>, // "pnl", "analyzed_at", "wallet_address"
-    #[allow(dead_code)]
-    pub order: Option<String>,   // "asc", "desc"
+    pub sort_by: Option<String>, // "pnl", "analyzed_at", "wallet_address" - TODO: implement sorting
+    pub order: Option<String>,   // "asc", "desc" - TODO: implement sorting
 }
 
 /// Response for all P&L results
@@ -519,8 +512,7 @@ pub struct ServicesComponentHealth {
 pub struct BatchJobHistoryQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
-    #[allow(dead_code)]
-    pub status: Option<String>, // Filter by status
+    pub status: Option<String>, // Filter by status - TODO: implement status filtering
 }
 
 /// Summary of a batch job for history listing

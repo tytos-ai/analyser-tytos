@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use config_manager::BirdEyeConfig;
-use pnl_core::{PriceFetcher, Result as PnLResult};
+use pnl_core::{PriceFetcher, Result as PnLResult, GeneralTraderTransaction, TokenTransactionSide};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, error, warn};
+use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum BirdEyeError {
@@ -102,44 +103,6 @@ pub struct TopTrader {
     pub volume_sell: f64,
 }
 
-/// Trader transactions response from BirdEye
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraderTxsResponse {
-    pub success: bool,
-    pub data: TraderTxsData,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraderTxsData {
-    pub items: Vec<TraderTransaction>,
-    #[serde(rename = "hasNext")]
-    pub has_next: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraderTransaction {
-    #[serde(rename = "txHash")]
-    pub tx_hash: String,
-    #[serde(rename = "blockUnixTime")]
-    pub block_unix_time: i64,
-    #[serde(rename = "blockHumanTime")]
-    pub block_human_time: String,
-    pub side: String, // "buy" or "sell"
-    #[serde(rename = "tokenAddress")]
-    pub token_address: String,
-    #[serde(rename = "tokenSymbol")]
-    pub token_symbol: Option<String>,
-    #[serde(rename = "tokenAmount")]
-    pub token_amount: f64,
-    #[serde(rename = "tokenPrice")]
-    pub token_price: f64,
-    #[serde(rename = "volumeUsd")]
-    pub volume_usd: f64,
-    pub source: Option<String>,
-    #[serde(rename = "poolAddress")]
-    pub pool_address: Option<String>,
-}
-
 /// General trader transactions response from BirdEye (/trader/txs/seek_by_time)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralTraderTransactionsResponse {
@@ -153,63 +116,7 @@ pub struct GeneralTraderTransactionsData {
     pub has_next: Option<bool>, // Make optional since it may not always be present
 }
 
-/// Single transaction from general BirdEye trader API
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeneralTraderTransaction {
-    pub quote: TokenTransactionSide,
-    pub base: TokenTransactionSide,
-    #[serde(rename = "base_price")]
-    pub base_price: Option<f64>,
-    #[serde(rename = "quote_price")]
-    #[serde(deserialize_with = "deserialize_nullable_f64")]
-    pub quote_price: f64,
-    #[serde(rename = "tx_hash")]
-    pub tx_hash: String,
-    pub source: String,
-    #[serde(rename = "block_unix_time")]
-    pub block_unix_time: i64,
-    #[serde(rename = "tx_type")]
-    #[serde(default = "default_tx_type")]
-    pub tx_type: String, // "swap"
-    #[serde(default)]
-    pub address: String, // Program address
-    #[serde(default)]
-    pub owner: String,   // Wallet address
-}
 
-/// Token side of a transaction (quote or base)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenTransactionSide {
-    #[serde(default = "default_symbol")]
-    pub symbol: String, // Make resilient to missing symbol
-    #[serde(default)]
-    pub decimals: u32,
-    #[serde(deserialize_with = "deserialize_nullable_string")]
-    pub address: String, // Make resilient to null values
-    #[serde(deserialize_with = "deserialize_amount")]
-    pub amount: u128,
-    #[serde(rename = "type")]
-    pub transfer_type: Option<String>, // "transfer", "transferChecked", "split", "burn", "mintTo", etc.
-    #[serde(rename = "type_swap")]
-    #[serde(deserialize_with = "deserialize_nullable_string")]
-    pub type_swap: String, // "from", "to" - Make resilient to null values
-    #[serde(rename = "ui_amount")]
-    #[serde(default)]
-    #[serde(deserialize_with = "deserialize_optional_nullable_f64")]
-    pub ui_amount: f64, // Make resilient to missing/null values
-    pub price: Option<f64>,
-    #[serde(rename = "nearest_price")]
-    pub nearest_price: Option<f64>,
-    #[serde(rename = "change_amount")]
-    #[serde(deserialize_with = "deserialize_signed_amount")]
-    pub change_amount: i128,
-    #[serde(rename = "ui_change_amount")]
-    #[serde(default)]
-    #[serde(deserialize_with = "deserialize_optional_nullable_f64")]
-    pub ui_change_amount: f64, // Make resilient to missing/null values
-    #[serde(rename = "fee_info")]
-    pub fee_info: Option<serde_json::Value>,
-}
 
 /// Historical price response from BirdEye
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,8 +171,55 @@ pub struct TokenPriceData {
     pub liquidity: Option<f64>,
 }
 
+/// Consolidated transaction representing the net effect of a complete transaction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsolidatedTransaction {
+    /// Transaction hash
+    pub tx_hash: String,
+    
+    /// Block timestamp
+    pub block_unix_time: i64,
+    
+    /// Net token changes (positive = received, negative = sent)
+    pub net_token_changes: HashMap<String, ConsolidatedTokenChange>,
+    
+    /// Total USD volume of the transaction
+    pub total_volume_usd: f64,
+    
+    /// Transaction source/exchange
+    pub source: String,
+    
+    /// Wallet address
+    pub wallet_address: String,
+}
+
+/// Net change for a specific token within a consolidated transaction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsolidatedTokenChange {
+    /// Token symbol
+    pub symbol: String,
+    
+    /// Token address/mint
+    pub address: String,
+    
+    /// Net change in UI amount (positive = received, negative = sent)
+    pub net_ui_amount: f64,
+    
+    /// Net change in raw amount with decimals
+    pub net_raw_amount: i128,
+    
+    /// Token decimals
+    pub decimals: u32,
+    
+    /// USD value of the net change (positive = value in, negative = value out)
+    pub usd_value: f64,
+    
+    /// Price per token at time of transaction
+    pub price_per_token: f64,
+}
+
 /// BirdEye API client
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct BirdEyeClient {
     config: BirdEyeConfig,
     http_client: Client,
@@ -281,6 +235,11 @@ impl BirdEyeClient {
             config,
             http_client,
         })
+    }
+
+    /// Get the BirdEye client configuration
+    pub fn config(&self) -> &BirdEyeConfig {
+        &self.config
     }
 
     /// Get trending tokens from BirdEye
@@ -360,67 +319,6 @@ impl BirdEyeClient {
         info!("Retrieved {} top traders from BirdEye for token {}", 
               top_traders_response.data.items.len(), token_address);
         Ok(top_traders_response.data.items)
-    }
-
-    /// Get transaction history for a specific trader and token
-    pub async fn get_trader_transactions(
-        &self,
-        wallet_address: &str,
-        token_address: &str,
-        from_time: Option<i64>,
-        to_time: Option<i64>,
-        limit: Option<u32>,
-    ) -> Result<Vec<TraderTransaction>, BirdEyeError> {
-        let url = format!("{}/trader/txs/seek_by_time", self.config.api_base_url);
-        
-        debug!("Fetching trader transactions from BirdEye for wallet: {}", wallet_address);
-        
-        let mut query_params = vec![
-            ("address", wallet_address),
-        ];
-        
-        let from_string;
-        let to_string;
-        let limit_string;
-        
-        if let Some(from) = from_time {
-            from_string = from.to_string();
-            query_params.push(("after_time", &from_string));
-        }
-        if let Some(to) = to_time {
-            to_string = to.to_string();
-            query_params.push(("before_time", &to_string));
-        }
-        if let Some(limit_val) = limit {
-            limit_string = limit_val.to_string();
-            query_params.push(("limit", &limit_string));
-        }
-
-        let response = self.http_client
-            .get(&url)
-            .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
-            .query(&query_params)
-            .send()
-            .await?;
-
-        if response.status() == 429 {
-            return Err(BirdEyeError::RateLimit);
-        }
-
-        if !response.status().is_success() {
-            return Err(BirdEyeError::Api(format!("HTTP {}", response.status())));
-        }
-
-        let trader_txs_response: TraderTxsResponse = response.json().await?;
-        
-        if !trader_txs_response.success {
-            return Err(BirdEyeError::Api("API returned success=false".to_string()));
-        }
-
-        debug!("Retrieved {} transactions from BirdEye for wallet {} token {}", 
-               trader_txs_response.data.items.len(), wallet_address, token_address);
-        Ok(trader_txs_response.data.items)
     }
 
     /// Get all trader transactions for a wallet (general endpoint without token filter)
@@ -682,16 +580,6 @@ impl BirdEyeClient {
             .map_err(|e| {
                 error!("💥 JSON parsing failed for wallet {}: {}", wallet_address, e);
                 error!("💥 Response length: {} bytes", response_text.len());
-                
-                // Log the problematic section for debugging
-                if let Some(column) = extract_column_from_error(&e.to_string()) {
-                    let start = column.saturating_sub(100);
-                    let end = std::cmp::min(column + 100, response_text.len());
-                    if start < response_text.len() {
-                        let snippet = &response_text[start..end];
-                        error!("💥 Error context (column {}): ...{}...", column, snippet.replace('\n', " "));
-                    }
-                }
                 
                 BirdEyeError::Api(format!("JSON parsing error: {}", e))
             })?;
@@ -958,6 +846,180 @@ impl BirdEyeClient {
             })
             .collect()
     }
+
+    /// Consolidate raw Birdeye transactions by tx_hash into net effects
+    /// This is the critical function that fixes the P&L calculation accuracy
+    pub fn consolidate_transactions_by_hash(
+        &self,
+        raw_transactions: Vec<GeneralTraderTransaction>,
+        wallet_address: String,
+    ) -> Vec<ConsolidatedTransaction> {
+        let mut consolidated_map: HashMap<String, ConsolidatedTransaction> = HashMap::new();
+        let raw_tx_count = raw_transactions.len();
+        
+        debug!("Consolidating {} raw transactions by tx_hash for wallet {}", 
+               raw_tx_count, wallet_address);
+        
+        for tx in raw_transactions {
+            let entry = consolidated_map.entry(tx.tx_hash.clone()).or_insert_with(|| {
+                ConsolidatedTransaction {
+                    tx_hash: tx.tx_hash.clone(),
+                    block_unix_time: tx.block_unix_time,
+                    net_token_changes: HashMap::new(),
+                    total_volume_usd: 0.0,
+                    source: tx.source.clone(),
+                    wallet_address: wallet_address.clone(),
+                }
+            });
+            
+            // Add volume to total
+            entry.total_volume_usd += tx.volume_usd;
+            
+            // Process quote side
+            self.process_token_side(
+                &tx.quote,
+                &mut entry.net_token_changes,
+                &tx.tx_hash,
+            );
+            
+            // Process base side
+            self.process_token_side(
+                &tx.base,
+                &mut entry.net_token_changes,
+                &tx.tx_hash,
+            );
+        }
+        
+        let mut consolidated_transactions: Vec<ConsolidatedTransaction> = consolidated_map.into_values().collect();
+        
+        // Sort by block time
+        consolidated_transactions.sort_by_key(|tx| tx.block_unix_time);
+        
+        debug!("Consolidated {} raw transactions into {} net transactions for wallet {}", 
+               raw_tx_count, consolidated_transactions.len(), wallet_address);
+        
+        consolidated_transactions
+    }
+    
+    /// Process a single token side (quote or base) and update net changes
+    fn process_token_side(
+        &self,
+        token_side: &TokenTransactionSide,
+        net_changes: &mut HashMap<String, ConsolidatedTokenChange>,
+        tx_hash: &str,
+    ) {
+        let token_address = token_side.address.clone();
+        
+        // Get or create the net change entry for this token
+        let net_change = net_changes.entry(token_address.clone()).or_insert_with(|| {
+            ConsolidatedTokenChange {
+                symbol: token_side.symbol.clone(),
+                address: token_address.clone(),
+                net_ui_amount: 0.0,
+                net_raw_amount: 0,
+                decimals: token_side.decimals,
+                usd_value: 0.0,
+                price_per_token: token_side.price.unwrap_or(0.0),
+            }
+        });
+        
+        // Add the UI amount change (this is the critical net calculation)
+        net_change.net_ui_amount += token_side.ui_change_amount;
+        net_change.net_raw_amount += token_side.change_amount;
+        
+        // Calculate USD value based on the change
+        let token_price = token_side.price.unwrap_or(0.0);
+        let usd_change = token_side.ui_change_amount * token_price;
+        net_change.usd_value += usd_change;
+        
+        // Update price if we have a more recent one
+        if token_price > 0.0 {
+            net_change.price_per_token = token_price;
+        }
+        
+        debug!("Token {} in tx {}: ui_change={}, usd_change={}, net_ui={}, net_usd={}", 
+               token_side.symbol, tx_hash, token_side.ui_change_amount, usd_change, 
+               net_change.net_ui_amount, net_change.usd_value);
+    }
+    
+    /// Convert consolidated transactions to FinancialEvents for P&L calculation
+    pub fn consolidated_to_financial_events(
+        &self,
+        consolidated_txs: Vec<ConsolidatedTransaction>,
+    ) -> Result<Vec<pnl_core::FinancialEvent>, BirdEyeError> {
+        use pnl_core::{FinancialEvent, EventType, EventMetadata};
+        use rust_decimal::Decimal;
+        use chrono::{DateTime, Utc};
+        use std::collections::HashMap;
+        
+        let mut financial_events = Vec::new();
+        let consolidated_tx_count = consolidated_txs.len();
+        
+        for consolidated_tx in consolidated_txs {
+            let timestamp = DateTime::from_timestamp(consolidated_tx.block_unix_time, 0)
+                .unwrap_or_else(Utc::now);
+            
+            for (token_address, token_change) in consolidated_tx.net_token_changes {
+                // Skip tokens with zero net change
+                if token_change.net_ui_amount.abs() < f64::EPSILON {
+                    continue;
+                }
+                
+                // Determine event type based on net change
+                let event_type = if token_change.net_ui_amount > 0.0 {
+                    EventType::Buy // Net positive = received tokens
+                } else {
+                    EventType::Sell // Net negative = sent tokens
+                };
+                
+                let token_amount = Decimal::from_f64_retain(token_change.net_ui_amount.abs())
+                    .unwrap_or(Decimal::ZERO);
+                
+                let usd_value = Decimal::from_f64_retain(token_change.usd_value.abs())
+                    .unwrap_or(Decimal::ZERO);
+                
+                let price_per_token = Decimal::from_f64_retain(token_change.price_per_token)
+                    .unwrap_or(Decimal::ZERO);
+                
+                // Create metadata with embedded price
+                let mut metadata = EventMetadata {
+                    program_id: None,
+                    instruction_index: None,
+                    exchange: Some(consolidated_tx.source.clone()),
+                    price_per_token: Some(price_per_token),
+                    extra: HashMap::new(),
+                };
+                
+                // Add main_operation to metadata for FIFO engine
+                metadata.extra.insert("main_operation".to_string(), "swap".to_string());
+                
+                let financial_event = FinancialEvent {
+                    id: Uuid::new_v4(),
+                    transaction_id: consolidated_tx.tx_hash.clone(),
+                    wallet_address: consolidated_tx.wallet_address.clone(),
+                    event_type,
+                    token_mint: token_address,
+                    token_amount,
+                    sol_amount: Decimal::ZERO, // Not used in USD-based calculations
+                    usd_value, // This is the key - embedded USD value
+                    timestamp,
+                    transaction_fee: Decimal::ZERO, // TODO: Extract from data if available
+                    metadata,
+                };
+                
+                debug!("Created FinancialEvent: {:?} {} {} for ${}", 
+                       financial_event.event_type, token_change.symbol, 
+                       token_amount, usd_value);
+                
+                financial_events.push(financial_event);
+            }
+        }
+        
+        info!("Converted {} consolidated transactions into {} financial events", 
+              consolidated_tx_count, financial_events.len());
+        
+        Ok(financial_events)
+    }
 }
 
 /// Quality criteria for filtering trending tokens
@@ -1017,353 +1079,7 @@ impl Default for TopTraderFilter {
     }
 }
 
-/// Custom deserializer for amount fields that can be either string or number
-fn deserialize_amount<'de, D>(deserializer: D) -> Result<u128, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{Error, Unexpected, Visitor};
-    use std::fmt;
 
-    struct AmountVisitor;
-
-    impl<'de> Visitor<'de> for AmountVisitor {
-        type Value = u128;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string or number representing an amount")
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value as u128)
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            if value >= 0 {
-                Ok(value as u128)
-            } else {
-                Err(Error::invalid_value(Unexpected::Signed(value), &self))
-            }
-        }
-
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            // Handle large floating point numbers more gracefully
-            if value >= 0.0 && value.is_finite() {
-                // For very large numbers, truncate the fractional part
-                let truncated = value.floor();
-                if truncated <= (u128::MAX as f64) {
-                    Ok(truncated as u128)
-                } else {
-                    // If the number is too large for u128, use u128::MAX
-                    debug!("Large amount {} truncated to u128::MAX", value);
-                    Ok(u128::MAX)
-                }
-            } else {
-                Err(Error::invalid_value(Unexpected::Float(value), &self))
-            }
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            value.parse::<u128>().map_err(|_| {
-                Error::invalid_value(Unexpected::Str(value), &self)
-            })
-        }
-    }
-
-    deserializer.deserialize_any(AmountVisitor)
-}
-
-/// Custom deserializer for signed amount fields that can be either string or number
-fn deserialize_signed_amount<'de, D>(deserializer: D) -> Result<i128, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{Error, Unexpected, Visitor};
-    use std::fmt;
-
-    struct SignedAmountVisitor;
-
-    impl<'de> Visitor<'de> for SignedAmountVisitor {
-        type Value = i128;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string or number representing a signed amount")
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value as i128)
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value as i128)
-        }
-
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            if value.is_finite() {
-                let truncated = if value >= 0.0 { value.floor() } else { value.ceil() };
-                if truncated >= (i128::MIN as f64) && truncated <= (i128::MAX as f64) {
-                    Ok(truncated as i128)
-                } else {
-                    // If the number is too large for i128, use appropriate limit
-                    if value > 0.0 {
-                        debug!("Large positive amount {} truncated to i128::MAX", value);
-                        Ok(i128::MAX)
-                    } else {
-                        debug!("Large negative amount {} truncated to i128::MIN", value);
-                        Ok(i128::MIN)
-                    }
-                }
-            } else {
-                Err(Error::invalid_value(Unexpected::Float(value), &self))
-            }
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            value.parse::<i128>().map_err(|_| {
-                Error::invalid_value(Unexpected::Str(value), &self)
-            })
-        }
-    }
-
-    deserializer.deserialize_any(SignedAmountVisitor)
-}
-
-/// Default value for missing symbol field
-fn default_symbol() -> String {
-    "UNKNOWN".to_string()
-}
-
-/// Default value for missing tx_type field
-fn default_tx_type() -> String {
-    "unknown".to_string()
-}
-
-/// Custom deserializer for nullable f64 fields
-fn deserialize_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{Error, Unexpected, Visitor};
-    use std::fmt;
-
-    struct NullableF64Visitor;
-
-    impl<'de> Visitor<'de> for NullableF64Visitor {
-        type Value = f64;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a number or null")
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            // Return 0.0 for null values
-            Ok(0.0)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            // Return 0.0 for null values
-            Ok(0.0)
-        }
-
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value)
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value as f64)
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value as f64)
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            value.parse::<f64>().map_err(|_| {
-                Error::invalid_value(Unexpected::Str(value), &self)
-            })
-        }
-    }
-
-    deserializer.deserialize_any(NullableF64Visitor)
-}
-
-/// Deserialize a string that might be null
-fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{Error, Visitor};
-    use std::fmt;
-
-    struct NullableStringVisitor;
-
-    impl<'de> Visitor<'de> for NullableStringVisitor {
-        type Value = String;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string or null")
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            // Return empty string for null values
-            Ok(String::new())
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            // Return empty string for null values
-            Ok(String::new())
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value.to_string())
-        }
-
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value)
-        }
-    }
-
-    deserializer.deserialize_any(NullableStringVisitor)
-}
-
-/// Deserialize an optional f64 that might be missing or null
-fn deserialize_optional_nullable_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{Error, Visitor};
-    use std::fmt;
-
-    struct OptionalNullableF64Visitor;
-
-    impl<'de> Visitor<'de> for OptionalNullableF64Visitor {
-        type Value = f64;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a number, null, or missing field")
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            // Return 0.0 for null values
-            Ok(0.0)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            // Return 0.0 for null values
-            Ok(0.0)
-        }
-
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value)
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value as f64)
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(value as f64)
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            match value.parse::<f64>() {
-                Ok(parsed) => Ok(parsed),
-                Err(_) => {
-                    warn!("Could not parse '{}' as f64, using 0.0", value);
-                    Ok(0.0)
-                }
-            }
-        }
-    }
-
-    deserializer.deserialize_any(OptionalNullableF64Visitor)
-}
-
-/// Extract column number from JSON error message for better debugging
-fn extract_column_from_error(error_msg: &str) -> Option<usize> {
-    use regex::Regex;
-    
-    // Look for patterns like "at line 1 column 123" or "column 123"
-    let re = Regex::new(r"column\s+(\d+)").unwrap();
-    if let Some(captures) = re.captures(error_msg) {
-        if let Some(column_match) = captures.get(1) {
-            return column_match.as_str().parse::<usize>().ok();
-        }
-    }
-    None
-}
 
 /// Implementation of PriceFetcher trait for BirdEye
 #[async_trait]
@@ -1407,7 +1123,17 @@ mod tests {
 
     #[test]
     fn test_config_creation() {
-        let config = BirdEyeConfig::default();
+        let config = BirdEyeConfig {
+            api_key: "test".to_string(),
+            api_base_url: "https://public-api.birdeye.so".to_string(),
+            request_timeout_seconds: 30,
+            price_cache_ttl_seconds: 60,
+            rate_limit_per_second: 100,
+            max_traders_per_token: 10,
+            max_transactions_per_trader: 100,
+            default_max_transactions: 1000,
+            max_token_rank: 1000,
+        };
         assert_eq!(config.api_base_url, "https://public-api.birdeye.so");
         assert_eq!(config.request_timeout_seconds, 30);
     }

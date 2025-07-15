@@ -548,7 +548,7 @@ impl RedisClient {
         let stats_key = "pnl_summary_stats";
         
         // Get current stats or create new ones
-        let current_stats_json: Option<String> = conn.get(&stats_key).await?;
+        let current_stats_json: Option<String> = conn.get(stats_key).await?;
         let mut stats = match current_stats_json {
             Some(json) => serde_json::from_str::<PnLSummaryStats>(&json)
                 .unwrap_or_default(),
@@ -575,7 +575,7 @@ impl RedisClient {
         
         // Store updated stats
         let stats_json = serde_json::to_string(&stats)?;
-        let _: () = conn.set(&stats_key, &stats_json).await?;
+        let _: () = conn.set(stats_key, &stats_json).await?;
         
         Ok(())
     }
@@ -585,7 +585,7 @@ impl RedisClient {
         let mut conn = self.get_connection().await?;
         let stats_key = "pnl_summary_stats";
         
-        let stats_json: Option<String> = conn.get(&stats_key).await?;
+        let stats_json: Option<String> = conn.get(stats_key).await?;
         
         match stats_json {
             Some(json) => {

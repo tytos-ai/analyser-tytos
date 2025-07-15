@@ -1,11 +1,15 @@
 pub mod timeframe;
-pub mod partial_fifo;
 pub mod trader_filter;
-pub mod fifo_pnl_engine;
+pub mod new_parser;
+pub mod new_pnl_engine;
+pub mod comprehensive_tests;
 
 // Re-export key trader filtering types
 pub use trader_filter::{TraderFilter, TraderQuality, RiskLevel, TradingStyle, generate_trader_summary};
-pub use fifo_pnl_engine::FifoPnLEngine;
+// New algorithm exports (primary P&L system)
+pub use new_parser::{NewTransactionParser, NewFinancialEvent, NewEventType, ParsedTransaction};
+pub use new_pnl_engine::{NewPnLEngine, TokenPnLResult, PortfolioPnLResult, MatchedTrade, UnmatchedSell, RemainingPosition};
+
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -13,8 +17,68 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use uuid::Uuid;
+
+/// Single transaction from general BirdEye trader API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralTraderTransaction {
+    pub quote: TokenTransactionSide,
+    pub base: TokenTransactionSide,
+    #[serde(rename = "base_price")]
+    pub base_price: Option<f64>,
+    #[serde(rename = "quote_price")]
+    #[serde(deserialize_with = "deserialize_nullable_f64")]
+    pub quote_price: f64,
+    #[serde(rename = "tx_hash")]
+    pub tx_hash: String,
+    pub source: String,
+    #[serde(rename = "block_unix_time")]
+    pub block_unix_time: i64,
+    #[serde(rename = "tx_type")]
+    #[serde(default = "default_tx_type")]
+    pub tx_type: String, // "swap"
+    #[serde(default)]
+    pub address: String, // Program address
+    #[serde(default)]
+    pub owner: String,   // Wallet address
+    #[serde(rename = "volume_usd")]
+    pub volume_usd: f64,
+}
+
+/// Token side of a transaction (quote or base)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenTransactionSide {
+    #[serde(default = "default_symbol")]
+    pub symbol: String, // Make resilient to missing symbol
+    #[serde(default)]
+    pub decimals: u32,
+    #[serde(deserialize_with = "deserialize_nullable_string")]
+    pub address: String, // Make resilient to null values
+    #[serde(deserialize_with = "deserialize_amount")]
+    pub amount: u128,
+    #[serde(rename = "type")]
+    pub transfer_type: Option<String>, // "transfer", "transferChecked", "split", "burn", "mintTo", etc.
+    #[serde(rename = "type_swap")]
+    #[serde(deserialize_with = "deserialize_nullable_string")]
+    pub type_swap: String, // "from", "to" - Make resilient to null values
+    #[serde(rename = "ui_amount")]
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_optional_nullable_f64")]
+    pub ui_amount: f64, // Make resilient to missing/null values
+    pub price: Option<f64>,
+    #[serde(rename = "nearest_price")]
+    pub nearest_price: Option<f64>,
+    #[serde(rename = "change_amount")]
+    #[serde(deserialize_with = "deserialize_signed_amount")]
+    pub change_amount: i128,
+    #[serde(rename = "ui_change_amount")]
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_optional_nullable_f64")]
+    pub ui_change_amount: f64, // Make resilient to missing/null values
+    #[serde(rename = "fee_info")]
+    pub fee_info: Option<serde_json::Value>,
+}
 
 #[derive(Error, Debug)]
 pub enum PnLError {
@@ -31,6 +95,166 @@ pub enum PnLError {
 }
 
 pub type Result<T> = std::result::Result<T, PnLError>;
+
+/// Simplified transaction record for processing external API data before enrichment
+/// This serves as an intermediate format between raw API data and FinancialEvent
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TransactionRecord {
+    /// Transaction signature/hash
+    pub signature: String,
+    
+    /// Wallet address that performed this action
+    pub wallet_address: String,
+    
+    /// Transaction timestamp (Unix timestamp)
+    pub timestamp: i64,
+    
+    /// DEX/source that executed the transaction
+    pub source: String,
+    
+    /// Transaction fee in lamports
+    pub fee: u64,
+    
+    /// Token changes for this wallet in this transaction
+    pub token_changes: Vec<TokenChangeRecord>,
+    
+    /// SOL balance change for this wallet (in lamports)
+    pub sol_balance_change: i64,
+}
+
+/// Individual token balance change within a transaction
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TokenChangeRecord {
+    /// Token mint address
+    pub mint: String,
+    
+    /// Raw token amount change (can be negative)
+    pub raw_amount: i64,
+    
+    /// Human-readable amount change
+    pub ui_amount: f64,
+    
+    /// Token decimals
+    pub decimals: u8,
+    
+    /// Whether this is a buy (positive) or sell (negative) from wallet's perspective
+    pub is_buy: bool,
+}
+
+impl TransactionRecord {
+    /// Convert a TransactionRecord to FinancialEvents with price enrichment
+    pub async fn to_financial_events<P: PriceFetcher>(
+        &self,
+        price_fetcher: &P,
+    ) -> Result<Vec<FinancialEvent>> {
+        let mut events = Vec::new();
+        let timestamp = DateTime::from_timestamp(self.timestamp, 0)
+            .unwrap_or_else(Utc::now);
+        
+        // Convert SOL changes to lamports for fees
+        let transaction_fee = Decimal::from(self.fee) / Decimal::from(1_000_000_000); // Convert lamports to SOL
+        
+        // Process each token change
+        for token_change in &self.token_changes {
+            let token_amount = Decimal::from(token_change.raw_amount.abs()) 
+                / Decimal::from(10_i64.pow(token_change.decimals as u32));
+            
+            // Determine event type based on the change direction
+            let event_type = if token_change.is_buy {
+                EventType::Buy
+            } else {
+                EventType::Sell
+            };
+            
+            // Fetch historical price for this token at this timestamp
+            let price_per_token = price_fetcher
+                .fetch_historical_price(&token_change.mint, timestamp, Some("USD"))
+                .await?
+                .unwrap_or(Decimal::ZERO);
+            
+            // Calculate USD value
+            let usd_value = token_amount * price_per_token;
+            
+            let sol_price = price_fetcher
+                .fetch_historical_price("So11111111111111111111111111111111111111112", timestamp, Some("USD"))
+                .await?
+                .ok_or_else(|| PnLError::PriceFetch(
+                    "Failed to fetch SOL price for token conversion".to_string()
+                ))?;
+
+            // Calculate SOL amount (for buys it's negative cost, for sells it's positive revenue)
+            let sol_amount = if token_change.is_buy {
+                -usd_value / sol_price
+            } else {
+                usd_value / sol_price
+            };
+            
+            let event = FinancialEvent {
+                id: Uuid::new_v4(),
+                transaction_id: self.signature.clone(),
+                wallet_address: self.wallet_address.clone(),
+                event_type,
+                token_mint: token_change.mint.clone(),
+                token_amount,
+                sol_amount,
+                usd_value,
+                timestamp,
+                transaction_fee,
+                metadata: EventMetadata {
+                    program_id: None,
+                    instruction_index: None,
+                    exchange: Some(self.source.clone()),
+                    price_per_token: Some(price_per_token),
+                    extra: HashMap::new(),
+                },
+            };
+            
+            events.push(event);
+        }
+        
+        // Add SOL balance change as a separate event if significant
+        if self.sol_balance_change.abs() > 10_000_000 { // > 0.01 SOL
+            let sol_amount = Decimal::from(self.sol_balance_change) / Decimal::from(1_000_000_000);
+            let sol_price = price_fetcher
+                .fetch_historical_price("So11111111111111111111111111111111111111112", timestamp, Some("USD"))
+                .await?
+                .ok_or_else(|| PnLError::PriceFetch(
+                    "Failed to fetch SOL price for balance change conversion".to_string()
+                ))?;
+            let usd_value = sol_amount.abs() * sol_price;
+            
+            let event_type = if self.sol_balance_change > 0 {
+                EventType::Buy // Received SOL
+            } else {
+                EventType::Sell // Sent SOL
+            };
+            
+            let event = FinancialEvent {
+                id: Uuid::new_v4(),
+                transaction_id: self.signature.clone(),
+                wallet_address: self.wallet_address.clone(),
+                event_type,
+                token_mint: "So11111111111111111111111111111111111111112".to_string(), // SOL mint
+                token_amount: sol_amount.abs(),
+                sol_amount,
+                usd_value,
+                timestamp,
+                transaction_fee: Decimal::ZERO, // Don't double-count fees
+                metadata: EventMetadata {
+                    program_id: None,
+                    instruction_index: None,
+                    exchange: Some(self.source.clone()),
+                    price_per_token: Some(sol_price),
+                    extra: HashMap::new(),
+                },
+            };
+            
+            events.push(event);
+        }
+        
+        Ok(events)
+    }
+}
 
 /// Core data structure representing a financial event from a parsed transaction
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -84,6 +308,7 @@ pub enum EventType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub struct EventMetadata {
     /// Program that executed this transaction
     pub program_id: Option<String>,
@@ -101,20 +326,27 @@ pub struct EventMetadata {
     pub extra: HashMap<String, String>,
 }
 
-impl Default for EventMetadata {
+
+impl Default for FinancialEvent {
     fn default() -> Self {
         Self {
-            program_id: None,
-            instruction_index: None,
-            exchange: None,
-            price_per_token: None,
-            extra: HashMap::new(),
+            id: Uuid::new_v4(),
+            transaction_id: String::new(),
+            wallet_address: String::new(),
+            event_type: EventType::Buy,
+            token_mint: String::new(),
+            token_amount: Decimal::ZERO,
+            sol_amount: Decimal::ZERO,
+            usd_value: Decimal::ZERO,
+            timestamp: Utc::now(),
+            transaction_fee: Decimal::ZERO,
+            metadata: Default::default(),
         }
     }
 }
 
 /// P&L calculation result for a wallet
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PnLReport {
     /// Wallet address analyzed
     pub wallet_address: String,
@@ -135,7 +367,7 @@ pub struct PnLReport {
     pub metadata: ReportMetadata,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnalysisTimeframe {
     /// Start time of analysis (None = from beginning)
     pub start_time: Option<DateTime<Utc>>,
@@ -147,7 +379,7 @@ pub struct AnalysisTimeframe {
     pub mode: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PnLSummary {
     /// Total realized profit/loss in USD
     pub realized_pnl_usd: Decimal,
@@ -186,7 +418,7 @@ pub struct PnLSummary {
     pub roi_percentage: Decimal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TokenPnL {
     /// Token mint address
     pub token_mint: String,
@@ -231,7 +463,7 @@ pub struct TokenPnL {
     pub hold_time_minutes: Option<Decimal>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Holding {
     /// Token mint address
     pub token_mint: String,
@@ -258,7 +490,7 @@ pub struct Holding {
     pub unrealized_pnl_usd: Decimal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReportMetadata {
     /// When this report was generated
     pub generated_at: DateTime<Utc>,
@@ -279,7 +511,342 @@ pub struct ReportMetadata {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Custom deserializer for amount fields that can be either string or number
+fn deserialize_amount<'de, D>(deserializer: D) -> std::result::Result<u128, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct AmountVisitor;
+
+    impl Visitor<'_> for AmountVisitor {
+        type Value = u128;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or number representing an amount")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as u128)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            if value >= 0 {
+                Ok(value as u128)
+            } else {
+                Err(Error::invalid_value(Unexpected::Signed(value), &self))
+            }
+        }
+
+        fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Handle large floating point numbers more gracefully
+            if value >= 0.0 && value.is_finite() {
+                // For very large numbers, truncate the fractional part
+                let truncated = value.floor();
+                if truncated <= (u128::MAX as f64) {
+                    Ok(truncated as u128)
+                } else {
+                    // If the number is too large for u128, use u128::MAX
+                    debug!("Large amount {} truncated to u128::MAX", value);
+                    Ok(u128::MAX)
+                }
+            } else {
+                Err(Error::invalid_value(Unexpected::Float(value), &self))
+            }
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            value.parse::<u128>().map_err(|_| {
+                Error::invalid_value(Unexpected::Str(value), &self)
+            })
+        }
+    }
+
+    deserializer.deserialize_any(AmountVisitor)
+}
+
+/// Custom deserializer for signed amount fields that can be either string or number
+fn deserialize_signed_amount<'de, D>(deserializer: D) -> std::result::Result<i128, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct SignedAmountVisitor;
+
+    impl Visitor<'_> for SignedAmountVisitor {
+        type Value = i128;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or number representing a signed amount")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as i128)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as i128)
+        }
+
+        fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            if value.is_finite() {
+                let truncated = if value >= 0.0 { value.floor() } else { value.ceil() };
+                if truncated >= (i128::MIN as f64) && truncated <= (i128::MAX as f64) {
+                    Ok(truncated as i128)
+                } else {
+                    // If the number is too large for i128, use appropriate limit
+                    if value > 0.0 {
+                        debug!("Large positive amount {} truncated to i128::MAX", value);
+                        Ok(i128::MAX)
+                    } else {
+                        debug!("Large negative amount {} truncated to i128::MIN", value);
+                        Ok(i128::MIN)
+                    }
+                }
+            } else {
+                Err(Error::invalid_value(Unexpected::Float(value), &self))
+            }
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            value.parse::<i128>().map_err(|_| {
+                Error::invalid_value(Unexpected::Str(value), &self)
+            })
+        }
+    }
+
+    deserializer.deserialize_any(SignedAmountVisitor)
+}
+
+/// Default value for missing symbol field
+fn default_symbol() -> String {
+    "UNKNOWN".to_string()
+}
+
+/// Default value for missing tx_type field
+fn default_tx_type() -> String {
+    "unknown".to_string()
+}
+
+/// Custom deserializer for nullable f64 fields
+fn deserialize_nullable_f64<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct NullableF64Visitor;
+
+    impl Visitor<'_> for NullableF64Visitor {
+        type Value = f64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a number or null")
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            value.parse::<f64>().map_err(|_| {
+                Error::invalid_value(Unexpected::Str(value), &self)
+            })
+        }
+    }
+
+    deserializer.deserialize_any(NullableF64Visitor)
+}
+
+/// Deserialize a string that might be null
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+
+    struct NullableStringVisitor;
+
+    impl Visitor<'_> for NullableStringVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or null")
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return empty string for null values
+            Ok(String::new())
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return empty string for null values
+            Ok(String::new())
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value.to_string())
+        }
+
+        fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value)
+        }
+    }
+
+    deserializer.deserialize_any(NullableStringVisitor)
+}
+
+/// Deserialize an optional f64 that might be missing or null
+fn deserialize_optional_nullable_f64<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+    use std::fmt;
+
+    struct OptionalNullableF64Visitor;
+
+    impl Visitor<'_> for OptionalNullableF64Visitor {
+        type Value = f64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a number, null, or missing field")
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0.0 for null values
+            Ok(0.0)
+        }
+
+        fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as f64)
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            match value.parse::<f64>() {
+                Ok(parsed) => Ok(parsed),
+                Err(_) => {
+                    warn!("Could not parse '{}' as f64, using 0.0", value);
+                    Ok(0.0)
+                }
+            }
+        }
+    }
+
+    deserializer.deserialize_any(OptionalNullableF64Visitor)
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PnLFilters {
     /// Minimum wallet capital in SOL
     pub min_capital_sol: Decimal,
@@ -324,644 +891,4 @@ pub trait PriceFetcher: Send + Sync {
 }
 
 
-/// Main P&L calculation engine
-pub struct PnLEngine<P: PriceFetcher> {
-    price_fetcher: P,
-}
 
-impl<P: PriceFetcher> PnLEngine<P> {
-    pub fn new(price_fetcher: P) -> Self {
-        Self { price_fetcher }
-    }
-    
-    /// Calculate P&L for a wallet given its financial events
-    pub async fn calculate_pnl(
-        &self,
-        wallet_address: &str,
-        events: Vec<FinancialEvent>,
-        filters: PnLFilters,
-    ) -> Result<PnLReport> {
-        let start_time = std::time::Instant::now();
-        
-        info!("Starting P&L calculation for wallet: {}", wallet_address);
-        debug!("Processing {} events with filters: {:?}", events.len(), filters);
-        
-        // Filter events based on criteria
-        let events_len = events.len();
-        let filtered_events = self.filter_events(events, &filters)?;
-        
-        debug!("After filtering: {} events remain", filtered_events.len());
-        
-        // Early validation checks
-        if filtered_events.len() < filters.min_trades as usize {
-            return Err(PnLError::Configuration(format!(
-                "Wallet has {} trades, minimum required: {}",
-                filtered_events.len(),
-                filters.min_trades
-            )));
-        }
-        
-        // Group events by token
-        let events_by_token = self.group_events_by_token(&filtered_events);
-        
-        // Calculate per-token P&L
-        let mut token_pnl_results = Vec::new();
-        let mut current_holdings = Vec::new();
-        let mut warnings = Vec::new();
-        
-        for (token_mint, token_events) in events_by_token {
-            match self.calculate_token_pnl(&token_mint, token_events).await {
-                Ok((token_pnl, holding)) => {
-                    token_pnl_results.push(token_pnl);
-                    if let Some(h) = holding {
-                        current_holdings.push(h);
-                    }
-                }
-                Err(e) => {
-                    let warning = format!("Failed to calculate P&L for token {}: {}", token_mint, e);
-                    warn!("{}", warning);
-                    warnings.push(warning);
-                }
-            }
-        }
-        
-        // Calculate overall summary
-        let summary = self.calculate_summary(&token_pnl_results, &filtered_events, &filters).await?;
-        
-        // Apply final filters
-        if summary.total_capital_deployed_sol < filters.min_capital_sol {
-            return Err(PnLError::Configuration(format!(
-                "Wallet capital {} SOL below minimum: {} SOL",
-                summary.total_capital_deployed_sol,
-                filters.min_capital_sol
-            )));
-        }
-        
-        if summary.win_rate < filters.min_win_rate {
-            return Err(PnLError::Configuration(format!(
-                "Wallet win rate {}% below minimum: {}%",
-                summary.win_rate,
-                filters.min_win_rate
-            )));
-        }
-        
-        if summary.avg_hold_time_minutes < filters.min_hold_minutes {
-            return Err(PnLError::Configuration(format!(
-                "Average hold time {} minutes below minimum: {} minutes",
-                summary.avg_hold_time_minutes,
-                filters.min_hold_minutes
-            )));
-        }
-        
-        let analysis_duration = start_time.elapsed().as_secs_f64();
-        
-        let timeframe = filters.timeframe_filter.clone().unwrap_or(AnalysisTimeframe {
-            start_time: None,
-            end_time: None,
-            mode: "none".to_string(),
-        });
-        
-        let report = PnLReport {
-            wallet_address: wallet_address.to_string(),
-            timeframe,
-            summary,
-            token_breakdown: token_pnl_results,
-            current_holdings,
-            metadata: ReportMetadata {
-                generated_at: Utc::now(),
-                events_processed: filtered_events.len() as u32,
-                events_filtered: (events_len - filtered_events.len()) as u32,
-                analysis_duration_seconds: analysis_duration,
-                filters_applied: filters.clone(),
-                warnings,
-            },
-        };
-        
-        info!(
-            "P&L calculation completed for wallet {} in {:.2}s",
-            wallet_address, analysis_duration
-        );
-        
-        Ok(report)
-    }
-    
-    /// Filter events based on timeframe and other criteria
-    fn filter_events(&self, events: Vec<FinancialEvent>, filters: &PnLFilters) -> Result<Vec<FinancialEvent>> {
-        let mut filtered = events;
-        
-        // Apply timeframe filter
-        if let Some(ref timeframe) = filters.timeframe_filter {
-            filtered.retain(|event| {
-                let in_start_range = timeframe.start_time
-                    .map(|start| event.timestamp >= start)
-                    .unwrap_or(true);
-                
-                let in_end_range = timeframe.end_time
-                    .map(|end| event.timestamp <= end)
-                    .unwrap_or(true);
-                
-                in_start_range && in_end_range
-            });
-        }
-        
-        // Apply max signatures filter
-        if let Some(max_sigs) = filters.max_signatures {
-            // Group by transaction ID and take only the first max_sigs transactions
-            let mut transactions: Vec<_> = filtered
-                .iter()
-                .map(|e| e.transaction_id.clone())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-            
-            transactions.sort();
-            transactions.truncate(max_sigs as usize);
-            
-            let allowed_txs: std::collections::HashSet<_> = transactions.into_iter().collect();
-            filtered.retain(|event| allowed_txs.contains(&event.transaction_id));
-        }
-        
-        // Sort by timestamp
-        filtered.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-        
-        Ok(filtered)
-    }
-    
-    /// Group events by token mint
-    fn group_events_by_token(&self, events: &[FinancialEvent]) -> HashMap<String, Vec<FinancialEvent>> {
-        let mut groups = HashMap::new();
-        
-        for event in events {
-            groups
-                .entry(event.token_mint.clone())
-                .or_insert_with(Vec::new)
-                .push(event.clone());
-        }
-        
-        groups
-    }
-    
-    /// Calculate P&L for a specific token
-    async fn calculate_token_pnl(
-        &self,
-        token_mint: &str,
-        events: Vec<FinancialEvent>,
-    ) -> Result<(TokenPnL, Option<Holding>)> {
-        debug!("Calculating P&L for token: {}", token_mint);
-        
-        let mut total_bought = Decimal::ZERO;
-        let mut total_sold = Decimal::ZERO;
-        let mut total_buy_cost_usd = Decimal::ZERO;
-        let mut total_sell_revenue_usd = Decimal::ZERO;
-        let mut buy_count = 0u32;
-        let mut sell_count = 0u32;
-        let mut first_buy_time = None;
-        let mut last_sell_time = None;
-        
-        // Process buy/sell events
-        for event in &events {
-            match event.event_type {
-                EventType::Buy => {
-                    let price = self.get_event_price(&event).await?;
-                    let cost_usd = event.token_amount * price;
-                    
-                    total_bought += event.token_amount;
-                    total_buy_cost_usd += cost_usd;
-                    buy_count += 1;
-                    
-                    if first_buy_time.is_none() {
-                        first_buy_time = Some(event.timestamp);
-                    }
-                }
-                EventType::Sell => {
-                    let price = self.get_event_price(&event).await?;
-                    let revenue_usd = event.token_amount * price;
-                    
-                    total_sold += event.token_amount;
-                    total_sell_revenue_usd += revenue_usd;
-                    sell_count += 1;
-                    
-                    last_sell_time = Some(event.timestamp);
-                }
-                _ => {} // Handle transfers separately if needed
-            }
-        }
-        
-        // Calculate averages
-        let avg_buy_price_usd = if total_bought > Decimal::ZERO {
-            total_buy_cost_usd / total_bought
-        } else {
-            Decimal::ZERO
-        };
-        
-        let avg_sell_price_usd = if total_sold > Decimal::ZERO {
-            total_sell_revenue_usd / total_sold
-        } else {
-            Decimal::ZERO
-        };
-        
-        // Calculate realized P&L
-        let realized_pnl_usd = total_sell_revenue_usd - (total_sold * avg_buy_price_usd);
-        
-        // Calculate current holdings and unrealized P&L
-        let current_amount = total_bought - total_sold;
-        let (unrealized_pnl_usd, current_holding) = if current_amount > Decimal::ZERO {
-            // CRITICAL: Always fetch fresh current price for unrealized P&L calculations
-            // Do NOT use get_event_price here as it may use cached historical prices
-            debug!("Fetching FRESH current price for token {} (amount: {})", token_mint, current_amount);
-            
-            let current_prices = self.price_fetcher
-                .fetch_prices(&[token_mint.to_string()], None)
-                .await?;
-            
-            let fetched_price = current_prices
-                .get(token_mint)
-                .copied()
-                .unwrap_or_else(|| {
-                    warn!("No current price found for token {}, using zero", token_mint);
-                    Decimal::ZERO
-                });
-            
-            // Use the fresh current price from Jupiter API (now includes market simulation)
-            let current_price = fetched_price;
-            
-            debug!("Token {}: current_amount={}, avg_buy_price_usd={}, FRESH_current_price={}", 
-                  token_mint, current_amount, avg_buy_price_usd, current_price);
-            
-            let cost_basis = avg_buy_price_usd;
-            let current_value = current_amount * current_price;
-            let total_cost = current_amount * cost_basis;
-            let unrealized = current_value - total_cost;
-            
-            debug!("Token {}: current_value={}, total_cost={}, unrealized_pnl={}", 
-                  token_mint, current_value, total_cost, unrealized);
-            
-            // Validate that we're not using the same price for cost basis and current price
-            if (current_price - cost_basis).abs() < Decimal::new(1, 10) { // 0.0000000001 tolerance
-                warn!("WARNING: Current price ({}) is very close to cost basis ({}) for token {}. This may indicate a pricing issue.", 
-                     current_price, cost_basis, token_mint);
-            }
-            
-            let holding = Holding {
-                token_mint: token_mint.to_string(),
-                token_symbol: None, // Could be fetched separately
-                amount: current_amount,
-                avg_cost_basis_usd: cost_basis,
-                current_price_usd: current_price,
-                total_cost_basis_usd: total_cost,
-                current_value_usd: current_value,
-                unrealized_pnl_usd: unrealized,
-            };
-            
-            (unrealized, Some(holding))
-        } else {
-            (Decimal::ZERO, None)
-        };
-        
-        // Calculate hold time
-        let hold_time_minutes = if let (Some(first_buy), Some(last_sell)) = (first_buy_time, last_sell_time) {
-            Some(Decimal::from((last_sell - first_buy).num_minutes()))
-        } else {
-            None
-        };
-        
-        let token_pnl = TokenPnL {
-            token_mint: token_mint.to_string(),
-            token_symbol: None,
-            realized_pnl_usd,
-            unrealized_pnl_usd,
-            total_pnl_usd: realized_pnl_usd + unrealized_pnl_usd,
-            buy_count,
-            sell_count,
-            total_bought,
-            total_sold,
-            avg_buy_price_usd,
-            avg_sell_price_usd,
-            first_buy_time,
-            last_sell_time,
-            hold_time_minutes,
-        };
-        
-        Ok((token_pnl, current_holding))
-    }
-    
-    /// Get price for an event, using metadata price or fetching current price
-    async fn get_event_price(&self, event: &FinancialEvent) -> Result<Decimal> {
-        // For historical transactions, prefer metadata price if available
-        if let Some(price) = event.metadata.price_per_token {
-            debug!("Using metadata price for {}: {}", event.token_mint, price);
-            return Ok(price);
-        }
-        
-        // Fallback to fetching current price (not ideal for historical accuracy)
-        debug!("No metadata price for {}, fetching current price", event.token_mint);
-        let prices = self.price_fetcher
-            .fetch_prices(&[event.token_mint.clone()], None)
-            .await?;
-        
-        let price = prices.get(&event.token_mint)
-            .copied()
-            .ok_or_else(|| PnLError::PriceFetch(format!("No price found for token: {}", event.token_mint)))?;
-        
-        debug!("Fetched current price for {}: {}", event.token_mint, price);
-        Ok(price)
-    }
-    
-    /// Calculate overall P&L summary
-    async fn calculate_summary(
-        &self,
-        token_results: &[TokenPnL],
-        events: &[FinancialEvent],
-        _filters: &PnLFilters,
-    ) -> Result<PnLSummary> {
-        let total_realized_pnl = token_results.iter()
-            .map(|t| t.realized_pnl_usd)
-            .sum();
-        
-        let total_unrealized_pnl = token_results.iter()
-            .map(|t| t.unrealized_pnl_usd)
-            .sum();
-        
-        let total_pnl_usd = total_realized_pnl + total_unrealized_pnl;
-        
-        // Calculate fees
-        let total_fees_sol = events.iter()
-            .map(|e| e.transaction_fee)
-            .sum();
-        
-        // Get SOL price for fee conversion (assuming SOL mint is So11111...)
-        let sol_price = self.price_fetcher
-            .fetch_prices(&["So11111111111111111111111111111111111111112".to_string()], None)
-            .await?
-            .get("So11111111111111111111111111111111111111112")
-            .copied()
-            .unwrap_or(Decimal::ZERO);
-        
-        let total_fees_usd = total_fees_sol * sol_price;
-        
-        // Calculate trade statistics
-        let winning_trades = token_results.iter()
-            .filter(|t| t.total_pnl_usd > Decimal::ZERO)
-            .count() as u32;
-        
-        let losing_trades = token_results.iter()
-            .filter(|t| t.total_pnl_usd < Decimal::ZERO)
-            .count() as u32;
-        
-        let total_trades = token_results.len() as u32;
-        
-        let win_rate = if total_trades > 0 {
-            Decimal::from(winning_trades * 100) / Decimal::from(total_trades)
-        } else {
-            Decimal::ZERO
-        };
-        
-        // Calculate average hold time
-        let hold_times: Vec<_> = token_results.iter()
-            .filter_map(|t| t.hold_time_minutes)
-            .collect();
-        
-        let avg_hold_time_minutes = if !hold_times.is_empty() {
-            hold_times.iter().sum::<Decimal>() / Decimal::from(hold_times.len())
-        } else {
-            Decimal::ZERO
-        };
-        
-        // Calculate total capital deployed (simplified - could be more sophisticated)
-        let total_capital_deployed_sol = events.iter()
-            .filter(|e| matches!(e.event_type, EventType::Buy))
-            .map(|e| e.sol_amount)
-            .sum();
-        
-        let roi_percentage = if total_capital_deployed_sol > Decimal::ZERO {
-            (total_pnl_usd / (total_capital_deployed_sol * sol_price)) * Decimal::from(100)
-        } else {
-            Decimal::ZERO
-        };
-        
-        Ok(PnLSummary {
-            realized_pnl_usd: total_realized_pnl,
-            unrealized_pnl_usd: total_unrealized_pnl,
-            total_pnl_usd,
-            total_fees_sol,
-            total_fees_usd,
-            winning_trades,
-            losing_trades,
-            total_trades,
-            win_rate,
-            avg_hold_time_minutes,
-            total_capital_deployed_sol,
-            roi_percentage,
-        })
-    }
-}
-
-/// Standalone P&L calculation function for events with embedded prices
-/// This function doesn't require a price fetcher as it uses prices from the events themselves
-pub async fn calculate_pnl_with_embedded_prices(
-    wallet_address: &str,
-    events: Vec<FinancialEvent>,
-    filters: PnLFilters,
-) -> Result<PnLReport> {
-    let start_time = std::time::Instant::now();
-    
-    info!("Starting P&L calculation with embedded prices for wallet: {}", wallet_address);
-    debug!("Processing {} events with embedded price data", events.len());
-    
-    // Validate that events have embedded prices
-    let events_without_prices: Vec<_> = events.iter()
-        .filter(|e| e.metadata.price_per_token.is_none())
-        .collect();
-    
-    if !events_without_prices.is_empty() {
-        warn!("Found {} events without embedded prices - these will be skipped", events_without_prices.len());
-    }
-    
-    // Filter events that have embedded prices
-    let events_with_prices: Vec<FinancialEvent> = events.into_iter()
-        .filter(|e| e.metadata.price_per_token.is_some())
-        .collect();
-    
-    if events_with_prices.is_empty() {
-        return Err(PnLError::InvalidEvent(
-            "No events with embedded price data found".to_string()
-        ));
-    }
-    
-    info!("Using {} events with embedded price data", events_with_prices.len());
-    
-    // Use the FIFO engine with a dummy price fetcher since we have embedded prices
-    let fifo_engine = FifoPnLEngine::new(EmbeddedPriceFetcher);
-    let report = fifo_engine.calculate_pnl(wallet_address, events_with_prices, filters).await?;
-    
-    // TODO: Add post-processing to fix current pricing issues:
-    // 1. Fix hardcoded SOL price for fees
-    // 2. Fix zero unrealized P&L using current prices 
-    // 3. Enable transfer pricing
-    
-    let elapsed = start_time.elapsed();
-    info!("P&L calculation completed in {:?} using embedded prices", elapsed);
-    
-    Ok(report)
-}
-
-/// Enhance P&L report with current market prices for accurate unrealized P&L and fees
-pub async fn enhance_report_with_current_prices<P: PriceFetcher>(
-    mut report: PnLReport,
-    price_fetcher: &P,
-) -> Result<PnLReport> {
-    info!("Enhancing P&L report with current market prices");
-    
-    // Collect all token mints that need current pricing
-    let mut tokens_to_price = Vec::new();
-    
-    // Add SOL for fee calculation
-    const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-    tokens_to_price.push(SOL_MINT.to_string());
-    
-    // Add all token mints from holdings for unrealized P&L
-    for holding in &report.current_holdings {
-        if !tokens_to_price.contains(&holding.token_mint) {
-            tokens_to_price.push(holding.token_mint.clone());
-        }
-    }
-    
-    // Fetch current prices in batch
-    let current_prices = match price_fetcher.fetch_prices(&tokens_to_price, None).await {
-        Ok(prices) => prices,
-        Err(e) => {
-            warn!("Failed to fetch current prices for enhancement: {}", e);
-            return Ok(report); // Return original report if pricing fails
-        }
-    };
-    
-    // 1. Fix SOL price for fees
-    if let Some(sol_price) = current_prices.get(SOL_MINT) {
-        let old_fees = report.summary.total_fees_usd;
-        report.summary.total_fees_usd = report.summary.total_fees_sol * sol_price;
-        debug!("Updated fee calculation: SOL price {} (was using ~$145), fees: ${} -> ${}", 
-               sol_price, old_fees, report.summary.total_fees_usd);
-    }
-    
-    // 2. Fix unrealized P&L for holdings using current prices
-    for holding in &mut report.current_holdings {
-        if let Some(current_price) = current_prices.get(&holding.token_mint) {
-            holding.current_price_usd = *current_price;
-            holding.current_value_usd = holding.amount * current_price;
-            holding.unrealized_pnl_usd = holding.current_value_usd - holding.total_cost_basis_usd;
-            
-            debug!("Updated holding {}: current_price=${}, unrealized_pnl=${}", 
-                   holding.token_mint, current_price, holding.unrealized_pnl_usd);
-        }
-    }
-    
-    // Recalculate total unrealized P&L
-    let total_unrealized_pnl = report.current_holdings.iter()
-        .map(|h| h.unrealized_pnl_usd)
-        .sum();
-    
-    report.summary.unrealized_pnl_usd = total_unrealized_pnl;
-    report.summary.total_pnl_usd = report.summary.realized_pnl_usd + total_unrealized_pnl;
-    
-    info!("Enhanced report with current prices: unrealized P&L=${}, total P&L=${}", 
-          report.summary.unrealized_pnl_usd, report.summary.total_pnl_usd);
-    
-    Ok(report)
-}
-
-/// Dummy price fetcher that should never be called since we use embedded prices
-struct EmbeddedPriceFetcher;
-
-#[async_trait]
-impl PriceFetcher for EmbeddedPriceFetcher {
-    async fn fetch_prices(
-        &self,
-        _token_mints: &[String], 
-        _vs_token: Option<&str>,
-    ) -> Result<HashMap<String, Decimal>> {
-        // This should never be called when using embedded prices
-        warn!("EmbeddedPriceFetcher::fetch_prices called - this indicates embedded prices are missing");
-        Err(PnLError::PriceFetch("Embedded prices should be used instead of external price fetching".to_string()))
-    }
-    
-    async fn fetch_historical_price(
-        &self,
-        _token_mint: &str,
-        _timestamp: DateTime<Utc>,
-        _vs_token: Option<&str>,
-    ) -> Result<Option<Decimal>> {
-        // This should never be called when using embedded prices
-        warn!("EmbeddedPriceFetcher::fetch_historical_price called - this indicates embedded prices are missing");
-        Err(PnLError::PriceFetch("Embedded prices should be used instead of external price fetching".to_string()))
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-    
-    struct MockPriceFetcher;
-    
-    #[async_trait]
-    impl PriceFetcher for MockPriceFetcher {
-        async fn fetch_prices(
-            &self,
-            _token_mints: &[String],
-            _vs_token: Option<&str>,
-        ) -> Result<HashMap<String, Decimal>> {
-            let mut prices = HashMap::new();
-            prices.insert("test_token".to_string(), Decimal::from(100));
-            prices.insert("So11111111111111111111111111111111111111112".to_string(), Decimal::from(50)); // SOL price
-            Ok(prices)
-        }
-        
-        async fn fetch_historical_price(
-            &self,
-            _token_mint: &str,
-            _timestamp: DateTime<Utc>,
-            _vs_token: Option<&str>,
-        ) -> Result<Option<Decimal>> {
-            Ok(Some(Decimal::from(100)))
-        }
-    }
-    
-    #[tokio::test]
-    async fn test_basic_pnl_calculation() {
-        let engine = PnLEngine::new(MockPriceFetcher);
-        let wallet = "test_wallet";
-        
-        let events = vec![
-            FinancialEvent {
-                id: Uuid::new_v4(),
-                transaction_id: "tx1".to_string(),
-                wallet_address: wallet.to_string(),
-                event_type: EventType::Buy,
-                token_mint: "test_token".to_string(),
-                token_amount: Decimal::from(100),
-                sol_amount: Decimal::from(2),
-                usd_value: Decimal::from(200), // 100 tokens × $2 = $200 USD value
-                timestamp: Utc::now(),
-                transaction_fee: "0.005".parse().unwrap(),
-                metadata: EventMetadata::default(),
-            },
-        ];
-        
-        let filters = PnLFilters {
-            min_capital_sol: Decimal::ZERO,
-            min_hold_minutes: Decimal::ZERO,
-            min_trades: 1,
-            min_win_rate: Decimal::ZERO,
-            max_signatures: None,
-            timeframe_filter: None,
-        };
-        
-        let result = engine.calculate_pnl(wallet, events, filters).await;
-        assert!(result.is_ok());
-        
-        let report = result.unwrap();
-        assert_eq!(report.wallet_address, wallet);
-        assert_eq!(report.token_breakdown.len(), 1);
-    }
-}

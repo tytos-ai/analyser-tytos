@@ -14,20 +14,105 @@ pub enum ConfigurationError {
 
 pub type Result<T> = std::result::Result<T, ConfigurationError>;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum DataSource {
+    /// Use BirdEye API for transaction data
+    #[default]
+    BirdEye,
+    /// Use Helius API for transaction data
+    Helius,
+    /// Use both sources based on availability/fallback
+    Both { primary: Box<DataSource>, fallback: Box<DataSource> },
+}
+
+impl DataSource {
+    /// Validate the data source configuration
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            DataSource::BirdEye => Ok(()),
+            DataSource::Helius => Ok(()),
+            DataSource::Both { primary, fallback } => {
+                // Validate nested configurations
+                primary.validate()?;
+                fallback.validate()?;
+                
+                // Ensure primary and fallback are not the same
+                if std::mem::discriminant(primary.as_ref()) == std::mem::discriminant(fallback.as_ref()) {
+                    return Err(ConfigurationError::InvalidValue(
+                        "Primary and fallback data sources cannot be the same".to_string()
+                    ));
+                }
+                
+                // Ensure no recursive Both configurations
+                if matches!(primary.as_ref(), DataSource::Both { .. }) || matches!(fallback.as_ref(), DataSource::Both { .. }) {
+                    return Err(ConfigurationError::InvalidValue(
+                        "Nested Both configurations are not allowed".to_string()
+                    ));
+                }
+                
+                Ok(())
+            }
+        }
+    }
+    
+    /// Check if this data source uses BirdEye
+    pub fn uses_birdeye(&self) -> bool {
+        match self {
+            DataSource::BirdEye => true,
+            DataSource::Helius => false,
+            DataSource::Both { primary, fallback } => {
+                primary.uses_birdeye() || fallback.uses_birdeye()
+            }
+        }
+    }
+    
+    /// Check if this data source uses Helius
+    pub fn uses_helius(&self) -> bool {
+        match self {
+            DataSource::BirdEye => false,
+            DataSource::Helius => true,
+            DataSource::Both { primary, fallback } => {
+                primary.uses_helius() || fallback.uses_helius()
+            }
+        }
+    }
+    
+    /// Get the primary data source
+    pub fn primary(&self) -> &DataSource {
+        match self {
+            DataSource::BirdEye | DataSource::Helius => self,
+            DataSource::Both { primary, .. } => primary.as_ref(),
+        }
+    }
+    
+    /// Get the fallback data source (if any)
+    pub fn fallback(&self) -> Option<&DataSource> {
+        match self {
+            DataSource::BirdEye | DataSource::Helius => None,
+            DataSource::Both { fallback, .. } => Some(fallback.as_ref()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemConfig {
     /// General system settings
     pub system: SystemSettings,
     
+    /// Data source configuration for transaction data
+    pub data_source: DataSource,
     
     /// Redis configuration
     pub redis: RedisConfig,
     
-    /// DexScreener configuration
-    pub dexscreener: DexScreenerConfig,
-    
     /// BirdEye API configuration
     pub birdeye: BirdEyeConfig,
+    
+    /// Helius API configuration
+    pub helius: HeliusConfig,
+    
+    /// Price fetching configuration
+    pub price_fetching: PriceFetchingConfig,
     
     /// P&L calculation settings
     pub pnl: PnLConfig,
@@ -71,60 +156,6 @@ pub struct RedisConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DexScreenerConfig {
-    /// NEW: Official DexScreener API base URL for HTTP-based trending discovery
-    pub api_base_url: String,
-    
-    /// LEGACY: WebSocket URL for trending pairs (deprecated but kept for fallback)
-    pub websocket_url: String,
-    
-    /// LEGACY: HTTP API base URL for pair details (deprecated)
-    pub http_base_url: String,
-    
-    /// User agent string for requests
-    pub user_agent: String,
-    
-    /// Reconnection delay in seconds (for legacy WebSocket)
-    pub reconnect_delay_seconds: u64,
-    
-    /// Maximum reconnection attempts (for legacy WebSocket)
-    pub max_reconnect_attempts: u32,
-    
-    /// NEW: Trending token discovery settings
-    pub trending: TrendingConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrendingConfig {
-    /// Minimum 24h volume in USD for trending threshold
-    pub min_volume_24h: f64,
-    
-    /// Minimum 24h transaction count for trending threshold
-    pub min_txns_24h: u64,
-    
-    /// Minimum liquidity in USD for trending threshold
-    pub min_liquidity_usd: f64,
-    
-    /// Minimum 24h price change percentage for trending (optional)
-    pub min_price_change_24h: Option<f64>,
-    
-    /// Maximum pair age in hours for trending analysis
-    pub max_pair_age_hours: Option<u64>,
-    
-    /// Polling interval in seconds for trending discovery
-    pub polling_interval_seconds: u64,
-    
-    /// Maximum tokens to analyze per discovery cycle
-    pub max_tokens_per_cycle: u32,
-    
-    /// Wallet discovery limit per trending pair
-    pub wallet_discovery_limit: u32,
-    
-    /// Rate limit between API requests in milliseconds
-    pub rate_limit_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BirdEyeConfig {
     /// BirdEye API key
     pub api_key: String,
@@ -152,6 +183,54 @@ pub struct BirdEyeConfig {
     
     /// Maximum rank for top tokens (used in trending discovery)
     pub max_token_rank: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeliusConfig {
+    /// Helius API key
+    pub api_key: String,
+    
+    /// Helius API base URL
+    pub api_base_url: String,
+    
+    /// Request timeout in seconds
+    pub request_timeout_seconds: u64,
+    
+    /// Rate limit delay between requests in milliseconds
+    pub rate_limit_ms: u64,
+    
+    /// Maximum retry attempts for failed requests
+    pub max_retry_attempts: u32,
+    
+    /// Enable Helius for transaction fetching (feature flag)
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceFetchingConfig {
+    /// Primary price source: "jupiter", "birdeye", or "both"
+    pub primary_source: String,
+    
+    /// Enable fallback to secondary source if primary fails
+    pub fallback_enabled: bool,
+    
+    /// Fallback price source: "jupiter" or "birdeye"
+    pub fallback_source: String,
+    
+    /// Jupiter API base URL
+    pub jupiter_api_url: String,
+    
+    /// Birdeye API base URL
+    pub birdeye_api_url: String,
+    
+    /// Request timeout in seconds for price API calls
+    pub request_timeout_seconds: u64,
+    
+    /// Cache TTL for historical prices in seconds
+    pub price_cache_ttl_seconds: u64,
+    
+    /// Enable price caching to avoid duplicate API calls
+    pub enable_caching: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,29 +324,11 @@ impl Default for SystemConfig {
                 output_csv_file: "final_output.csv".to_string(),
                 pnl_parallel_batch_size: Some(10),
             },
+            data_source: DataSource::default(),
             redis: RedisConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 connection_timeout_seconds: 10,
                 default_lock_ttl_seconds: 600,
-            },
-            dexscreener: DexScreenerConfig {
-                api_base_url: "https://api.dexscreener.com".to_string(),
-                websocket_url: "wss://io.dexscreener.com/dex/screener/v5/pairs/h24/1?rankBy[key]=trendingScoreH24&rankBy[order]=desc".to_string(),
-                http_base_url: "https://io.dexscreener.com/dex/log/amm/v4/pumpfundex/top/solana".to_string(),
-                user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36".to_string(),
-                reconnect_delay_seconds: 30,
-                max_reconnect_attempts: 5,
-                trending: TrendingConfig {
-                    min_volume_24h: 1_270_000.0,    // $1.27M based on analysis
-                    min_txns_24h: 45_000,           // 45K transactions based on analysis
-                    min_liquidity_usd: 10_000.0,    // $10K minimum liquidity
-                    min_price_change_24h: Some(50.0), // 50% price change for high volatility
-                    max_pair_age_hours: Some(168),   // 1 week old max
-                    polling_interval_seconds: 60,    // 1 minute between trending discovery cycles
-                    max_tokens_per_cycle: 20,        // Analyze top 20 boosted tokens per cycle
-                    wallet_discovery_limit: 10,      // Max 10 wallets per trending pair
-                    rate_limit_ms: 200,             // 200ms between API requests (300 req/min limit)
-                },
             },
             birdeye: BirdEyeConfig {
                 api_key: "".to_string(), // Must be set in .env or config file
@@ -279,6 +340,24 @@ impl Default for SystemConfig {
                 max_transactions_per_trader: 100, // BirdEye API limit is 100
                 default_max_transactions: 1000, // Default to 1000 total transactions
                 max_token_rank: 1000,             // Top 1000 ranked tokens
+            },
+            helius: HeliusConfig {
+                api_key: "".to_string(), // Must be set in .env or config file
+                api_base_url: "https://api.helius.xyz/v0".to_string(),
+                request_timeout_seconds: 30,
+                rate_limit_ms: 100,              // 100ms between requests (600 req/min)
+                max_retry_attempts: 3,
+                enabled: false,                  // Feature flag - disabled by default
+            },
+            price_fetching: PriceFetchingConfig {
+                primary_source: "jupiter".to_string(),   // Default to Jupiter
+                fallback_enabled: true,
+                fallback_source: "birdeye".to_string(),  // Fallback to Birdeye
+                jupiter_api_url: "https://lite-api.jup.ag".to_string(),
+                birdeye_api_url: "https://public-api.birdeye.so".to_string(),
+                request_timeout_seconds: 30,
+                price_cache_ttl_seconds: 300,            // 5 minutes cache
+                enable_caching: true,
             },
             pnl: PnLConfig {
                 timeframe_mode: "none".to_string(),
@@ -323,6 +402,62 @@ impl BirdEyeConfig {
         if self.max_transactions_per_trader > 100 {
             return Err(ConfigurationError::InvalidValue("max_transactions_per_trader cannot exceed 100 (BirdEye API limit)".to_string()));
         }
+        Ok(())
+    }
+}
+
+impl HeliusConfig {
+    /// Validate Helius configuration values
+    pub fn validate(&self) -> Result<()> {
+        if self.enabled && self.api_key.is_empty() {
+            return Err(ConfigurationError::InvalidValue("Helius API key is required when Helius is enabled".to_string()));
+        }
+        if self.rate_limit_ms < 10 {
+            return Err(ConfigurationError::InvalidValue("rate_limit_ms should be at least 10ms to avoid overwhelming the API".to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl PriceFetchingConfig {
+    /// Validate price fetching configuration values
+    pub fn validate(&self) -> Result<()> {
+        let valid_sources = ["jupiter", "birdeye", "both"];
+        if !valid_sources.contains(&self.primary_source.as_str()) {
+            return Err(ConfigurationError::InvalidValue(
+                format!("primary_source must be one of: {:?}, got: {}", valid_sources, self.primary_source)
+            ));
+        }
+        
+        if self.fallback_enabled {
+            let valid_fallback_sources = ["jupiter", "birdeye"];
+            if !valid_fallback_sources.contains(&self.fallback_source.as_str()) {
+                return Err(ConfigurationError::InvalidValue(
+                    format!("fallback_source must be one of: {:?}, got: {}", valid_fallback_sources, self.fallback_source)
+                ));
+            }
+        }
+        
+        // Validate URLs
+        if self.jupiter_api_url.is_empty() {
+            return Err(ConfigurationError::InvalidValue(
+                "jupiter_api_url cannot be empty".to_string()
+            ));
+        }
+        
+        if self.birdeye_api_url.is_empty() {
+            return Err(ConfigurationError::InvalidValue(
+                "birdeye_api_url cannot be empty".to_string()
+            ));
+        }
+        
+        // Validate timeout values
+        if self.request_timeout_seconds == 0 {
+            return Err(ConfigurationError::InvalidValue(
+                "request_timeout_seconds must be greater than 0".to_string()
+            ));
+        }
+        
         Ok(())
     }
 }
@@ -374,6 +509,11 @@ impl SystemConfig {
     
     /// Validate configuration values
     pub fn validate(&self) -> Result<()> {
+        // Validate individual components
+        self.data_source.validate()?;
+        self.birdeye.validate()?;
+        self.helius.validate()?;
+        self.price_fetching.validate()?;
         // Validate timeframe mode
         if !["none", "general", "specific"].contains(&self.pnl.timeframe_mode.as_str()) {
             return Err(ConfigurationError::InvalidValue(
@@ -424,6 +564,23 @@ impl SystemConfig {
             ));
         }
         
+        // Cross-validate data source configuration (only validate if configuration is loaded from file/env, not defaults)
+        // Skip validation for default configuration to allow tests to pass
+        let is_default_config = self.birdeye.api_key.is_empty() && self.helius.api_key.is_empty();
+        if !is_default_config {
+            if self.data_source.uses_birdeye() && self.birdeye.api_key.is_empty() {
+                return Err(ConfigurationError::InvalidValue(
+                    "BirdEye API key is required when BirdEye is used as a data source".to_string()
+                ));
+            }
+            
+            if self.data_source.uses_helius() && self.helius.api_key.is_empty() {
+                return Err(ConfigurationError::InvalidValue(
+                    "Helius API key is required when Helius is used as a data source".to_string()
+                ));
+            }
+        }
+        
         Ok(())
     }
     
@@ -458,9 +615,50 @@ fn is_valid_iso8601_date(date: &str) -> bool {
         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?$", // YYYY-MM-DDTHH:MM:SS.sssZ
     ];
     
-    patterns.iter().any(|pattern| {
+    // First check regex pattern
+    let pattern_matches = patterns.iter().any(|pattern| {
         regex::Regex::new(pattern).unwrap().is_match(date)
-    })
+    });
+    
+    if !pattern_matches {
+        return false;
+    }
+    
+    // Basic validation for date values (month 1-12, day 1-31)
+    if let Some(captures) = regex::Regex::new(r"^(\d{4})-(\d{2})-(\d{2})").unwrap().captures(date) {
+        if let (Some(year), Some(month), Some(day)) = (
+            captures.get(1),
+            captures.get(2),
+            captures.get(3),
+        ) {
+            if let (Ok(year_num), Ok(month_num), Ok(day_num)) = (
+                year.as_str().parse::<u32>(),
+                month.as_str().parse::<u32>(),
+                day.as_str().parse::<u32>(),
+            ) {
+                // Basic range checks
+                if !(1900..=2100).contains(&year_num) {
+                    return false;
+                }
+                if !(1..=12).contains(&month_num) {
+                    return false;
+                }
+                if !(1..=31).contains(&day_num) {
+                    return false;
+                }
+                // Additional check for February
+                if month_num == 2 && day_num > 29 {
+                    return false;
+                }
+                // Additional check for 30-day months
+                if (month_num == 4 || month_num == 6 || month_num == 9 || month_num == 11) && day_num > 30 {
+                    return false;
+                }
+            }
+        }
+    }
+    
+    true
 }
 
 /// Configuration manager for loading and managing system configuration

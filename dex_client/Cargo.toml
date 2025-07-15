@@ -25,3 +25,4 @@ hex = "0.4"
 futures-util = "0.3"
 num-bigint = "0.4"
 rand = "0.8"
+uuid = { version = "1.0", features = ["v4"] }

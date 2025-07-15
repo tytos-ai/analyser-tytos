@@ -1,0 +1,636 @@
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use tracing::{debug, info, warn, trace};
+
+use crate::new_parser::{NewFinancialEvent, NewEventType};
+
+/// A matched trade pair in FIFO order
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedTrade {
+    /// Buy event details
+    pub buy_event: NewFinancialEvent,
+    
+    /// Sell event details
+    pub sell_event: NewFinancialEvent,
+    
+    /// Quantity matched (min of buy and sell quantities)
+    pub matched_quantity: Decimal,
+    
+    /// Realized P&L for this matched pair: (sell_price - buy_price) × quantity
+    pub realized_pnl_usd: Decimal,
+    
+    /// Hold time in seconds
+    pub hold_time_seconds: i64,
+}
+
+/// An unmatched sell event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnmatchedSell {
+    /// The sell event
+    pub sell_event: NewFinancialEvent,
+    
+    /// Quantity that couldn't be matched
+    pub unmatched_quantity: Decimal,
+    
+    /// Phantom buy price (same as sell price, resulting in zero P&L)
+    pub phantom_buy_price: Decimal,
+    
+    /// P&L (always zero for unmatched sells)
+    pub phantom_pnl_usd: Decimal,
+}
+
+/// Remaining position after all matching
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemainingPosition {
+    /// Token details
+    pub token_address: String,
+    pub token_symbol: String,
+    
+    /// Remaining quantity
+    pub quantity: Decimal,
+    
+    /// Weighted average cost basis
+    pub avg_cost_basis_usd: Decimal,
+    
+    /// Total cost basis for remaining position
+    pub total_cost_basis_usd: Decimal,
+}
+
+/// Token-level P&L results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenPnLResult {
+    /// Token details
+    pub token_address: String,
+    pub token_symbol: String,
+    
+    /// All matched trades for this token
+    pub matched_trades: Vec<MatchedTrade>,
+    
+    /// All unmatched sells for this token
+    pub unmatched_sells: Vec<UnmatchedSell>,
+    
+    /// Remaining position (if any)
+    pub remaining_position: Option<RemainingPosition>,
+    
+    /// Total realized P&L for this token
+    pub total_realized_pnl_usd: Decimal,
+    
+    /// Total unrealized P&L for this token (calculated separately)
+    pub total_unrealized_pnl_usd: Decimal,
+    
+    /// Total P&L (realized + unrealized)
+    pub total_pnl_usd: Decimal,
+    
+    /// Trade statistics
+    pub total_trades: u32,
+    pub winning_trades: u32,
+    pub losing_trades: u32,
+    pub win_rate_percentage: Decimal,
+    
+    /// Hold time statistics (in minutes)
+    pub avg_hold_time_minutes: Decimal,
+    pub min_hold_time_minutes: Decimal,
+    pub max_hold_time_minutes: Decimal,
+}
+
+/// Portfolio-level P&L results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioPnLResult {
+    /// Wallet address
+    pub wallet_address: String,
+    
+    /// Results for each token
+    pub token_results: Vec<TokenPnLResult>,
+    
+    /// Portfolio-level aggregated metrics
+    pub total_realized_pnl_usd: Decimal,
+    pub total_unrealized_pnl_usd: Decimal,
+    pub total_pnl_usd: Decimal,
+    
+    /// Portfolio trade statistics
+    pub total_trades: u32,
+    pub overall_win_rate_percentage: Decimal,
+    pub avg_hold_time_minutes: Decimal,
+    
+    /// Number of tokens analyzed
+    pub tokens_analyzed: u32,
+    
+    /// Analysis metadata
+    pub events_processed: u32,
+    pub analysis_timestamp: DateTime<Utc>,
+}
+
+/// P&L Engine Module
+/// Calculates comprehensive P&L metrics by consuming financial events
+/// and performing token-by-token analysis with FIFO matching
+pub struct NewPnLEngine {
+    wallet_address: String,
+}
+
+impl NewPnLEngine {
+    /// Create a new P&L engine for a specific wallet
+    pub fn new(wallet_address: String) -> Self {
+        Self { wallet_address }
+    }
+    
+    /// Calculate portfolio P&L from financial events
+    /// This is the main entry point for P&L calculation
+    pub async fn calculate_portfolio_pnl(
+        &self,
+        events_by_token: HashMap<String, Vec<NewFinancialEvent>>,
+        current_prices: Option<HashMap<String, Decimal>>,
+    ) -> Result<PortfolioPnLResult, String> {
+        info!(
+            "Starting P&L calculation for wallet {} with {} tokens",
+            self.wallet_address,
+            events_by_token.len()
+        );
+        
+        let mut token_results = Vec::new();
+        let mut total_realized_pnl = Decimal::ZERO;
+        let mut total_unrealized_pnl = Decimal::ZERO;
+        let mut total_trades = 0u32;
+        let mut total_events_processed = 0u32;
+        
+        // Store the original count before we consume the HashMap
+        let tokens_analyzed = events_by_token.len() as u32;
+        
+        // Process each token separately (supports parallel processing)
+        for (token_address, events) in events_by_token {
+            debug!(
+                "Processing token {} with {} events",
+                token_address,
+                events.len()
+            );
+            
+            total_events_processed += events.len() as u32;
+            
+            let current_price = current_prices
+                .as_ref()
+                .and_then(|prices| prices.get(&token_address))
+                .copied();
+            
+            match self.calculate_token_pnl(events, current_price).await {
+                Ok(token_result) => {
+                    total_realized_pnl += token_result.total_realized_pnl_usd;
+                    total_unrealized_pnl += token_result.total_unrealized_pnl_usd;
+                    total_trades += token_result.total_trades;
+                    
+                    token_results.push(token_result);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to calculate P&L for token {}: {}",
+                        token_address, e
+                    );
+                    continue;
+                }
+            }
+        }
+        
+        // Calculate portfolio-level statistics
+        let total_pnl = total_realized_pnl + total_unrealized_pnl;
+        
+        let overall_win_rate = if total_trades > 0 {
+            let winning_trades: u32 = token_results
+                .iter()
+                .map(|t| t.winning_trades)
+                .sum();
+            
+            Decimal::from(winning_trades * 100) / Decimal::from(total_trades)
+        } else {
+            Decimal::ZERO
+        };
+        
+        let avg_hold_time = if !token_results.is_empty() {
+            token_results
+                .iter()
+                .map(|t| t.avg_hold_time_minutes)
+                .sum::<Decimal>() / Decimal::from(token_results.len())
+        } else {
+            Decimal::ZERO
+        };
+        
+        let result = PortfolioPnLResult {
+            wallet_address: self.wallet_address.clone(),
+            token_results,
+            total_realized_pnl_usd: total_realized_pnl,
+            total_unrealized_pnl_usd: total_unrealized_pnl,
+            total_pnl_usd: total_pnl,
+            total_trades,
+            overall_win_rate_percentage: overall_win_rate,
+            avg_hold_time_minutes: avg_hold_time,
+            tokens_analyzed,
+            events_processed: total_events_processed,
+            analysis_timestamp: Utc::now(),
+        };
+        
+        info!(
+            "P&L calculation completed for wallet {}: Total P&L: ${}, Trades: {}, Win Rate: {}%",
+            self.wallet_address,
+            result.total_pnl_usd,
+            result.total_trades,
+            result.overall_win_rate_percentage
+        );
+        
+        Ok(result)
+    }
+    
+    /// Calculate P&L for a single token using FIFO matching
+    pub async fn calculate_token_pnl(
+        &self,
+        mut events: Vec<NewFinancialEvent>,
+        current_price: Option<Decimal>,
+    ) -> Result<TokenPnLResult, String> {
+        if events.is_empty() {
+            return Err("No events provided for token P&L calculation".to_string());
+        }
+        
+        let token_address = events[0].token_address.clone();
+        let token_symbol = events[0].token_symbol.clone();
+        
+        // Sort events chronologically (required for FIFO)
+        events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        
+        debug!(
+            "Calculating FIFO P&L for token {} ({}) with {} events",
+            token_symbol,
+            token_address,
+            events.len()
+        );
+        
+        // Separate buy and sell events
+        let mut buy_events: Vec<NewFinancialEvent> = events
+            .iter()
+            .filter(|e| e.event_type == NewEventType::Buy)
+            .cloned()
+            .collect();
+            
+        let sell_events: Vec<NewFinancialEvent> = events
+            .iter()
+            .filter(|e| e.event_type == NewEventType::Sell)
+            .cloned()
+            .collect();
+        
+        debug!(
+            "Token {}: {} buy events, {} sell events",
+            token_symbol,
+            buy_events.len(),
+            sell_events.len()
+        );
+        
+        // Perform FIFO matching
+        let (matched_trades, unmatched_sells) = self.perform_fifo_matching(&mut buy_events, &sell_events)?;
+        
+        // Calculate remaining position from unmatched buys
+        let remaining_position = self.calculate_remaining_position(&buy_events, &token_address, &token_symbol)?;
+        
+        // Calculate realized P&L
+        let total_realized_pnl: Decimal = matched_trades.iter()
+            .map(|t| t.realized_pnl_usd)
+            .sum::<Decimal>() + unmatched_sells.iter()
+            .map(|u| u.phantom_pnl_usd)
+            .sum::<Decimal>();
+        
+        // Calculate unrealized P&L
+        let total_unrealized_pnl = self.calculate_unrealized_pnl(&remaining_position, current_price);
+        
+        // Calculate trade statistics
+        let total_trades = matched_trades.len() as u32;
+        let winning_trades = matched_trades.iter()
+            .filter(|t| t.realized_pnl_usd > Decimal::ZERO)
+            .count() as u32;
+        let losing_trades = total_trades - winning_trades;
+        
+        let win_rate = if total_trades > 0 {
+            Decimal::from(winning_trades * 100) / Decimal::from(total_trades)
+        } else {
+            Decimal::ZERO
+        };
+        
+        // Calculate hold time statistics
+        let (avg_hold_time, min_hold_time, max_hold_time) = self.calculate_hold_time_stats(&matched_trades);
+        
+        let result = TokenPnLResult {
+            token_address,
+            token_symbol,
+            matched_trades,
+            unmatched_sells,
+            remaining_position,
+            total_realized_pnl_usd: total_realized_pnl,
+            total_unrealized_pnl_usd: total_unrealized_pnl,
+            total_pnl_usd: total_realized_pnl + total_unrealized_pnl,
+            total_trades,
+            winning_trades,
+            losing_trades,
+            win_rate_percentage: win_rate,
+            avg_hold_time_minutes: avg_hold_time,
+            min_hold_time_minutes: min_hold_time,
+            max_hold_time_minutes: max_hold_time,
+        };
+        
+        debug!(
+            "Token {} P&L: Realized: ${}, Unrealized: ${}, Total: ${}, Trades: {}, Win Rate: {}%",
+            result.token_symbol,
+            result.total_realized_pnl_usd,
+            result.total_unrealized_pnl_usd,
+            result.total_pnl_usd,
+            result.total_trades,
+            result.win_rate_percentage
+        );
+        
+        Ok(result)
+    }
+    
+    /// Perform FIFO matching between buy and sell events
+    /// Returns (matched_trades, unmatched_sells)
+    fn perform_fifo_matching(
+        &self,
+        buy_events: &mut Vec<NewFinancialEvent>,
+        sell_events: &[NewFinancialEvent],
+    ) -> Result<(Vec<MatchedTrade>, Vec<UnmatchedSell>), String> {
+        let mut matched_trades = Vec::new();
+        let mut unmatched_sells = Vec::new();
+        
+        // Create working copies of buy events to track remaining quantities
+        let mut buy_queue: Vec<(NewFinancialEvent, Decimal)> = buy_events
+            .iter()
+            .map(|e| (e.clone(), e.quantity))
+            .collect();
+        
+        for sell_event in sell_events {
+            let mut remaining_sell_quantity = sell_event.quantity;
+            
+            trace!(
+                "Processing sell: {} {} @ ${}",
+                sell_event.quantity,
+                sell_event.token_symbol,
+                sell_event.usd_price_per_token
+            );
+            
+            // Match against oldest available buys (FIFO)
+            while remaining_sell_quantity > Decimal::ZERO && !buy_queue.is_empty() {
+                let buy_index = buy_queue
+                    .iter()
+                    .position(|(_, remaining_qty)| *remaining_qty > Decimal::ZERO);
+                
+                if let Some(idx) = buy_index {
+                    let (buy_event, available_buy_quantity) = &mut buy_queue[idx];
+                    
+                    // Determine how much we can match
+                    let matched_quantity = remaining_sell_quantity.min(*available_buy_quantity);
+                    
+                    // Calculate P&L for this matched portion
+                    let realized_pnl = (sell_event.usd_price_per_token - buy_event.usd_price_per_token) * matched_quantity;
+                    
+                    // Calculate hold time
+                    let hold_time_seconds = sell_event.timestamp.timestamp() - buy_event.timestamp.timestamp();
+                    
+                    let matched_trade = MatchedTrade {
+                        buy_event: buy_event.clone(),
+                        sell_event: sell_event.clone(),
+                        matched_quantity,
+                        realized_pnl_usd: realized_pnl,
+                        hold_time_seconds,
+                    };
+                    
+                    matched_trades.push(matched_trade);
+                    
+                    // Update remaining quantities
+                    *available_buy_quantity -= matched_quantity;
+                    remaining_sell_quantity -= matched_quantity;
+                    
+                    trace!(
+                        "Matched {} tokens: Buy @ ${} -> Sell @ ${}, P&L: ${}, Hold: {}s",
+                        matched_quantity,
+                        buy_event.usd_price_per_token,
+                        sell_event.usd_price_per_token,
+                        realized_pnl,
+                        hold_time_seconds
+                    );
+                } else {
+                    // No more buys available
+                    break;
+                }
+            }
+            
+            // Handle any unmatched sell quantity
+            if remaining_sell_quantity > Decimal::ZERO {
+                // Assume phantom buy at same price as sell (zero P&L)
+                let unmatched_sell = UnmatchedSell {
+                    sell_event: sell_event.clone(),
+                    unmatched_quantity: remaining_sell_quantity,
+                    phantom_buy_price: sell_event.usd_price_per_token,
+                    phantom_pnl_usd: Decimal::ZERO,
+                };
+                
+                unmatched_sells.push(unmatched_sell);
+                
+                debug!(
+                    "Unmatched sell: {} {} @ ${} (assuming phantom buy at same price)",
+                    remaining_sell_quantity,
+                    sell_event.token_symbol,
+                    sell_event.usd_price_per_token
+                );
+            }
+        }
+        
+        // Update the original buy_events to remove consumed quantities
+        buy_events.clear();
+        for (buy_event, remaining_qty) in buy_queue {
+            if remaining_qty > Decimal::ZERO {
+                let mut updated_buy = buy_event;
+                updated_buy.quantity = remaining_qty;
+                // Update USD value proportionally to maintain correct cost basis
+                updated_buy.usd_value = remaining_qty * updated_buy.usd_price_per_token;
+                buy_events.push(updated_buy);
+            }
+        }
+        
+        debug!(
+            "FIFO matching completed: {} matched trades, {} unmatched sells",
+            matched_trades.len(),
+            unmatched_sells.len()
+        );
+        
+        Ok((matched_trades, unmatched_sells))
+    }
+    
+    /// Calculate remaining position from unmatched buy events
+    fn calculate_remaining_position(
+        &self,
+        remaining_buys: &[NewFinancialEvent],
+        token_address: &str,
+        token_symbol: &str,
+    ) -> Result<Option<RemainingPosition>, String> {
+        if remaining_buys.is_empty() {
+            return Ok(None);
+        }
+        
+        let total_quantity: Decimal = remaining_buys.iter().map(|b| b.quantity).sum();
+        let total_cost: Decimal = remaining_buys.iter().map(|b| b.usd_value).sum();
+        
+        if total_quantity <= Decimal::ZERO {
+            return Ok(None);
+        }
+        
+        let avg_cost_basis = total_cost / total_quantity;
+        
+        let position = RemainingPosition {
+            token_address: token_address.to_string(),
+            token_symbol: token_symbol.to_string(),
+            quantity: total_quantity,
+            avg_cost_basis_usd: avg_cost_basis,
+            total_cost_basis_usd: total_cost,
+        };
+        
+        debug!(
+            "Remaining position: {} {} @ avg cost ${} (total cost: ${})",
+            position.quantity,
+            position.token_symbol,
+            position.avg_cost_basis_usd,
+            position.total_cost_basis_usd
+        );
+        
+        Ok(Some(position))
+    }
+    
+    /// Calculate unrealized P&L for remaining positions
+    /// Following documentation specification: (current_price - weighted_avg_cost_basis) × remaining_quantity
+    fn calculate_unrealized_pnl(
+        &self,
+        remaining_position: &Option<RemainingPosition>,
+        current_price: Option<Decimal>,
+    ) -> Decimal {
+        if let (Some(position), Some(price)) = (remaining_position, current_price) {
+            // Use the exact formula specified in documentation:
+            // (current_price - weighted_avg_cost_basis) × remaining_quantity
+            let unrealized_pnl = (price - position.avg_cost_basis_usd) * position.quantity;
+            
+            debug!(
+                "Unrealized P&L for {}: {} @ ${} vs cost basis ${} = P&L: ${}",
+                position.token_symbol,
+                position.quantity,
+                price,
+                position.avg_cost_basis_usd,
+                unrealized_pnl
+            );
+            
+            unrealized_pnl
+        } else {
+            Decimal::ZERO
+        }
+    }
+    
+    /// Calculate hold time statistics from matched trades
+    fn calculate_hold_time_stats(&self, matched_trades: &[MatchedTrade]) -> (Decimal, Decimal, Decimal) {
+        if matched_trades.is_empty() {
+            return (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
+        }
+        
+        let hold_times_minutes: Vec<Decimal> = matched_trades
+            .iter()
+            .map(|t| Decimal::from(t.hold_time_seconds) / Decimal::from(60))
+            .collect();
+        
+        let avg_hold_time = hold_times_minutes.iter().sum::<Decimal>() / Decimal::from(hold_times_minutes.len());
+        let min_hold_time = hold_times_minutes.iter().cloned().min().unwrap_or(Decimal::ZERO);
+        let max_hold_time = hold_times_minutes.iter().cloned().max().unwrap_or(Decimal::ZERO);
+        
+        (avg_hold_time, min_hold_time, max_hold_time)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::new_parser::NewEventType;
+    
+    #[tokio::test]
+    async fn test_simple_fifo_matching() {
+        let engine = NewPnLEngine::new("test_wallet".to_string());
+        
+        let events = vec![
+            // Buy 100 tokens @ $1
+            NewFinancialEvent {
+                wallet_address: "test".to_string(),
+                token_address: "token1".to_string(),
+                token_symbol: "T1".to_string(),
+                event_type: NewEventType::Buy,
+                quantity: Decimal::from(100),
+                usd_price_per_token: Decimal::from(1),
+                usd_value: Decimal::from(100),
+                timestamp: DateTime::from_timestamp(1000, 0).unwrap(),
+                transaction_hash: "tx1".to_string(),
+            },
+            // Sell 50 tokens @ $2 (should match 50 from the buy, profit = $50)
+            NewFinancialEvent {
+                wallet_address: "test".to_string(),
+                token_address: "token1".to_string(),
+                token_symbol: "T1".to_string(),
+                event_type: NewEventType::Sell,
+                quantity: Decimal::from(50),
+                usd_price_per_token: Decimal::from(2),
+                usd_value: Decimal::from(100),
+                timestamp: DateTime::from_timestamp(2000, 0).unwrap(),
+                transaction_hash: "tx2".to_string(),
+            },
+        ];
+        
+        let result = engine.calculate_token_pnl(events, Some(Decimal::from(3))).await.unwrap();
+        
+        // Should have 1 matched trade
+        assert_eq!(result.matched_trades.len(), 1);
+        assert_eq!(result.matched_trades[0].matched_quantity, Decimal::from(50));
+        assert_eq!(result.matched_trades[0].realized_pnl_usd, Decimal::from(50)); // (2-1) * 50
+        
+        // Should have remaining position of 50 tokens
+        assert!(result.remaining_position.is_some());
+        let position = result.remaining_position.unwrap();
+        assert_eq!(position.quantity, Decimal::from(50));
+        assert_eq!(position.avg_cost_basis_usd, Decimal::from(1));
+        
+        // Unrealized P&L: 50 * (3 - 1) = 100
+        assert_eq!(result.total_unrealized_pnl_usd, Decimal::from(100));
+        
+        // Total P&L: 50 (realized) + 100 (unrealized) = 150
+        assert_eq!(result.total_pnl_usd, Decimal::from(150));
+    }
+    
+    #[tokio::test]
+    async fn test_unmatched_sell_handling() {
+        let engine = NewPnLEngine::new("test_wallet".to_string());
+        
+        let events = vec![
+            // Sell 100 tokens @ $5 (no corresponding buy - should create phantom buy @ $5)
+            NewFinancialEvent {
+                wallet_address: "test".to_string(),
+                token_address: "token1".to_string(),
+                token_symbol: "T1".to_string(),
+                event_type: NewEventType::Sell,
+                quantity: Decimal::from(100),
+                usd_price_per_token: Decimal::from(5),
+                usd_value: Decimal::from(500),
+                timestamp: DateTime::from_timestamp(1000, 0).unwrap(),
+                transaction_hash: "tx1".to_string(),
+            },
+        ];
+        
+        let result = engine.calculate_token_pnl(events, None).await.unwrap();
+        
+        // Should have 1 unmatched sell
+        assert_eq!(result.unmatched_sells.len(), 1);
+        assert_eq!(result.unmatched_sells[0].unmatched_quantity, Decimal::from(100));
+        assert_eq!(result.unmatched_sells[0].phantom_buy_price, Decimal::from(5));
+        assert_eq!(result.unmatched_sells[0].phantom_pnl_usd, Decimal::ZERO);
+        
+        // No matched trades or remaining position
+        assert_eq!(result.matched_trades.len(), 0);
+        assert!(result.remaining_position.is_none());
+        
+        // Total P&L should be zero
+        assert_eq!(result.total_pnl_usd, Decimal::ZERO);
+    }
+}

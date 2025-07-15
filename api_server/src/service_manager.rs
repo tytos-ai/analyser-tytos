@@ -25,7 +25,7 @@ pub struct ServiceConfig {
     pub enable_wallet_discovery: bool,
     /// Enable P&L analysis service
     pub enable_pnl_analysis: bool,
-    // birdeye_config removed - using SystemConfig.dexscreener.trending + SystemConfig.birdeye directly
+    // Using SystemConfig.birdeye directly for BirdEye configuration
 }
 
 // BirdEyeTrendingServiceConfig removed - using SystemConfig directly
@@ -196,7 +196,7 @@ impl ServiceManager {
         let birdeye_orch_clone = self.birdeye_orchestrator.clone();
         let state_clone = self.wallet_discovery_state.clone();
         let _stats_clone = self.stats.clone();
-        let cycle_interval = self.system_config.dexscreener.trending.polling_interval_seconds;
+        let cycle_interval = 60; // BirdEye trending discovery interval (hardcoded)
 
         let handle = tokio::spawn(async move {
             // Update state to running

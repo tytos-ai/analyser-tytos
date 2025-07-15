@@ -5,30 +5,17 @@ process_loop_ms = 30000
 output_csv_file = "pnl_results.csv"
 pnl_parallel_batch_size = 20
 
+# Data source configuration for transaction fetching  
+# Options: "BirdEye", "Helius", or { Both = { primary = "BirdEye", fallback = "Helius" } }
+data_source = "Helius"
+
 [redis]
 url = "redis://localhost:6379"
 connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
 
 
-[dexscreener]
-api_base_url = "https://api.dexscreener.com"
-websocket_url = "wss://io.dexscreener.com/dex/screener/v5/pairs/h24/1"
-http_base_url = "https://io.dexscreener.com/dex/log/amm/v4/pumpfundex/top/solana"
-user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-reconnect_delay_seconds = 30
-max_reconnect_attempts = 5
-
-[dexscreener.trending]
-min_volume_24h = 1270000.0
-min_txns_24h = 45000
-min_liquidity_usd = 10000.0
-min_price_change_24h = 50.0
-max_pair_age_hours = 168
-polling_interval_seconds = 60
-max_tokens_per_cycle = 20
-wallet_discovery_limit = 10
-rate_limit_ms = 200
+# DexScreener configuration removed - using BirdEye instead
 
 [birdeye]
 api_key = "5ff313b239ac42e297b830b10ea1871d"
@@ -40,6 +27,26 @@ max_traders_per_token = 10
 max_transactions_per_trader = 100
 default_max_transactions = 500  # Default maximum transactions to fetch/analyze per wallet
 max_token_rank = 1000
+
+# Helius API configuration (alternative data source)
+[helius]
+api_key = "bced755e-f559-4a04-ace6-d4f2967647a3"
+api_base_url = "https://api.helius.xyz/v0"
+request_timeout_seconds = 30
+rate_limit_ms = 100
+max_retry_attempts = 3
+enabled = true  # Set to true to enable Helius integration
+
+# Price fetching configuration (Jupiter + BirdEye)
+[price_fetching]
+primary_source = "jupiter"
+fallback_enabled = true
+fallback_source = "birdeye"
+jupiter_api_url = "https://lite-api.jup.ag"
+birdeye_api_url = "https://public-api.birdeye.so"
+request_timeout_seconds = 30
+price_cache_ttl_seconds = 300
+enable_caching = true
 
 [pnl]
 timeframe_mode = "none"

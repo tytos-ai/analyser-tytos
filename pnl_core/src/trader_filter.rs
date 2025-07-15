@@ -265,7 +265,7 @@ pub fn generate_trader_summary(qualified_traders: &[(PnLReport, TraderQuality)])
         return "No qualified traders found for copy trading.".to_string();
     }
 
-    let mut summary = format!("🎯 QUALIFIED COPY TRADERS SUMMARY\n");
+    let mut summary = "🎯 QUALIFIED COPY TRADERS SUMMARY\n".to_string();
     summary.push_str(&format!("Found {} qualified traders:\n\n", qualified_traders.len()));
 
     for (i, (report, quality)) in qualified_traders.iter().take(10).enumerate() {

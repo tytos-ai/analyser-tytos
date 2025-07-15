@@ -1,10 +1,12 @@
 use chrono::Utc;
-use config_manager::SystemConfig;
+use config_manager::{SystemConfig, DataSource};
 use futures::future::join_all;
-use dex_client::{BirdEyeClient, BirdEyeError, TraderTransaction, GeneralTraderTransaction};
+use dex_client::{BirdEyeClient, BirdEyeError, HeliusClient, HeliusError, PriceFetchingService, GeneralTraderTransaction};
 use pnl_core::{FinancialEvent, EventType, EventMetadata};
 use persistence_layer::{PersistenceError, RedisClient, DiscoveredWalletToken};
-use pnl_core::{AnalysisTimeframe, PnLFilters, PnLReport, calculate_pnl_with_embedded_prices, enhance_report_with_current_prices};
+use pnl_core::{AnalysisTimeframe, PnLFilters, PnLReport};
+// New algorithm imports
+use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, TokenPnLResult, NewFinancialEvent, PriceFetcher};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -16,13 +18,9 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-// Legacy module removed - trending functionality moved to BirdEye
-// pub mod trending_orchestrator;
 pub mod birdeye_trending_orchestrator;
 
-// Legacy trending orchestrator removed - use BirdEye instead
-// pub use trending_orchestrator::{TrendingOrchestrator, TrendingCycleStats};
-pub use birdeye_trending_orchestrator::{BirdEyeTrendingOrchestrator, DiscoveryStats};
+pub use birdeye_trending_orchestrator::{BirdEyeTrendingOrchestrator, DiscoveryStats, ProcessedSwap};
 
 #[derive(Error, Debug, Clone)]
 pub enum OrchestratorError {
@@ -32,6 +30,10 @@ pub enum OrchestratorError {
     PnL(String),
     #[error("BirdEye price client error: {0}")]
     BirdEyePrice(String),
+    #[error("Helius client error: {0}")]
+    Helius(String),
+    #[error("Price fetching service error: {0}")]
+    PriceFetching(String),
     #[error("Configuration error: {0}")]
     Config(String),
     #[error("Lock acquisition failed")]
@@ -68,6 +70,18 @@ impl From<pnl_core::PnLError> for OrchestratorError {
 impl From<BirdEyeError> for OrchestratorError {
     fn from(err: BirdEyeError) -> Self {
         OrchestratorError::BirdEyePrice(err.to_string())
+    }
+}
+
+impl From<HeliusError> for OrchestratorError {
+    fn from(err: HeliusError) -> Self {
+        OrchestratorError::Helius(err.to_string())
+    }
+}
+
+impl From<dex_client::PriceFetchingError> for OrchestratorError {
+    fn from(err: dex_client::PriceFetchingError) -> Self {
+        OrchestratorError::PriceFetching(err.to_string())
     }
 }
 
@@ -201,6 +215,8 @@ impl BatchJob {
 pub struct JobOrchestrator {
     config: SystemConfig,
     birdeye_client: BirdEyeClient,
+    helius_client: Option<HeliusClient>,
+    price_fetching_service: PriceFetchingService,
     redis_client: Arc<Mutex<RedisClient>>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     // batch_jobs now stored in Redis via persistence_layer
@@ -213,14 +229,28 @@ impl JobOrchestrator {
         let redis_client = RedisClient::new(&config.redis.url).await?;
         let redis_client = Arc::new(Mutex::new(redis_client));
 
-        // Initialize BirdEye client and price fetcher
+        // Initialize BirdEye client
         let birdeye_config = config.birdeye.clone();
-        
         let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
+
+        // Initialize Helius client (optional based on data source configuration)
+        let helius_client = if config.data_source.uses_helius() {
+            Some(HeliusClient::new(config.helius.clone())?)
+        } else {
+            None
+        };
+
+        // Initialize price fetching service
+        let price_fetching_service = PriceFetchingService::new(
+            config.price_fetching.clone(),
+            Some(birdeye_config),
+        )?;
 
         Ok(Self {
             config,
             birdeye_client,
+            helius_client,
+            price_fetching_service,
             redis_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
             continuous_mode_filters: Arc::new(Mutex::new(None)),
@@ -775,21 +805,8 @@ impl JobOrchestrator {
             )));
         }
 
-        // Calculate P&L using the targeted transactions with embedded prices
-        let mut report = calculate_pnl_with_embedded_prices(&pair.wallet_address, events, filters)
-            .await?;
-
-        // Enhance with current market prices for accurate unrealized P&L and SOL fees
-        match enhance_report_with_current_prices(report.clone(), &self.birdeye_client).await {
-            Ok(enhanced_report) => {
-                report = enhanced_report;
-                debug!("Enhanced report with current market prices");
-            }
-            Err(e) => {
-                warn!("Failed to enhance report with current prices: {}", e);
-                // Continue with original report
-            }
-        }
+        // Calculate P&L using the new algorithm (for continuous analysis)
+        let report = self.calculate_pnl_with_new_algorithm(&pair.wallet_address, transactions, filters).await?;
 
         debug!("✅ Targeted P&L analysis completed for wallet: {} on token: {}", 
                pair.wallet_address, pair.token_symbol);
@@ -799,6 +816,53 @@ impl JobOrchestrator {
 
     /// Process a single wallet for P&L analysis (legacy method using Solana RPC)
     pub async fn process_single_wallet(
+        &self,
+        wallet_address: &str,
+        filters: PnLFilters,
+    ) -> Result<PnLReport> {
+        // Choose data source based on configuration
+        match self.config.data_source.primary() {
+            DataSource::Helius => {
+                debug!("Using Helius for P&L analysis of wallet: {}", wallet_address);
+                self.process_single_wallet_with_helius(wallet_address, filters).await
+            }
+            DataSource::BirdEye => {
+                debug!("Using BirdEye for P&L analysis of wallet: {}", wallet_address);
+                self.process_single_wallet_with_birdeye(wallet_address, filters).await
+            }
+            DataSource::Both { .. } => {
+                // For Both configuration, try primary first, then fallback
+                debug!("Using primary data source for P&L analysis of wallet: {}", wallet_address);
+                let primary_result = match self.config.data_source.primary() {
+                    DataSource::Helius => self.process_single_wallet_with_helius(wallet_address, filters.clone()).await,
+                    DataSource::BirdEye => self.process_single_wallet_with_birdeye(wallet_address, filters.clone()).await,
+                    DataSource::Both { .. } => unreachable!("Nested Both configurations are not allowed"),
+                };
+                
+                match primary_result {
+                    Ok(report) => Ok(report),
+                    Err(e) => {
+                        warn!("Primary data source failed: {}, trying fallback", e);
+                        match self.config.data_source.fallback() {
+                            Some(DataSource::Helius) => {
+                                debug!("Using Helius fallback for P&L analysis of wallet: {}", wallet_address);
+                                self.process_single_wallet_with_helius(wallet_address, filters).await
+                            }
+                            Some(DataSource::BirdEye) => {
+                                debug!("Using BirdEye fallback for P&L analysis of wallet: {}", wallet_address);
+                                self.process_single_wallet_with_birdeye(wallet_address, filters).await
+                            }
+                            Some(DataSource::Both { .. }) => unreachable!("Nested Both configurations are not allowed"),
+                            None => Err(e), // No fallback available
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process a single wallet using BirdEye data
+    async fn process_single_wallet_with_birdeye(
         &self,
         wallet_address: &str,
         filters: PnLFilters,
@@ -829,99 +893,95 @@ impl JobOrchestrator {
         info!("📊 Found {} BirdEye transactions for wallet {}", 
               transactions.len(), wallet_address);
 
-        // Convert BirdEye transactions to financial events
-        let events = self
-            .convert_general_birdeye_transactions_to_events(&transactions, wallet_address)?;
-
-        if events.is_empty() {
-            return Err(OrchestratorError::JobExecution(format!(
-                "No financial events found for wallet: {}",
-                wallet_address
-            )));
-        }
-
-        // Calculate P&L with embedded prices from BirdEye transactions
-        let mut report = calculate_pnl_with_embedded_prices(wallet_address, events, filters)
-            .await?;
-
-        // Enhance with current market prices for accurate unrealized P&L and SOL fees
-        match enhance_report_with_current_prices(report.clone(), &self.birdeye_client).await {
-            Ok(enhanced_report) => {
-                report = enhanced_report;
-                debug!("Enhanced report with current market prices");
-            }
-            Err(e) => {
-                warn!("Failed to enhance report with current prices: {}", e);
-                // Continue with original report
-            }
-        }
+        // --- Start of New P&L Algorithm ---
+        // Use the new algorithm strictly following the documentation
+        let report = self.calculate_pnl_with_new_algorithm(wallet_address, transactions, filters).await?;
+        // --- End of New P&L Algorithm ---
 
         debug!("✅ P&L analysis completed for wallet: {} using BirdEye data", wallet_address);
 
         Ok(report)
     }
 
-    /// Convert BirdEye transactions to FinancialEvents for P&L analysis
-    #[allow(dead_code)]
-    fn convert_birdeye_transactions_to_events(
+    /// Process a single wallet using Helius data
+    async fn process_single_wallet_with_helius(
         &self,
-        transactions: &[TraderTransaction],
         wallet_address: &str,
-    ) -> Result<Vec<FinancialEvent>> {
-        let mut events = Vec::new();
+        filters: PnLFilters,
+    ) -> Result<PnLReport> {
+        debug!("Starting P&L analysis for wallet: {} using Helius API", wallet_address);
 
-        for tx in transactions {
-            let event_type = match tx.side.as_str() {
-                "buy" => EventType::Buy,
-                "sell" => EventType::Sell,
-                _ => continue, // Skip unknown transaction types
-            };
+        // Get Helius client
+        let helius_client = self.helius_client.as_ref()
+            .ok_or_else(|| OrchestratorError::Config("Helius client not configured".to_string()))?;
 
-            // Convert timestamp from Unix time to DateTime
-            let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(tx.block_unix_time, 0)
-                .unwrap_or_else(|| chrono::Utc::now());
+        // Determine transaction count and timeframe
+        let max_total_transactions = filters.max_transactions_to_fetch
+            .unwrap_or(self.config.birdeye.default_max_transactions);
+        
+        let timeframe = Self::extract_timeframe_for_helius(&filters);
+        debug!("Fetching up to {} transactions for wallet {} with timeframe: {:?}", 
+               max_total_transactions, wallet_address, timeframe);
 
-            // Create extra metadata map for additional BirdEye data
-            let mut extra = HashMap::new();
-            if let Some(ref symbol) = tx.token_symbol {
-                extra.insert("token_symbol".to_string(), symbol.clone());
-            }
-            if let Some(ref pool) = tx.pool_address {
-                extra.insert("pool_address".to_string(), pool.clone());
-            }
-            extra.insert("volume_usd".to_string(), tx.volume_usd.to_string());
-
-            let token_amount = Decimal::try_from(tx.token_amount).unwrap_or(Decimal::ZERO);
-            let token_price_usd = Decimal::try_from(tx.token_price).unwrap_or(Decimal::ZERO);
-
-            let event = FinancialEvent {
-                id: Uuid::new_v4(),
-                transaction_id: tx.tx_hash.clone(),
-                wallet_address: wallet_address.to_string(),
-                event_type,
-                token_mint: tx.token_address.clone(),
-                token_amount,
-                sol_amount: Decimal::ZERO, // Legacy BirdEye doesn't provide SOL-specific data
-                usd_value: token_amount * token_price_usd, // USD value calculated from amount × price
-                timestamp,
-                transaction_fee: Decimal::ZERO, // BirdEye doesn't provide fees
-                metadata: EventMetadata {
-                    program_id: tx.source.clone(),
-                    instruction_index: None,
-                    exchange: tx.source.clone(), // Use source as exchange identifier
-                    price_per_token: Some(token_price_usd),
-                    extra,
-                },
-            };
-
-            events.push(event);
+        // Fetch raw Helius transactions
+        let helius_transactions = helius_client
+            .fetch_wallet_transactions(wallet_address, Some(max_total_transactions), timeframe)
+            .await?;
+        
+        if helius_transactions.is_empty() {
+            return Err(OrchestratorError::JobExecution(format!(
+                "No transactions found for wallet: {}",
+                wallet_address
+            )));
         }
-
-        info!("✅ Converted {} BirdEye transactions to {} financial events for wallet {}", 
-              transactions.len(), events.len(), wallet_address);
-
-        Ok(events)
+        
+        info!("📊 Found {} Helius transactions for wallet {}", 
+              helius_transactions.len(), wallet_address);
+        
+        // Convert Helius transactions to GeneralTraderTransaction format for compatibility
+        let general_transactions = helius_client
+            .helius_to_general_trader_transactions(&helius_transactions, wallet_address)
+            .await?;
+        
+        if general_transactions.is_empty() {
+            return Err(OrchestratorError::JobExecution(format!(
+                "No valid swap transactions found for wallet: {}",
+                wallet_address
+            )));
+        }
+        
+        info!("📊 Converted {} Helius transactions to {} GeneralTraderTransactions", 
+              helius_transactions.len(), general_transactions.len());
+        
+        // --- Start of New P&L Algorithm ---
+        // Use the new algorithm with Helius data converted to GeneralTraderTransaction format
+        let report = self.calculate_pnl_with_new_algorithm(wallet_address, general_transactions, filters).await?;
+        // --- End of New P&L Algorithm ---
+        
+        debug!("✅ P&L analysis completed for wallet: {} using Helius data", wallet_address);
+        Ok(report)
     }
+
+    /// Extract timeframe for Helius API calls
+    /// Returns (start_timestamp, end_timestamp) as Unix timestamps in seconds
+    fn extract_timeframe_for_helius(filters: &PnLFilters) -> Option<(i64, i64)> {
+        match &filters.timeframe_filter {
+            Some(timeframe) => {
+                let start_time = timeframe.start_time.map(|dt| dt.timestamp());
+                let end_time = timeframe.end_time.map(|dt| dt.timestamp());
+                
+                match (start_time, end_time) {
+                    (Some(start), Some(end)) => Some((start, end)),
+                    (Some(start), None) => Some((start, Utc::now().timestamp())),
+                    (None, Some(end)) => Some((0, end)),
+                    (None, None) => None,
+                }
+            }
+            None => None,
+        }
+    }
+
+    // convert_birdeye_transactions_to_events removed - was unused legacy function
 
     /// Convert general BirdEye transactions to FinancialEvents for P&L analysis
     pub fn convert_general_birdeye_transactions_to_events(
@@ -957,7 +1017,7 @@ impl JobOrchestrator {
 
             // Convert timestamp from Unix time to DateTime
             let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(tx.block_unix_time, 0)
-                .unwrap_or_else(|| chrono::Utc::now());
+                .unwrap_or_else(chrono::Utc::now);
 
             // Create TWO FinancialEvents - one for each side of the transaction (like TypeScript)
             // This matches the TypeScript approach where each transaction creates buy/sell pairs
@@ -1285,6 +1345,280 @@ impl JobOrchestrator {
         info!("Cleared temporary Redis data");
         Ok(())
     }
+
+    /// Calculate P&L using the new algorithm as specified in the documentation
+    /// This method strictly follows the algorithm description in pnl_algorithm_documentation.md
+    async fn calculate_pnl_with_new_algorithm(
+        &self,
+        wallet_address: &str,
+        transactions: Vec<GeneralTraderTransaction>,
+        _filters: PnLFilters,
+    ) -> Result<PnLReport> {
+        info!("🚀 Starting new P&L algorithm for wallet: {}", wallet_address);
+        
+        // Step 1: Data Preparation & Parsing
+        let parser = NewTransactionParser::new(wallet_address.to_string());
+        let transactions_count = transactions.len();
+        let financial_events = parser.parse_transactions(transactions).await
+            .map_err(|e| OrchestratorError::JobExecution(format!("Failed to parse transactions: {}", e)))?;
+        
+        info!("📊 Parsed {} BirdEye transactions into {} financial events", 
+              transactions_count, financial_events.len());
+        
+        // Step 2: Group events by token for P&L processing
+        let events_by_token = NewTransactionParser::group_events_by_token(financial_events);
+        
+        info!("📊 Grouped events into {} token groups", events_by_token.len());
+        
+        // Step 3: Calculate P&L using the new engine
+        let pnl_engine = NewPnLEngine::new(wallet_address.to_string());
+        
+        // Fetch current prices for unrealized P&L calculations
+        let current_prices = self.fetch_current_prices_for_tokens(&events_by_token).await?;
+        
+        let portfolio_result = pnl_engine.calculate_portfolio_pnl(events_by_token, current_prices.clone()).await
+            .map_err(|e| OrchestratorError::JobExecution(format!("Failed to calculate P&L: {}", e)))?;
+        
+        info!("✅ New P&L algorithm completed - Total P&L: ${}, Trades: {}, Win Rate: {}%",
+              portfolio_result.total_pnl_usd,
+              portfolio_result.total_trades,
+              portfolio_result.overall_win_rate_percentage);
+        
+        // Step 4: Convert to legacy PnLReport format for compatibility
+        // This is a temporary bridge until we update the entire system
+        let legacy_report = self.convert_new_result_to_legacy_report(portfolio_result, current_prices).await?;
+        
+        Ok(legacy_report)
+    }
+    
+    /// Convert new algorithm result to legacy PnLReport format
+    /// This maintains compatibility with existing API endpoints
+    async fn convert_new_result_to_legacy_report(
+        &self,
+        portfolio_result: PortfolioPnLResult,
+        current_prices: Option<HashMap<String, Decimal>>,
+    ) -> Result<PnLReport> {
+        // This is a simplified conversion - in a full migration, we'd update
+        // the API to use the new format directly
+        
+        // For now, create a basic legacy report structure
+        let report = PnLReport {
+            wallet_address: portfolio_result.wallet_address.clone(),
+            timeframe: AnalysisTimeframe {
+                start_time: None,
+                end_time: None,
+                mode: "new_algorithm".to_string(),
+            },
+            summary: pnl_core::PnLSummary {
+                realized_pnl_usd: portfolio_result.total_realized_pnl_usd,
+                unrealized_pnl_usd: portfolio_result.total_unrealized_pnl_usd,
+                total_pnl_usd: portfolio_result.total_pnl_usd,
+                total_fees_sol: Decimal::ZERO, // TODO: Calculate from events
+                total_fees_usd: Decimal::ZERO, // TODO: Calculate from events
+                winning_trades: portfolio_result.token_results.iter().map(|t| t.winning_trades).sum(),
+                losing_trades: portfolio_result.token_results.iter().map(|t| t.losing_trades).sum(),
+                total_trades: portfolio_result.total_trades,
+                win_rate: portfolio_result.overall_win_rate_percentage,
+                avg_hold_time_minutes: portfolio_result.avg_hold_time_minutes,
+                total_capital_deployed_sol: Decimal::ZERO, // TODO: Calculate from events
+                roi_percentage: Decimal::ZERO, // TODO: Calculate from events
+            },
+            token_breakdown: self.convert_token_results_to_legacy(&portfolio_result.token_results).await?,
+            current_holdings: self.convert_remaining_positions_to_holdings(&portfolio_result.token_results, &current_prices).await?,
+            metadata: pnl_core::ReportMetadata {
+                generated_at: portfolio_result.analysis_timestamp,
+                events_processed: portfolio_result.events_processed,
+                events_filtered: 0,
+                analysis_duration_seconds: 0.0,
+                filters_applied: PnLFilters {
+                    min_capital_sol: Decimal::ZERO,
+                    min_hold_minutes: Decimal::ZERO,
+                    min_trades: 0,
+                    min_win_rate: Decimal::ZERO,
+                    max_signatures: None,
+                    max_transactions_to_fetch: None,
+                    timeframe_filter: None,
+                },
+                warnings: vec![
+                    "Generated using new P&L algorithm".to_string(),
+                    "Legacy report format - some fields may be incomplete".to_string(),
+                ],
+            },
+        };
+        
+        Ok(report)
+    }
+    
+    /// Convert new algorithm token results to legacy TokenPnL format
+    async fn convert_token_results_to_legacy(
+        &self,
+        token_results: &[TokenPnLResult],
+    ) -> Result<Vec<pnl_core::TokenPnL>> {
+        let mut legacy_tokens = Vec::new();
+        
+        for token_result in token_results {
+            // Calculate buy/sell statistics from matched trades
+            let mut total_bought = Decimal::ZERO;
+            let mut total_sold = Decimal::ZERO;
+            let mut total_buy_cost = Decimal::ZERO;
+            let mut total_sell_revenue = Decimal::ZERO;
+            let mut buy_count = 0u32;
+            let mut sell_count = 0u32;
+            let mut first_buy_time = None;
+            let mut last_sell_time = None;
+            
+            // Process matched trades
+            for trade in &token_result.matched_trades {
+                // Buy side
+                total_bought += trade.matched_quantity;
+                total_buy_cost += trade.matched_quantity * trade.buy_event.usd_price_per_token;
+                buy_count += 1;
+                
+                if first_buy_time.is_none() || trade.buy_event.timestamp < first_buy_time.unwrap() {
+                    first_buy_time = Some(trade.buy_event.timestamp);
+                }
+                
+                // Sell side
+                total_sold += trade.matched_quantity;
+                total_sell_revenue += trade.matched_quantity * trade.sell_event.usd_price_per_token;
+                sell_count += 1;
+                
+                if last_sell_time.is_none() || trade.sell_event.timestamp > last_sell_time.unwrap() {
+                    last_sell_time = Some(trade.sell_event.timestamp);
+                }
+            }
+            
+            // Process unmatched sells
+            for unmatched in &token_result.unmatched_sells {
+                total_sold += unmatched.unmatched_quantity;
+                total_sell_revenue += unmatched.unmatched_quantity * unmatched.sell_event.usd_price_per_token;
+                sell_count += 1;
+                
+                if last_sell_time.is_none() || unmatched.sell_event.timestamp > last_sell_time.unwrap() {
+                    last_sell_time = Some(unmatched.sell_event.timestamp);
+                }
+            }
+            
+            // Add remaining position to buy statistics
+            if let Some(remaining) = &token_result.remaining_position {
+                total_bought += remaining.quantity;
+                total_buy_cost += remaining.total_cost_basis_usd;
+                // Note: buy_count doesn't increase here as remaining position represents partial buys
+            }
+            
+            // Calculate averages
+            let avg_buy_price_usd = if total_bought > Decimal::ZERO {
+                total_buy_cost / total_bought
+            } else {
+                Decimal::ZERO
+            };
+            
+            let avg_sell_price_usd = if total_sold > Decimal::ZERO {
+                total_sell_revenue / total_sold
+            } else {
+                Decimal::ZERO
+            };
+            
+            // Convert hold time from minutes to minutes (already in correct format)
+            let hold_time_minutes = if token_result.avg_hold_time_minutes > Decimal::ZERO {
+                Some(token_result.avg_hold_time_minutes)
+            } else {
+                None
+            };
+            
+            let legacy_token = pnl_core::TokenPnL {
+                token_mint: token_result.token_address.clone(),
+                token_symbol: Some(token_result.token_symbol.clone()),
+                realized_pnl_usd: token_result.total_realized_pnl_usd,
+                unrealized_pnl_usd: token_result.total_unrealized_pnl_usd,
+                total_pnl_usd: token_result.total_pnl_usd,
+                buy_count,
+                sell_count,
+                total_bought,
+                total_sold,
+                avg_buy_price_usd,
+                avg_sell_price_usd,
+                first_buy_time,
+                last_sell_time,
+                hold_time_minutes,
+            };
+            
+            legacy_tokens.push(legacy_token);
+        }
+        
+        Ok(legacy_tokens)
+    }
+    
+    /// Convert remaining positions to legacy Holdings format
+    async fn convert_remaining_positions_to_holdings(
+        &self,
+        token_results: &[TokenPnLResult],
+        current_prices: &Option<HashMap<String, Decimal>>,
+    ) -> Result<Vec<pnl_core::Holding>> {
+        let mut legacy_holdings = Vec::new();
+        
+        for token_result in token_results {
+            if let Some(remaining) = &token_result.remaining_position {
+                // Use fetched current price if available, otherwise use cost basis
+                let current_price_usd = if let Some(prices) = current_prices {
+                    prices.get(&remaining.token_address)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            debug!("No current price found for token {}, using cost basis", remaining.token_address);
+                            remaining.avg_cost_basis_usd
+                        })
+                } else {
+                    debug!("No current prices available, using cost basis for token {}", remaining.token_address);
+                    remaining.avg_cost_basis_usd
+                };
+                
+                let current_value_usd = remaining.quantity * current_price_usd;
+                let unrealized_pnl_usd = current_value_usd - remaining.total_cost_basis_usd;
+                
+                let legacy_holding = pnl_core::Holding {
+                    token_mint: remaining.token_address.clone(),
+                    token_symbol: Some(remaining.token_symbol.clone()),
+                    amount: remaining.quantity,
+                    avg_cost_basis_usd: remaining.avg_cost_basis_usd,
+                    current_price_usd,
+                    total_cost_basis_usd: remaining.total_cost_basis_usd,
+                    current_value_usd,
+                    unrealized_pnl_usd,
+                };
+                
+                legacy_holdings.push(legacy_holding);
+            }
+        }
+        
+        Ok(legacy_holdings)
+    }
+    
+    /// Fetch current prices for all tokens in the analysis
+    async fn fetch_current_prices_for_tokens(
+        &self,
+        events_by_token: &HashMap<String, Vec<NewFinancialEvent>>,
+    ) -> Result<Option<HashMap<String, Decimal>>> {
+        let token_addresses: Vec<String> = events_by_token.keys().cloned().collect();
+        
+        if token_addresses.is_empty() {
+            return Ok(None);
+        }
+        
+        info!("Fetching current prices for {} tokens", token_addresses.len());
+        
+        // Use BirdEye price fetching service to get current prices
+        match self.price_fetching_service.fetch_prices(&token_addresses, None).await {
+            Ok(prices) => {
+                info!("Successfully fetched prices for {} tokens", prices.len());
+                Ok(Some(prices))
+            }
+            Err(e) => {
+                warn!("Failed to fetch current prices: {}. Continuing without current prices.", e);
+                // Return None to use cost basis as current price (conservative approach)
+                Ok(None)
+            }
+        }
+    }
 }
 
 // Clone implementation for JobOrchestrator
@@ -1293,6 +1627,8 @@ impl Clone for JobOrchestrator {
         Self {
             config: self.config.clone(),
             birdeye_client: self.birdeye_client.clone(),
+            helius_client: self.helius_client.clone(),
+            price_fetching_service: self.price_fetching_service.clone(),
             redis_client: self.redis_client.clone(),
             running_jobs: self.running_jobs.clone(),
             continuous_mode_filters: self.continuous_mode_filters.clone(),
@@ -1322,6 +1658,7 @@ mod tests {
             min_trades: 1,
             min_win_rate: Decimal::ZERO,
             max_signatures: None,
+            max_transactions_to_fetch: None,
             timeframe_filter: None,
         };
 
@@ -1339,6 +1676,7 @@ mod tests {
             min_trades: 1,
             min_win_rate: Decimal::ZERO,
             max_signatures: None,
+            max_transactions_to_fetch: None,
             timeframe_filter: None,
         };
 
