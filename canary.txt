@@ -1,0 +1,20 @@
+CANARY FILE - Deployment Verification
+=====================================
+
+This file serves as proof that the latest codebase has been successfully transferred to the production server.
+
+Deployment Details:
+- Date: July 15, 2025
+- Changes: Helius integration, cleaned P&L engine, removed hardcoded prices
+- Purpose: Verify file transfer completion
+- Expected Result: Server should show new P&L algorithm with Helius data source
+
+If you can see this file on the server, the transfer was successful.
+If the API results still differ from local, there may be a configuration issue.
+
+Latest Features Deployed:
+✅ Helius client integration
+✅ New P&L engine with FIFO matching
+✅ Dynamic price fetching (no hardcoded values)
+✅ Cleaned legacy code
+✅ Production configuration support

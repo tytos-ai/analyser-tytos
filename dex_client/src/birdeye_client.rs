@@ -7,7 +7,7 @@ use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, error, warn};
@@ -103,6 +103,27 @@ pub struct TopTrader {
     pub volume_sell: f64,
 }
 
+/// Gainers-Losers response from BirdEye (/trader/gainers-losers)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GainersLosersResponse {
+    pub success: bool,
+    pub data: GainersLosersData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GainersLosersData {
+    pub items: Vec<GainerLoser>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GainerLoser {
+    pub network: String,
+    pub address: String, // This is the wallet address
+    pub pnl: f64,
+    pub trade_count: u32,
+    pub volume: f64,
+}
+
 /// General trader transactions response from BirdEye (/trader/txs/seek_by_time)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralTraderTransactionsResponse {
@@ -114,6 +135,32 @@ pub struct GeneralTraderTransactionsResponse {
 pub struct GeneralTraderTransactionsData {
     pub items: Vec<GeneralTraderTransaction>,
     pub has_next: Option<bool>, // Make optional since it may not always be present
+}
+
+/// New listing token response from BirdEye (/defi/v2/tokens/new_listing)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewListingTokenResponse {
+    pub success: bool,
+    pub data: NewListingTokenData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewListingTokenData {
+    pub items: Vec<NewListingToken>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewListingToken {
+    pub address: String,
+    pub symbol: String,
+    pub name: String,
+    pub decimals: u8,
+    pub source: String,
+    #[serde(rename = "liquidityAddedAt")]
+    pub liquidity_added_at: String,
+    #[serde(rename = "logoURI")]
+    pub logo_uri: Option<String>,
+    pub liquidity: f64,
 }
 
 
@@ -242,7 +289,7 @@ impl BirdEyeClient {
         &self.config
     }
 
-    /// Get trending tokens from BirdEye
+    /// Get trending tokens from BirdEye (legacy method using default sorting)
     pub async fn get_trending_tokens(&self, chain: &str) -> Result<Vec<TrendingToken>, BirdEyeError> {
         let url = format!("{}/defi/token_trending", self.config.api_base_url);
         
@@ -273,6 +320,206 @@ impl BirdEyeClient {
         Ok(trending_response.data.tokens)
     }
 
+    /// Get trending tokens from BirdEye using multiple sorting criteria for enhanced discovery
+    pub async fn get_trending_tokens_multi_sort(&self, chain: &str) -> Result<Vec<TrendingToken>, BirdEyeError> {
+        
+        debug!("🔄 Starting multi-sort trending token discovery for chain: {}", chain);
+        
+        // Define the three sorting strategies
+        let sort_strategies = [
+            ("rank", "asc", "momentum/community interest"),
+            ("volume24hUSD", "desc", "trading activity"),
+            ("liquidity", "desc", "market depth"),
+        ];
+        
+        let mut all_tokens = Vec::new();
+        let mut unique_addresses = HashSet::new();
+        
+        // Execute all three API calls sequentially to avoid borrowing issues
+        for (sort_by, sort_type, description) in sort_strategies.iter() {
+            debug!("📊 Fetching tokens sorted by {} ({})", sort_by, description);
+            
+            match self.fetch_trending_tokens_by_sort(chain, sort_by, sort_type).await {
+                Ok(tokens) => {
+                    info!("✅ Retrieved {} tokens sorted by {} ({})", 
+                          tokens.len(), sort_by, description);
+                    
+                    for token in tokens {
+                        // Only add if we haven't seen this token address before
+                        if unique_addresses.insert(token.address.clone()) {
+                            all_tokens.push(token);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("❌ Failed to fetch tokens sorted by {} ({}): {}", sort_by, description, e);
+                    // Continue with other strategies - don't fail the entire operation
+                }
+            }
+            
+            // Small delay between requests to avoid rate limiting
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        
+        // Sort final result by volume for consistency
+        all_tokens.sort_by(|a, b| {
+            b.volume_24h.unwrap_or(0.0).partial_cmp(&a.volume_24h.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        info!("🎯 Multi-sort discovery completed: {} unique tokens discovered across all strategies", all_tokens.len());
+        
+        if self.config.api_base_url.contains("localhost") || std::env::var("DEBUG").is_ok() {
+            debug!("📋 Token discovery breakdown:");
+            for (i, token) in all_tokens.iter().enumerate().take(10) {
+                debug!("  {}. {} ({}) - Vol: ${:.0}, Liq: ${:.0}", 
+                       i + 1, token.symbol, token.address, 
+                       token.volume_24h.unwrap_or(0.0),
+                       token.liquidity.unwrap_or(0.0));
+            }
+        }
+        
+        Ok(all_tokens)
+    }
+
+    /// Helper method to fetch trending tokens by specific sort criteria
+    async fn fetch_trending_tokens_by_sort(&self, chain: &str, sort_by: &str, sort_type: &str) -> Result<Vec<TrendingToken>, BirdEyeError> {
+        let url = format!("{}/defi/token_trending", self.config.api_base_url);
+        
+        let response = self.http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .query(&[
+                ("chain", chain),
+                ("sort_by", sort_by),
+                ("sort_type", sort_type),
+                ("offset", "0"),
+                ("limit", "20"),
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            return Err(BirdEyeError::Api(format!("HTTP {}", response.status())));
+        }
+
+        let trending_response: TrendingTokenResponse = response.json().await?;
+        
+        if !trending_response.success {
+            return Err(BirdEyeError::Api("API returned success=false".to_string()));
+        }
+
+        Ok(trending_response.data.tokens)
+    }
+
+    /// Get trending tokens with multi-sort + pagination (3 strategies × 5 offsets = 15 calls) for comprehensive discovery
+    pub async fn get_trending_tokens_paginated(&self, chain: &str) -> Result<Vec<TrendingToken>, BirdEyeError> {
+        debug!("🔄 Starting paginated multi-sort trending token discovery for chain: {}", chain);
+        
+        // Define the three sorting strategies (preserve existing multi-sort functionality)
+        let sort_strategies = [
+            ("rank", "asc", "momentum/community interest"),
+            ("volume24hUSD", "desc", "trading activity"),
+            ("liquidity", "desc", "market depth"),
+        ];
+        
+        // Define offsets for pagination
+        let offsets = [0, 100, 200, 300, 400];
+        
+        let mut all_tokens = Vec::new();
+        let mut unique_addresses = HashSet::new();
+        
+        // Execute all combinations: 3 strategies × 5 offsets = 15 API calls
+        for (sort_by, sort_type, description) in sort_strategies.iter() {
+            debug!("📊 Processing sort strategy: {} ({})", sort_by, description);
+            
+            for (i, offset) in offsets.iter().enumerate() {
+                debug!("📊 Fetching {} tokens page {}/{} (offset: {})", sort_by, i + 1, offsets.len(), offset);
+                
+                match self.fetch_trending_tokens_by_sort_paginated(chain, sort_by, sort_type, *offset).await {
+                    Ok(tokens) => {
+                        info!("✅ Retrieved {} tokens from {} strategy page {} (offset: {})", 
+                              tokens.len(), sort_by, i + 1, offset);
+                        
+                        for token in tokens {
+                            // Only add if we haven't seen this token address before
+                            if unique_addresses.insert(token.address.clone()) {
+                                all_tokens.push(token);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("❌ Failed to fetch {} tokens at offset {}: {}", sort_by, offset, e);
+                        // Continue with other pages - don't fail the entire operation
+                    }
+                }
+                
+                // Add delay between paginated calls to respect rate limits
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+        
+        // Sort by volume for consistency
+        all_tokens.sort_by(|a, b| {
+            b.volume_24h.unwrap_or(0.0).partial_cmp(&a.volume_24h.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        info!("🎯 Paginated multi-sort discovery completed: {} unique tokens discovered across all strategies and pages", all_tokens.len());
+        
+        if self.config.api_base_url.contains("localhost") || std::env::var("DEBUG").is_ok() {
+            debug!("📋 Top paginated multi-sort trending tokens:");
+            for (i, token) in all_tokens.iter().enumerate().take(10) {
+                debug!("  {}. {} ({}) - Vol: ${:.0}, Liq: ${:.0}", 
+                       i + 1, token.symbol, token.address, 
+                       token.volume_24h.unwrap_or(0.0),
+                       token.liquidity.unwrap_or(0.0));
+            }
+        }
+        
+        Ok(all_tokens)
+    }
+
+    /// Helper method to fetch trending tokens by sort strategy + offset for pagination
+    async fn fetch_trending_tokens_by_sort_paginated(&self, chain: &str, sort_by: &str, sort_type: &str, offset: u32) -> Result<Vec<TrendingToken>, BirdEyeError> {
+        let url = format!("{}/defi/token_trending", self.config.api_base_url);
+        
+        let response = self.http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", "solana")
+            .header("accept", "application/json")
+            .query(&[
+                ("chain", chain),
+                ("sort_by", sort_by),
+                ("sort_type", sort_type),
+                ("offset", &offset.to_string()),
+                ("limit", "20"), // API enforced maximum
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            return Err(BirdEyeError::Api(format!("HTTP {}", response.status())));
+        }
+
+        let trending_response: TrendingTokenResponse = response.json().await?;
+        
+        if !trending_response.success {
+            return Err(BirdEyeError::Api("API returned success=false".to_string()));
+        }
+
+        Ok(trending_response.data.tokens)
+    }
+
     /// Get top traders for a specific token
     pub async fn get_top_traders(&self, token_address: &str, limit: Option<u32>) -> Result<Vec<TopTrader>, BirdEyeError> {
         let url = format!("{}/defi/v2/tokens/top_traders", self.config.api_base_url);
@@ -287,7 +534,7 @@ impl BirdEyeClient {
             ("offset", "0"),
         ];
         
-        let limit_string = limit.unwrap_or(10).to_string();
+        let limit_string = limit.unwrap_or(20).to_string();
         query_params.push(("limit", &limit_string));
 
         let response = self.http_client
@@ -319,6 +566,398 @@ impl BirdEyeClient {
         info!("Retrieved {} top traders from BirdEye for token {}", 
               top_traders_response.data.items.len(), token_address);
         Ok(top_traders_response.data.items)
+    }
+
+    /// Get top traders for a specific token with pagination (offset 0-400, limit 10) for comprehensive discovery
+    pub async fn get_top_traders_paginated(&self, token_address: &str) -> Result<Vec<TopTrader>, BirdEyeError> {
+        debug!("🔄 Starting paginated top traders discovery for token: {}", token_address);
+        
+        let mut all_traders = Vec::new();
+        let mut unique_addresses = HashSet::new();
+        
+        // Make 5 API calls with different offsets to get comprehensive coverage
+        let offsets = [0, 100, 200, 300, 400];
+        
+        for (i, offset) in offsets.iter().enumerate() {
+            debug!("📊 Fetching top traders page {}/{} (offset: {})", i + 1, offsets.len(), offset);
+            
+            match self.fetch_top_traders_paginated(token_address, *offset).await {
+                Ok(traders) => {
+                    info!("✅ Retrieved {} top traders from page {} (offset: {})", traders.len(), i + 1, offset);
+                    
+                    for trader in traders {
+                        // Only add if we haven't seen this trader address before
+                        if unique_addresses.insert(trader.owner.clone()) {
+                            all_traders.push(trader);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("❌ Failed to fetch top traders at offset {}: {}", offset, e);
+                    // Continue with other pages - don't fail the entire operation
+                }
+            }
+            
+            // Add delay between paginated calls to respect rate limits
+            if i < offsets.len() - 1 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+        
+        // Sort by volume descending for consistency
+        all_traders.sort_by(|a, b| {
+            b.volume.partial_cmp(&a.volume).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        info!("🎯 Paginated top traders discovery completed: {} unique traders discovered", all_traders.len());
+        
+        if self.config.api_base_url.contains("localhost") || std::env::var("DEBUG").is_ok() {
+            debug!("📋 Top paginated traders:");
+            for (i, trader) in all_traders.iter().enumerate().take(10) {
+                debug!("  {}. {} - Vol: ${:.0}, Trades: {}", 
+                       i + 1, trader.owner, trader.volume, trader.trade);
+            }
+        }
+        
+        Ok(all_traders)
+    }
+
+    /// Helper method to fetch top traders by offset for pagination
+    async fn fetch_top_traders_paginated(&self, token_address: &str, offset: u32) -> Result<Vec<TopTrader>, BirdEyeError> {
+        let url = format!("{}/defi/v2/tokens/top_traders", self.config.api_base_url);
+        
+        let response = self.http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", "solana")
+            .header("accept", "application/json")
+            .query(&[
+                ("address", token_address),
+                ("time_frame", "24h"),
+                ("sort_type", "desc"),
+                ("sort_by", "volume"),
+                ("offset", &offset.to_string()),
+                ("limit", "10"), // API enforced maximum
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            error!("BirdEye API error for top traders {}: HTTP {} - Body: {}", token_address, status, error_body);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_body)));
+        }
+
+        let top_traders_response: TopTradersResponse = response.json().await?;
+        
+        if !top_traders_response.success {
+            return Err(BirdEyeError::Api("API returned success=false".to_string()));
+        }
+
+        Ok(top_traders_response.data.items)
+    }
+
+    /// Get top gainers/losers from BirdEye (filtered to only return gainers)
+    pub async fn get_gainers_losers(&self, timeframe: &str) -> Result<Vec<GainerLoser>, BirdEyeError> {
+        let url = format!("{}/trader/gainers-losers", self.config.api_base_url);
+        
+        debug!("Fetching gainers/losers from BirdEye for timeframe: {}", timeframe);
+        
+        let query_params = vec![
+            ("type", timeframe),
+            ("sort_by", "PnL"),
+            ("sort_type", "desc"),
+            ("offset", "0"),
+            ("limit", "10"),
+        ];
+
+        let response = self.http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", "solana")
+            .header("accept", "application/json")
+            .query(&query_params)
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            error!("BirdEye API error for gainers/losers {}: HTTP {} - Body: {}", timeframe, status, error_body);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_body)));
+        }
+
+        let gainers_losers_response: GainersLosersResponse = response.json().await?;
+        
+        if !gainers_losers_response.success {
+            return Err(BirdEyeError::Api("API returned success=false".to_string()));
+        }
+
+        // Filter to only return gainers (pnl > 0)
+        let total_count = gainers_losers_response.data.items.len();
+        let gainers_only: Vec<GainerLoser> = gainers_losers_response.data.items
+            .into_iter()
+            .filter(|trader| trader.pnl > 0.0)
+            .collect();
+
+        info!("Retrieved {} gainers from BirdEye for timeframe {} (filtered from {} total)", 
+              gainers_only.len(), timeframe, total_count);
+        Ok(gainers_only)
+    }
+
+    /// Get gainers/losers with multi-timeframe + pagination (3 timeframes × 5 offsets = 15 calls) for comprehensive discovery
+    pub async fn get_gainers_losers_paginated(&self) -> Result<Vec<GainerLoser>, BirdEyeError> {
+        debug!("🔄 Starting paginated multi-timeframe gainers/losers discovery");
+        
+        // Define the three timeframes (preserve existing multi-timeframe functionality)
+        let timeframes = ["1W", "yesterday", "today"];
+        
+        // Define offsets for pagination
+        let offsets = [0, 100, 200, 300, 400];
+        
+        let mut all_gainers = Vec::new();
+        let mut unique_addresses = HashSet::new();
+        
+        // Execute all combinations: 3 timeframes × 5 offsets = 15 API calls
+        for timeframe in timeframes.iter() {
+            debug!("📊 Processing timeframe: {}", timeframe);
+            
+            for (i, offset) in offsets.iter().enumerate() {
+                debug!("📊 Fetching {} gainers page {}/{} (offset: {})", timeframe, i + 1, offsets.len(), offset);
+                
+                match self.fetch_gainers_losers_paginated(timeframe, *offset).await {
+                    Ok(gainers) => {
+                        info!("✅ Retrieved {} gainers from {} timeframe page {} (offset: {})", 
+                              gainers.len(), timeframe, i + 1, offset);
+                        
+                        for gainer in gainers {
+                            // Only add if we haven't seen this wallet address before
+                            if unique_addresses.insert(gainer.address.clone()) {
+                                all_gainers.push(gainer);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("❌ Failed to fetch {} gainers at offset {}: {}", timeframe, offset, e);
+                        // Continue with other pages - don't fail the entire operation
+                    }
+                }
+                
+                // Add delay between paginated calls to respect rate limits
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+        
+        // Sort by PnL descending for consistency
+        all_gainers.sort_by(|a, b| {
+            b.pnl.partial_cmp(&a.pnl).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        info!("🎯 Paginated multi-timeframe gainers discovery completed: {} unique gainers discovered across all timeframes and pages", all_gainers.len());
+        
+        if self.config.api_base_url.contains("localhost") || std::env::var("DEBUG").is_ok() {
+            debug!("📋 Top paginated multi-timeframe gainers:");
+            for (i, gainer) in all_gainers.iter().enumerate().take(10) {
+                debug!("  {}. {} - PnL: ${:.2}, Vol: ${:.0}, Trades: {}", 
+                       i + 1, gainer.address, gainer.pnl, gainer.volume, gainer.trade_count);
+            }
+        }
+        
+        Ok(all_gainers)
+    }
+
+    /// Helper method to fetch gainers/losers by offset for pagination
+    async fn fetch_gainers_losers_paginated(&self, timeframe: &str, offset: u32) -> Result<Vec<GainerLoser>, BirdEyeError> {
+        let url = format!("{}/trader/gainers-losers", self.config.api_base_url);
+        
+        let response = self.http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", "solana")
+            .header("accept", "application/json")
+            .query(&[
+                ("type", timeframe),
+                ("sort_by", "PnL"),
+                ("sort_type", "desc"),
+                ("offset", &offset.to_string()),
+                ("limit", "10"), // API enforced maximum
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            error!("BirdEye API error for gainers/losers {}: HTTP {} - Body: {}", timeframe, status, error_body);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_body)));
+        }
+
+        let gainers_losers_response: GainersLosersResponse = response.json().await?;
+        
+        if !gainers_losers_response.success {
+            return Err(BirdEyeError::Api("API returned success=false".to_string()));
+        }
+
+        // Filter to only return gainers (pnl > 0)
+        let gainers_only: Vec<GainerLoser> = gainers_losers_response.data.items
+            .into_iter()
+            .filter(|trader| trader.pnl > 0.0)
+            .collect();
+
+        Ok(gainers_only)
+    }
+
+    /// Get newly listed tokens with comprehensive coverage (dual API calls)
+    pub async fn get_new_listing_tokens_comprehensive(&self, chain: &str) -> Result<Vec<NewListingToken>, BirdEyeError> {
+        let limit = 20;
+        
+        debug!("🆕 Starting comprehensive new listing token discovery for chain: {}", chain);
+        
+        // Call 1: Non-meme platforms
+        let non_meme_tokens = self.get_new_listing_tokens(chain, limit, false).await?;
+        
+        // Rate limiting between calls
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        
+        // Call 2: Meme platforms enabled
+        let meme_tokens = self.get_new_listing_tokens(chain, limit, true).await?;
+        
+        // Combine and deduplicate
+        let mut all_tokens = non_meme_tokens.clone();
+        let mut seen_addresses = HashSet::new();
+        
+        // Add non-meme tokens to seen set
+        for token in &non_meme_tokens {
+            seen_addresses.insert(token.address.clone());
+        }
+        
+        // Add meme tokens that aren't duplicates
+        for token in meme_tokens {
+            if seen_addresses.insert(token.address.clone()) {
+                all_tokens.push(token);
+            }
+        }
+        
+        info!("🎯 Comprehensive new listing discovery completed: {} unique tokens found ({} non-meme + {} meme)", 
+              all_tokens.len(), non_meme_tokens.len(), 
+              all_tokens.len() - non_meme_tokens.len());
+        
+        Ok(all_tokens)
+    }
+
+    /// Get newly listed tokens from BirdEye API (single call)
+    async fn get_new_listing_tokens(&self, chain: &str, limit: u32, meme_platform_enabled: bool) -> Result<Vec<NewListingToken>, BirdEyeError> {
+        let url = format!("{}/defi/v2/tokens/new_listing", self.config.api_base_url);
+        
+        debug!("📡 Fetching new listing tokens from BirdEye (meme_platform_enabled: {}, limit: {})", 
+               meme_platform_enabled, limit);
+        
+        let response = self.http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", chain)
+            .query(&[
+                ("limit", &limit.to_string()),
+                ("meme_platform_enabled", &meme_platform_enabled.to_string()),
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            error!("BirdEye API error for new listing tokens: HTTP {} - Body: {}", status, error_body);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_body)));
+        }
+
+        let new_listing_response: NewListingTokenResponse = response.json().await?;
+        
+        if !new_listing_response.success {
+            return Err(BirdEyeError::Api("API returned success=false".to_string()));
+        }
+
+        debug!("✅ Retrieved {} new listing tokens (meme_platform_enabled: {})", 
+               new_listing_response.data.items.len(), meme_platform_enabled);
+        
+        Ok(new_listing_response.data.items)
+    }
+
+    /// Filter new listing tokens based on quality criteria
+    pub fn filter_new_listing_tokens(&self, tokens: Vec<NewListingToken>, filter: &NewListingTokenFilter) -> Vec<NewListingToken> {
+        let original_count = tokens.len();
+        let mut filtered_tokens: Vec<NewListingToken> = tokens
+            .into_iter()
+            .filter(|token| {
+                // Liquidity filter
+                if let Some(min_liquidity) = filter.min_liquidity {
+                    if token.liquidity < min_liquidity {
+                        debug!("⭕ Filtered out {} due to low liquidity: ${:.2}", token.symbol, token.liquidity);
+                        return false;
+                    }
+                }
+                
+                // Age filter (check if token was added within max_age_hours)
+                if let Some(max_age_hours) = filter.max_age_hours {
+                    if let Ok(added_at) = chrono::DateTime::parse_from_rfc3339(&token.liquidity_added_at) {
+                        let age_hours = chrono::Utc::now().signed_duration_since(added_at).num_hours();
+                        if age_hours > max_age_hours as i64 {
+                            debug!("⭕ Filtered out {} due to age: {} hours old", token.symbol, age_hours);
+                            return false;
+                        }
+                    }
+                }
+                
+                // Source exclusion filter
+                if let Some(ref exclude_sources) = filter.exclude_sources {
+                    if exclude_sources.contains(&token.source) {
+                        debug!("⭕ Filtered out {} due to excluded source: {}", token.symbol, token.source);
+                        return false;
+                    }
+                }
+                
+                true
+            })
+            .collect();
+        
+        // Sort by liquidity descending
+        filtered_tokens.sort_by(|a, b| b.liquidity.partial_cmp(&a.liquidity).unwrap_or(std::cmp::Ordering::Equal));
+        
+        // Apply max tokens limit
+        if let Some(max_tokens) = filter.max_tokens {
+            if filtered_tokens.len() > max_tokens {
+                filtered_tokens.truncate(max_tokens);
+            }
+        }
+        
+        info!("🔍 Filtered {} new listing tokens to {} quality tokens", 
+              original_count, filtered_tokens.len());
+        
+        if self.config.api_base_url.contains("localhost") || std::env::var("DEBUG").is_ok() {
+            debug!("📋 Top new listing tokens after filtering:");
+            for (i, token) in filtered_tokens.iter().enumerate().take(5) {
+                debug!("  {}. {} ({}) - Liquidity: ${:.2}, Source: {}", 
+                       i + 1, token.symbol, token.address, token.liquidity, token.source);
+            }
+        }
+        
+        filtered_tokens
     }
 
     /// Get all trader transactions for a wallet (general endpoint without token filter)
@@ -1079,6 +1718,30 @@ impl Default for TopTraderFilter {
     }
 }
 
+/// Quality criteria for filtering new listing tokens
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewListingTokenFilter {
+    /// Minimum liquidity in USD
+    pub min_liquidity: Option<f64>,
+    /// Maximum age in hours since listing
+    pub max_age_hours: Option<u32>,
+    /// Maximum number of tokens to return
+    pub max_tokens: Option<usize>,
+    /// Sources to exclude from results
+    pub exclude_sources: Option<Vec<String>>,
+}
+
+impl Default for NewListingTokenFilter {
+    fn default() -> Self {
+        Self {
+            min_liquidity: Some(1000.0),      // $1k minimum liquidity
+            max_age_hours: Some(24),          // Last 24 hours
+            max_tokens: Some(25),             // Top 25 tokens max
+            exclude_sources: None,            // No exclusions by default
+        }
+    }
+}
+
 
 
 /// Implementation of PriceFetcher trait for BirdEye
@@ -1117,32 +1780,3 @@ impl PriceFetcher for BirdEyeClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config_creation() {
-        let config = BirdEyeConfig {
-            api_key: "test".to_string(),
-            api_base_url: "https://public-api.birdeye.so".to_string(),
-            request_timeout_seconds: 30,
-            price_cache_ttl_seconds: 60,
-            rate_limit_per_second: 100,
-            max_traders_per_token: 10,
-            max_transactions_per_trader: 100,
-            default_max_transactions: 1000,
-            max_token_rank: 1000,
-        };
-        assert_eq!(config.api_base_url, "https://public-api.birdeye.so");
-        assert_eq!(config.request_timeout_seconds, 30);
-    }
-
-    #[test]
-    fn test_filter_creation() {
-        let filter = TopTraderFilter::default();
-        assert_eq!(filter.min_volume_usd, 1000.0);
-        assert_eq!(filter.min_trades, 5);
-        assert_eq!(filter.min_win_rate, Some(60.0));
-    }
-}

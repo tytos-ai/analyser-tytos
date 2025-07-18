@@ -7,6 +7,7 @@ use axum::{
 use config_manager::{SystemConfig, ConfigurationError};
 use job_orchestrator::{JobOrchestrator, OrchestratorError};
 use pnl_core::PnLError;
+use dex_client::{BirdEyeClient, HeliusClient, PriceFetchingService};
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -16,6 +17,7 @@ mod handlers;
 mod middleware;
 mod types;
 mod service_manager;
+mod v2;
 
 use handlers::*;
 use types::*;
@@ -27,6 +29,10 @@ pub struct AppState {
     pub config: SystemConfig,
     pub orchestrator: Arc<JobOrchestrator>,
     pub service_manager: Arc<ServiceManager>,
+    // API v2 dependencies
+    pub birdeye_client: Arc<BirdEyeClient>,
+    pub helius_client: Arc<HeliusClient>,
+    pub price_fetching_service: Arc<PriceFetchingService>,
 }
 
 /// Main application error type
@@ -44,6 +50,10 @@ pub enum ApiError {
     Validation(String),
     #[error("Not found: {0}")]
     NotFound(String),
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+    #[error("Internal server error: {0}")]
+    InternalServerError(String),
     #[error("Internal server error: {0}")]
     Internal(String),
 }
@@ -57,6 +67,8 @@ impl IntoResponse for ApiError {
             ApiError::ServiceManager(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
+            ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ApiError::InternalServerError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 
@@ -93,11 +105,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service_manager = Arc::new(ServiceManager::new(config.clone(), orchestrator.clone()));
     info!("Service manager initialized");
 
+    // Initialize clients for API v2
+    let birdeye_client = Arc::new(BirdEyeClient::new(config.birdeye.clone())?);
+    let helius_client = Arc::new(HeliusClient::new(config.helius.clone())?);
+    let price_fetching_service = Arc::new(PriceFetchingService::new(
+        config.price_fetching.clone(),
+        Some(config.birdeye.clone()),
+    )?);
+    info!("API v2 clients initialized");
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
         orchestrator,
         service_manager,
+        birdeye_client,
+        helius_client,
+        price_fetching_service,
     };
 
     // Build the application router
@@ -113,6 +137,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   • POST /api/services/pnl/stop - Stop P&L analysis");
     info!("   • GET /api/services/status - Get service status");
     info!("   • GET /health - Health check");
+    info!("🚀 API v2 endpoints (Enhanced Copy Trading Analysis):");
+    info!("   • GET /api/v2/wallets/:address/analysis - Comprehensive wallet analysis");
+    info!("   • GET /api/v2/wallets/:address/trades - Individual trade details");
+    info!("   • GET /api/v2/wallets/:address/positions - Current positions tracking");
+    info!("   • POST /api/v2/pnl/batch/run - Enhanced batch analysis");
 
     // Bind and serve
     let bind_addr = format!("{}:{}", config.api.host, config.api.port);
@@ -167,6 +196,9 @@ async fn create_router(state: AppState) -> Router {
         // Continuous mode endpoints
         .route("/api/pnl/continuous/discovered-wallets", get(get_discovered_wallets))
         .route("/api/pnl/continuous/discovered-wallets/:wallet_address/details", get(get_wallet_details))
+        
+        // API v2 - Enhanced P&L analysis for copy trading
+        .nest("/api/v2", v2::create_v2_routes())
         
         // Add CORS middleware
         .layer(

@@ -111,6 +111,9 @@ pub struct SystemConfig {
     /// Helius API configuration
     pub helius: HeliusConfig,
     
+    /// DexScreener API configuration
+    pub dexscreener: DexScreenerConfig,
+    
     /// Price fetching configuration
     pub price_fetching: PriceFetchingConfig,
     
@@ -183,6 +186,21 @@ pub struct BirdEyeConfig {
     
     /// Maximum rank for top tokens (used in trending discovery)
     pub max_token_rank: u32,
+    
+    /// New listing token discovery enabled
+    pub new_listing_enabled: bool,
+    
+    /// Minimum liquidity for new listing tokens
+    pub new_listing_min_liquidity: f64,
+    
+    /// Maximum age in hours for new listing tokens
+    pub new_listing_max_age_hours: u32,
+    
+    /// Maximum number of new listing tokens to process
+    pub new_listing_max_tokens: usize,
+    
+    /// Maximum number of trending tokens to process (0 = unlimited)
+    pub max_trending_tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +222,30 @@ pub struct HeliusConfig {
     
     /// Enable Helius for transaction fetching (feature flag)
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DexScreenerConfig {
+    /// DexScreener API base URL
+    pub api_base_url: String,
+    
+    /// Request timeout in seconds
+    pub request_timeout_seconds: u64,
+    
+    /// Rate limit delay between requests in milliseconds (60 requests per minute)
+    pub rate_limit_delay_ms: u64,
+    
+    /// Maximum retry attempts for failed requests
+    pub max_retries: u32,
+    
+    /// Enable DexScreener for boosted token discovery
+    pub enabled: bool,
+    
+    /// Minimum boost amount to consider a token (filters out low-boost tokens)
+    pub min_boost_amount: f64,
+    
+    /// Maximum number of boosted tokens to process per endpoint
+    pub max_boosted_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +382,11 @@ impl Default for SystemConfig {
                 max_transactions_per_trader: 100, // BirdEye API limit is 100
                 default_max_transactions: 1000, // Default to 1000 total transactions
                 max_token_rank: 1000,             // Top 1000 ranked tokens
+                new_listing_enabled: true,        // Enable new listing discovery by default
+                new_listing_min_liquidity: 1000.0, // $1k minimum liquidity
+                new_listing_max_age_hours: 24,   // Last 24 hours
+                new_listing_max_tokens: 25,      // Top 25 tokens max
+                max_trending_tokens: 500,        // Default to 500 trending tokens
             },
             helius: HeliusConfig {
                 api_key: "".to_string(), // Must be set in .env or config file
@@ -348,6 +395,15 @@ impl Default for SystemConfig {
                 rate_limit_ms: 100,              // 100ms between requests (600 req/min)
                 max_retry_attempts: 3,
                 enabled: false,                  // Feature flag - disabled by default
+            },
+            dexscreener: DexScreenerConfig {
+                api_base_url: "https://api.dexscreener.com".to_string(),
+                request_timeout_seconds: 30,
+                rate_limit_delay_ms: 1000,       // 1 request per second (60 req/min)
+                max_retries: 3,
+                enabled: true,                   // Enable DexScreener by default
+                min_boost_amount: 100.0,         // Minimum boost amount to consider
+                max_boosted_tokens: 20,          // Max boosted tokens per endpoint
             },
             price_fetching: PriceFetchingConfig {
                 primary_source: "jupiter".to_string(),   // Default to Jupiter

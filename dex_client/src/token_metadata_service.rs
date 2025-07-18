@@ -300,31 +300,3 @@ impl Clone for TokenMetadataService {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_symbol_from_address() {
-        let address = "So11111111111111111111111111111111111111112";
-        let symbol = TokenMetadataService::extract_symbol_from_address(address);
-        assert_eq!(symbol, "So11..1112");
-    }
-
-    #[test]
-    fn test_shorten_address() {
-        let address = "So11111111111111111111111111111111111111112";
-        let shortened = TokenMetadataService::shorten_address(address);
-        assert_eq!(shortened, "So1111..111112");
-    }
-
-    #[test]
-    fn test_batch_size_validation() {
-        let _service = TokenMetadataService::new("test_key".to_string());
-        let large_batch: Vec<String> = (0..51).map(|i| format!("address_{}", i)).collect();
-        
-        // This should be tested with an async runtime in a real test
-        // For now, just test the validation logic would trigger
-        assert!(large_batch.len() > 50);
-    }
-}

@@ -26,18 +26,17 @@ The P&L Tracker includes **automatic wallet discovery** and **P&L analysis** ser
 ### Configure Services Before Starting
 ```bash
 # Configure both services with rate limiting (VERIFIED WORKING)
-curl -X POST http://localhost:8080/api/services/config \
+curl -X POST http://134.199.211.155:8080/api/services/config \
   -H "Content-Type: application/json" \
   -d '{
     "enable_wallet_discovery": true,
     "enable_pnl_analysis": true,
     "birdeye_config": {
-      "max_trending_tokens": 5,
-      "max_traders_per_token": 10,
-      "cycle_interval_seconds": 300,
-      "min_trader_volume_usd": 1000.0,
-      "min_trader_trades": 5,
-      "debug_mode": false
+          "max_trending_tokens": 10000,
+          "max_traders_per_token": 100,
+          "cycle_interval_seconds": 7200,
+          "min_trader_volume_usd": 1000.0,
+          "min_trader_trades": 5,
     }
   }'
 ```
@@ -54,7 +53,7 @@ curl -X POST http://localhost:8080/api/services/config \
 ### Start Wallet Discovery
 ```bash
 # Start wallet discovery service (VERIFIED WORKING)
-curl -X POST http://localhost:8080/api/services/discovery/start
+curl -X POST http://134.199.211.155:8080/api/services/discovery/start
 
 # Expected response:
 # {"data":{"message":"Wallet discovery service started successfully"},"timestamp":"..."}

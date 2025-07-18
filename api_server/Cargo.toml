@@ -35,6 +35,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Decimal numbers
 rust_decimal = { version = "1.35", features = ["serde-with-str"] }
+rust_decimal_macros = "1.35"
 
 # CSV export
 csv = "1.3"

@@ -15,7 +15,15 @@ connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
 
 
-# DexScreener configuration removed - using BirdEye instead
+# DexScreener configuration for boosted token discovery
+[dexscreener]
+api_base_url = "https://api.dexscreener.com"
+request_timeout_seconds = 30
+rate_limit_delay_ms = 1000  # 60 requests per minute = 1 request per second
+max_retries = 3
+enabled = true
+min_boost_amount = 100.0    # Minimum boost amount to consider
+max_boosted_tokens = 50     # Increased from 20 to process more boosted tokens
 
 [birdeye]
 api_key = "5ff313b239ac42e297b830b10ea1871d"
@@ -23,10 +31,15 @@ api_base_url = "https://public-api.birdeye.so"
 request_timeout_seconds = 30
 price_cache_ttl_seconds = 60
 rate_limit_per_second = 100
-max_traders_per_token = 10
-max_transactions_per_trader = 100
-default_max_transactions = 500  # Default maximum transactions to fetch/analyze per wallet
+max_traders_per_token = 100  # Increased from 20 for maximum coverage (doesn't affect BirdEye API limits)
+max_transactions_per_trader = 100  # API limit - DO NOT CHANGE
+default_max_transactions = 2000  # Default maximum transactions to fetch/analyze per wallet
 max_token_rank = 1000
+new_listing_enabled = true
+new_listing_min_liquidity = 1000.0
+new_listing_max_age_hours = 24
+new_listing_max_tokens = 100  # Increased from 25 to process more new listings
+max_trending_tokens = 10000  # Maximum trending tokens to process (0 = unlimited)
 
 # Helius API configuration (alternative data source)
 [helius]
