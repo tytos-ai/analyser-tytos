@@ -1,12 +1,12 @@
 use chrono::Utc;
-use config_manager::{SystemConfig, DataSource};
+use config_manager::SystemConfig;
 use futures::future::join_all;
-use dex_client::{BirdEyeClient, BirdEyeError, HeliusClient, HeliusError, PriceFetchingService, GeneralTraderTransaction};
+use dex_client::{BirdEyeClient, BirdEyeError, PriceFetchingService, GeneralTraderTransaction};
 use pnl_core::{FinancialEvent, EventType, EventMetadata};
-use persistence_layer::{PersistenceError, RedisClient, DiscoveredWalletToken};
+use persistence_layer::{PersistenceError, PersistenceClient, DiscoveredWalletToken};
 use pnl_core::{AnalysisTimeframe, PnLFilters, PnLReport};
 // New algorithm imports
-use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, TokenPnLResult, NewFinancialEvent, PriceFetcher};
+use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, TokenPnLResult, NewFinancialEvent, PriceFetcher, TokenTransactionSide};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,8 +30,6 @@ pub enum OrchestratorError {
     PnL(String),
     #[error("BirdEye price client error: {0}")]
     BirdEyePrice(String),
-    #[error("Helius client error: {0}")]
-    Helius(String),
     #[error("Price fetching service error: {0}")]
     PriceFetching(String),
     #[error("Configuration error: {0}")]
@@ -73,11 +71,6 @@ impl From<BirdEyeError> for OrchestratorError {
     }
 }
 
-impl From<HeliusError> for OrchestratorError {
-    fn from(err: HeliusError) -> Self {
-        OrchestratorError::Helius(err.to_string())
-    }
-}
 
 impl From<dex_client::PriceFetchingError> for OrchestratorError {
     fn from(err: dex_client::PriceFetchingError) -> Self {
@@ -145,7 +138,7 @@ pub struct BatchJob {
     pub filters: PnLFilters,
     pub individual_jobs: Vec<Uuid>,
     #[serde(skip)]
-    pub results: HashMap<String, Result<PnLReport>>,
+    pub results: HashMap<String, Result<pnl_core::PortfolioPnLResult>>,
 }
 
 impl BatchJob {
@@ -215,9 +208,8 @@ impl BatchJob {
 pub struct JobOrchestrator {
     config: SystemConfig,
     birdeye_client: BirdEyeClient,
-    helius_client: Option<HeliusClient>,
     price_fetching_service: PriceFetchingService,
-    redis_client: Arc<Mutex<RedisClient>>,
+    persistence_client: Arc<Mutex<PersistenceClient>>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     // batch_jobs now stored in Redis via persistence_layer
     continuous_mode_filters: Arc<Mutex<Option<PnLFilters>>>,  // Runtime config for continuous mode
@@ -225,20 +217,14 @@ pub struct JobOrchestrator {
 
 impl JobOrchestrator {
     pub async fn new(config: SystemConfig) -> Result<Self> {
-        // Initialize Redis client
-        let redis_client = RedisClient::new(&config.redis.url).await?;
-        let redis_client = Arc::new(Mutex::new(redis_client));
+        // Initialize persistence client (PostgreSQL + Redis)
+        let persistence_client = PersistenceClient::new(&config.redis.url, &config.database.postgres_url).await?;
+        let persistence_client = Arc::new(Mutex::new(persistence_client));
 
         // Initialize BirdEye client
         let birdeye_config = config.birdeye.clone();
         let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
 
-        // Initialize Helius client (optional based on data source configuration)
-        let helius_client = if config.data_source.uses_helius() {
-            Some(HeliusClient::new(config.helius.clone())?)
-        } else {
-            None
-        };
 
         // Initialize price fetching service
         let price_fetching_service = PriceFetchingService::new(
@@ -249,9 +235,8 @@ impl JobOrchestrator {
         Ok(Self {
             config,
             birdeye_client,
-            helius_client,
             price_fetching_service,
-            redis_client,
+            persistence_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
             continuous_mode_filters: Arc::new(Mutex::new(None)),
         })
@@ -280,7 +265,7 @@ impl JobOrchestrator {
     async fn run_continuous_cycle(&self) -> Result<()> {
         // Try to acquire the aggregator lock
         let lock = {
-            let redis = self.redis_client.lock().await;
+            let redis = self.persistence_client.lock().await;
             redis.acquire_lock("aggregator-lock", self.config.redis.default_lock_ttl_seconds).await
         };
 
@@ -300,7 +285,7 @@ impl JobOrchestrator {
 
         // Release the lock
         {
-            let redis = self.redis_client.lock().await;
+            let redis = self.persistence_client.lock().await;
             if let Err(e) = redis.release_lock(&lock_handle).await {
                 warn!("Failed to release lock: {}", e);
             }
@@ -313,7 +298,7 @@ impl JobOrchestrator {
     pub async fn start_continuous_mode_single_cycle(&self) -> Result<bool> {
         // Try to acquire the aggregator lock
         let lock = {
-            let redis = self.redis_client.lock().await;
+            let redis = self.persistence_client.lock().await;
             redis.acquire_lock("aggregator-lock", self.config.redis.default_lock_ttl_seconds).await
         };
 
@@ -333,7 +318,7 @@ impl JobOrchestrator {
 
         // Release the lock
         {
-            let redis = self.redis_client.lock().await;
+            let redis = self.persistence_client.lock().await;
             if let Err(e) = redis.release_lock(&lock_handle).await {
                 warn!("Failed to release lock: {}", e);
             }
@@ -346,7 +331,7 @@ impl JobOrchestrator {
     async fn process_single_discovered_wallet(&self) -> Result<bool> {
         // Pop a single wallet-token pair from the discovery queue
         let wallet_token_pair = {
-            let redis = self.redis_client.lock().await;
+            let redis = self.persistence_client.lock().await;
             redis.pop_discovered_wallet_token_pair(1).await?
         };
 
@@ -368,15 +353,13 @@ impl JobOrchestrator {
         match self.process_single_wallet_token_pair(&pair, filters).await {
             Ok(report) => {
                 info!("Successfully processed wallet {} for token {}: P&L = {} USD", 
-                      pair.wallet_address, pair.token_symbol, report.summary.total_pnl_usd);
+                      pair.wallet_address, pair.token_symbol, report.total_pnl_usd);
                 
-                // Store the P&L result in Redis for later retrieval
+                // Store the rich P&L portfolio result for later retrieval
                 {
-                    let redis = self.redis_client.lock().await;
+                    let redis = self.persistence_client.lock().await;
                     match redis.store_pnl_result(
                         &pair.wallet_address,
-                        &pair.token_address,
-                        &pair.token_symbol,
                         &report,
                     ).await {
                         Ok(_) => {
@@ -402,7 +385,7 @@ impl JobOrchestrator {
             Err(e) => {
                 // Mark wallet as failed
                 {
-                    let redis = self.redis_client.lock().await;
+                    let redis = self.persistence_client.lock().await;
                     if let Err(mark_err) = redis.mark_wallet_as_failed(&pair.wallet_address).await {
                         warn!("Failed to mark wallet {} as failed: {}", pair.wallet_address, mark_err);
                     }
@@ -425,7 +408,7 @@ impl JobOrchestrator {
         loop {
             // Pop multiple wallet-token pairs from the discovery queue for parallel processing
             let wallet_token_pairs = {
-                let redis = self.redis_client.lock().await;
+                let redis = self.persistence_client.lock().await;
                 redis.pop_discovered_wallet_token_pairs(batch_size).await?
             };
 
@@ -454,13 +437,11 @@ impl JobOrchestrator {
                         self.process_single_wallet_token_pair(&pair_clone, filters)
                     ).await {
                         Ok(Ok(report)) => {
-                            // Store the P&L result in Redis for later retrieval
+                            // Store the rich P&L portfolio result for later retrieval
                             let store_result = {
-                                let redis = self.redis_client.lock().await;
+                                let redis = self.persistence_client.lock().await;
                                 redis.store_pnl_result(
                                     &pair_clone.wallet_address,
-                                    &pair_clone.token_address,
-                                    &pair_clone.token_symbol,
                                     &report,
                                 ).await
                             };
@@ -468,18 +449,18 @@ impl JobOrchestrator {
                             match store_result {
                                 Ok(_) => {
                                     // Mark wallet as successfully processed
-                                    let redis = self.redis_client.lock().await;
+                                    let redis = self.persistence_client.lock().await;
                                     if let Err(e) = redis.mark_wallet_as_processed(&pair_clone.wallet_address).await {
                                         warn!("Failed to mark wallet {} as processed: {}", pair_clone.wallet_address, e);
                                     }
                                     
                                     info!("✅ Successfully processed wallet {} for token {}: P&L = {} USD", 
-                                          pair_clone.wallet_address, pair_clone.token_symbol, report.summary.total_pnl_usd);
+                                          pair_clone.wallet_address, pair_clone.token_symbol, report.total_pnl_usd);
                                     Ok(())
                                 }
                                 Err(e) => {
                                     // Mark wallet as failed
-                                    let redis = self.redis_client.lock().await;
+                                    let redis = self.persistence_client.lock().await;
                                     if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
                                         warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
                                     }
@@ -491,7 +472,7 @@ impl JobOrchestrator {
                         }
                         Ok(Err(e)) => {
                             // Mark wallet as failed
-                            let redis = self.redis_client.lock().await;
+                            let redis = self.persistence_client.lock().await;
                             if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
                                 warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
                             }
@@ -502,7 +483,7 @@ impl JobOrchestrator {
                         }
                         Err(_) => {
                             // Mark wallet as failed due to timeout
-                            let redis = self.redis_client.lock().await;
+                            let redis = self.persistence_client.lock().await;
                             if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
                                 warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
                             }
@@ -550,7 +531,7 @@ impl JobOrchestrator {
             
             // Push rate-limited wallets back to the front of the queue for retry
             if !wallets_to_retry.is_empty() {
-                let redis = self.redis_client.lock().await;
+                let redis = self.persistence_client.lock().await;
                 if let Err(e) = redis.push_failed_wallet_token_pairs_for_retry(&wallets_to_retry).await {
                     warn!("Failed to push {} rate-limited wallets back to queue: {}", wallets_to_retry.len(), e);
                 } else {
@@ -599,7 +580,7 @@ impl JobOrchestrator {
 
         // Store the batch job in Redis for persistence
         {
-            let redis = self.redis_client.lock().await;
+            let redis = self.persistence_client.lock().await;
             let persistent_job = batch_job.to_persistence_batch_job()?;
             redis.store_batch_job(&persistent_job).await?;
         }
@@ -608,7 +589,12 @@ impl JobOrchestrator {
         let orchestrator = self.clone();
         tokio::spawn(async move {
             if let Err(e) = orchestrator.execute_batch_job(job_id).await {
-                error!("Batch job {} failed: {}", job_id, e);
+                error!("Batch job {} failed with system error: {}", job_id, e);
+                
+                // Mark job as Failed due to system-level error
+                if let Err(update_err) = orchestrator.mark_batch_job_as_failed(job_id, &e.to_string()).await {
+                    error!("Failed to update batch job {} status to Failed: {}", job_id, update_err);
+                }
             }
         });
 
@@ -621,7 +607,7 @@ impl JobOrchestrator {
     async fn execute_batch_job(&self, job_id: Uuid) -> Result<()> {
         // Load job from Redis and update status to Running
         let (wallet_addresses, filters) = {
-            let redis = self.redis_client.lock().await;
+            let redis = self.persistence_client.lock().await;
             let persistent_job = redis.get_batch_job(&job_id.to_string()).await?
                 .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
             
@@ -661,9 +647,29 @@ impl JobOrchestrator {
 
         let results = join_all(futures).await;
 
-        // Update batch job status to Completed in Redis
+        // Store individual P&L results in main PostgreSQL table and batch results
         let successful_count = {
-            let redis = self.redis_client.lock().await;
+            let mut success_count = 0;
+            
+            // Store each successful wallet's rich P&L result in main pnl_results table
+            for (wallet, result) in &results {
+                if let Ok(portfolio_result) = result {
+                    // Store rich portfolio result in main table for individual wallet queries
+                    let persistence_client = self.persistence_client.lock().await;
+                    match persistence_client.store_pnl_result(wallet, portfolio_result).await {
+                        Ok(_) => {
+                            debug!("Stored rich P&L result for wallet {} from batch job {}", wallet, job_id);
+                            success_count += 1;
+                        }
+                        Err(e) => {
+                            warn!("Failed to store P&L result for wallet {} from batch job {}: {}", wallet, job_id, e);
+                        }
+                    }
+                }
+            }
+            
+            // Update batch job status and store rich batch results
+            let redis = self.persistence_client.lock().await;
             let persistent_job = redis.get_batch_job(&job_id.to_string()).await?
                 .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
             
@@ -671,27 +677,15 @@ impl JobOrchestrator {
             job.status = JobStatus::Completed;
             job.completed_at = Some(Utc::now());
 
-            // Add results to the job for counting
+            // Store rich format results in job for counting and batch-specific operations
             for (wallet, result) in &results {
                 job.results.insert(wallet.clone(), result.clone());
             }
 
-            let success_count = job.results.values().filter(|r| r.is_ok()).count();
+            // Note: P&L results are already stored individually in pnl_results table above
+            // No need to duplicate storage in batch_results table
 
-            // Store the results separately in Redis
-            let results_map: HashMap<String, Result<PnLReport>> = results.into_iter().collect();
-            // Convert to anyhow::Error format expected by persistence layer
-            let anyhow_results: HashMap<String, std::result::Result<PnLReport, anyhow::Error>> = results_map
-                .into_iter()
-                .map(|(wallet, result)| {
-                    let anyhow_result = result.map_err(|e| anyhow::anyhow!("{}", e));
-                    (wallet, anyhow_result)
-                })
-                .collect();
-            redis.store_batch_job_results(&job_id.to_string(), &anyhow_results).await
-                .map_err(|e| anyhow::anyhow!("Failed to store batch job results: {}", e))?;
-
-            // Update final status in Redis
+            // Update final status
             let updated_persistent_job = job.to_persistence_batch_job()?;
             redis.update_batch_job(&updated_persistent_job).await?;
 
@@ -706,7 +700,7 @@ impl JobOrchestrator {
 
     /// Get batch job status
     pub async fn get_batch_job_status(&self, job_id: Uuid) -> Option<BatchJob> {
-        let redis = self.redis_client.lock().await;
+        let redis = self.persistence_client.lock().await;
         match redis.get_batch_job(&job_id.to_string()).await {
             Ok(Some(persistent_job)) => {
                 match BatchJob::from_persistence_batch_job(persistent_job) {
@@ -726,26 +720,34 @@ impl JobOrchestrator {
     }
 
     /// Get batch job results from Redis
-    pub async fn get_batch_job_results(&self, job_id: &str) -> anyhow::Result<HashMap<String, Result<PnLReport>>> {
-        let redis = self.redis_client.lock().await;
-        let results = redis.get_batch_job_results(job_id).await
-            .map_err(|e| anyhow::anyhow!("Failed to load batch job results from Redis: {}", e))?;
+    // Note: get_batch_job_results method removed - batch results are now fetched 
+    // directly from pnl_results table using wallet addresses from batch job
+
+    /// Mark a batch job as failed due to system-level error
+    async fn mark_batch_job_as_failed(&self, job_id: Uuid, error_message: &str) -> Result<()> {
+        let redis = self.persistence_client.lock().await;
         
-        // Convert anyhow::Error to OrchestratorError for the HashMap
-        let converted_results: HashMap<String, Result<PnLReport>> = results
-            .into_iter()
-            .map(|(wallet, result)| {
-                let converted_result = result.map_err(|e| OrchestratorError::PnL(e.to_string()));
-                (wallet, converted_result)
-            })
-            .collect();
+        // Try to get the job and update its status to Failed
+        if let Some(persistent_job) = redis.get_batch_job(&job_id.to_string()).await? {
+            let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
+            job.status = JobStatus::Failed;
+            job.completed_at = Some(Utc::now());
+            
+            // Update the job in database
+            let updated_persistent_job = job.to_persistence_batch_job()?;
+            redis.update_batch_job(&updated_persistent_job).await?;
+            
+            info!("Marked batch job {} as Failed due to system error: {}", job_id, error_message);
+        } else {
+            warn!("Could not find batch job {} to mark as failed", job_id);
+        }
         
-        Ok(converted_results)
+        Ok(())
     }
 
     /// Get all batch jobs with pagination
     pub async fn get_all_batch_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
-        let redis = self.redis_client.lock().await;
+        let redis = self.persistence_client.lock().await;
         let (persistent_jobs, total_count) = redis.get_all_batch_jobs(limit, offset).await?;
         
         let mut jobs = Vec::new();
@@ -766,41 +768,17 @@ impl JobOrchestrator {
         &self,
         pair: &DiscoveredWalletToken,
         filters: PnLFilters,
-    ) -> Result<PnLReport> {
+    ) -> Result<PortfolioPnLResult> {
         debug!("Starting targeted P&L analysis for wallet: {} on token: {} ({})", 
                pair.wallet_address, pair.token_symbol, pair.token_address);
 
-        // Fetch all trading transactions for the wallet using BirdEye with pagination
-        let max_total_transactions = filters.max_transactions_to_fetch
-            .unwrap_or(self.config.birdeye.default_max_transactions);
-        
-        // Extract time bounds from filters for BirdEye API optimization
-        let (from_time, to_time) = Self::extract_time_bounds_for_birdeye(&filters);
-        debug!("Fetching up to {} transactions for wallet-token pair {} with time bounds: {:?} to {:?}", 
-               max_total_transactions, pair.wallet_address, from_time, to_time);
-        
-        let transactions = self
-            .birdeye_client
-            .get_all_trader_transactions_paginated(&pair.wallet_address, from_time, to_time, max_total_transactions)
-            .await?;
+        // Use BirdEye for token-pair P&L analysis
+        debug!("Using BirdEye for token-pair P&L analysis of wallet: {}", pair.wallet_address);
+        let transactions = self.process_wallet_token_pair_with_birdeye(pair, &filters).await?;
 
         if transactions.is_empty() {
             return Err(OrchestratorError::JobExecution(format!(
-                "No BirdEye transactions found for wallet: {} on token: {}",
-                pair.wallet_address, pair.token_symbol
-            )));
-        }
-
-        info!("📊 Found {} BirdEye transactions for {} trading {}", 
-              transactions.len(), pair.wallet_address, pair.token_symbol);
-
-        // Convert BirdEye transactions to financial events (use general method)
-        let events = self
-            .convert_general_birdeye_transactions_to_events(&transactions, &pair.wallet_address)?;
-
-        if events.is_empty() {
-            return Err(OrchestratorError::JobExecution(format!(
-                "No financial events found for wallet: {} on token: {}",
+                "No transactions found for wallet: {} on token: {}",
                 pair.wallet_address, pair.token_symbol
             )));
         }
@@ -814,51 +792,14 @@ impl JobOrchestrator {
         Ok(report)
     }
 
-    /// Process a single wallet for P&L analysis (legacy method using Solana RPC)
+    /// Process a single wallet for P&L analysis (using rich PortfolioPnLResult format)
     pub async fn process_single_wallet(
         &self,
         wallet_address: &str,
         filters: PnLFilters,
-    ) -> Result<PnLReport> {
-        // Choose data source based on configuration
-        match self.config.data_source.primary() {
-            DataSource::Helius => {
-                debug!("Using Helius for P&L analysis of wallet: {}", wallet_address);
-                self.process_single_wallet_with_helius(wallet_address, filters).await
-            }
-            DataSource::BirdEye => {
-                debug!("Using BirdEye for P&L analysis of wallet: {}", wallet_address);
-                self.process_single_wallet_with_birdeye(wallet_address, filters).await
-            }
-            DataSource::Both { .. } => {
-                // For Both configuration, try primary first, then fallback
-                debug!("Using primary data source for P&L analysis of wallet: {}", wallet_address);
-                let primary_result = match self.config.data_source.primary() {
-                    DataSource::Helius => self.process_single_wallet_with_helius(wallet_address, filters.clone()).await,
-                    DataSource::BirdEye => self.process_single_wallet_with_birdeye(wallet_address, filters.clone()).await,
-                    DataSource::Both { .. } => unreachable!("Nested Both configurations are not allowed"),
-                };
-                
-                match primary_result {
-                    Ok(report) => Ok(report),
-                    Err(e) => {
-                        warn!("Primary data source failed: {}, trying fallback", e);
-                        match self.config.data_source.fallback() {
-                            Some(DataSource::Helius) => {
-                                debug!("Using Helius fallback for P&L analysis of wallet: {}", wallet_address);
-                                self.process_single_wallet_with_helius(wallet_address, filters).await
-                            }
-                            Some(DataSource::BirdEye) => {
-                                debug!("Using BirdEye fallback for P&L analysis of wallet: {}", wallet_address);
-                                self.process_single_wallet_with_birdeye(wallet_address, filters).await
-                            }
-                            Some(DataSource::Both { .. }) => unreachable!("Nested Both configurations are not allowed"),
-                            None => Err(e), // No fallback available
-                        }
-                    }
-                }
-            }
-        }
+    ) -> Result<PortfolioPnLResult> {
+        debug!("Using BirdEye for P&L analysis of wallet: {}", wallet_address);
+        self.process_single_wallet_with_birdeye(wallet_address, filters).await
     }
 
     /// Process a single wallet using BirdEye data
@@ -866,7 +807,7 @@ impl JobOrchestrator {
         &self,
         wallet_address: &str,
         filters: PnLFilters,
-    ) -> Result<PnLReport> {
+    ) -> Result<PortfolioPnLResult> {
         debug!("Starting P&L analysis for wallet: {} using BirdEye API", wallet_address);
 
         // Fetch all trading transactions for the wallet using BirdEye with pagination
@@ -903,83 +844,6 @@ impl JobOrchestrator {
         Ok(report)
     }
 
-    /// Process a single wallet using Helius data
-    async fn process_single_wallet_with_helius(
-        &self,
-        wallet_address: &str,
-        filters: PnLFilters,
-    ) -> Result<PnLReport> {
-        debug!("Starting P&L analysis for wallet: {} using Helius API", wallet_address);
-
-        // Get Helius client
-        let helius_client = self.helius_client.as_ref()
-            .ok_or_else(|| OrchestratorError::Config("Helius client not configured".to_string()))?;
-
-        // Determine transaction count and timeframe
-        let max_total_transactions = filters.max_transactions_to_fetch
-            .unwrap_or(self.config.birdeye.default_max_transactions);
-        
-        let timeframe = Self::extract_timeframe_for_helius(&filters);
-        debug!("Fetching up to {} transactions for wallet {} with timeframe: {:?}", 
-               max_total_transactions, wallet_address, timeframe);
-
-        // Fetch raw Helius transactions
-        let helius_transactions = helius_client
-            .fetch_wallet_transactions(wallet_address, Some(max_total_transactions), timeframe)
-            .await?;
-        
-        if helius_transactions.is_empty() {
-            return Err(OrchestratorError::JobExecution(format!(
-                "No transactions found for wallet: {}",
-                wallet_address
-            )));
-        }
-        
-        info!("📊 Found {} Helius transactions for wallet {}", 
-              helius_transactions.len(), wallet_address);
-        
-        // Convert Helius transactions to GeneralTraderTransaction format for compatibility
-        let general_transactions = helius_client
-            .helius_to_general_trader_transactions(&helius_transactions, wallet_address)
-            .await?;
-        
-        if general_transactions.is_empty() {
-            return Err(OrchestratorError::JobExecution(format!(
-                "No valid swap transactions found for wallet: {}",
-                wallet_address
-            )));
-        }
-        
-        info!("📊 Converted {} Helius transactions to {} GeneralTraderTransactions", 
-              helius_transactions.len(), general_transactions.len());
-        
-        // --- Start of New P&L Algorithm ---
-        // Use the new algorithm with Helius data converted to GeneralTraderTransaction format
-        let report = self.calculate_pnl_with_new_algorithm(wallet_address, general_transactions, filters).await?;
-        // --- End of New P&L Algorithm ---
-        
-        debug!("✅ P&L analysis completed for wallet: {} using Helius data", wallet_address);
-        Ok(report)
-    }
-
-    /// Extract timeframe for Helius API calls
-    /// Returns (start_timestamp, end_timestamp) as Unix timestamps in seconds
-    fn extract_timeframe_for_helius(filters: &PnLFilters) -> Option<(i64, i64)> {
-        match &filters.timeframe_filter {
-            Some(timeframe) => {
-                let start_time = timeframe.start_time.map(|dt| dt.timestamp());
-                let end_time = timeframe.end_time.map(|dt| dt.timestamp());
-                
-                match (start_time, end_time) {
-                    (Some(start), Some(end)) => Some((start, end)),
-                    (Some(start), None) => Some((start, Utc::now().timestamp())),
-                    (None, Some(end)) => Some((0, end)),
-                    (None, None) => None,
-                }
-            }
-            None => None,
-        }
-    }
 
     // convert_birdeye_transactions_to_events removed - was unused legacy function
 
@@ -1294,7 +1158,7 @@ impl JobOrchestrator {
         let queue_size = {
             use tokio::time::{timeout, Duration};
             match timeout(Duration::from_millis(1000), async {
-                let redis = self.redis_client.lock().await;
+                let redis = self.persistence_client.lock().await;
                 redis.get_wallet_token_pairs_queue_size().await
             }).await {
                 Ok(Ok(size)) => size,
@@ -1315,7 +1179,7 @@ impl JobOrchestrator {
         let batch_jobs_count = {
             use tokio::time::{timeout, Duration as TokioDuration};
             match timeout(TokioDuration::from_millis(1000), async {
-                let redis = self.redis_client.lock().await;
+                let redis = self.persistence_client.lock().await;
                 redis.get_batch_job_stats().await
             }).await {
                 Ok(Ok(stats)) => stats.total_jobs,
@@ -1340,10 +1204,134 @@ impl JobOrchestrator {
 
     /// Clear temporary data
     pub async fn clear_temp_data(&self) -> Result<()> {
-        let redis = self.redis_client.lock().await;
+        let redis = self.persistence_client.lock().await;
         redis.clear_temp_data().await?;
         info!("Cleared temporary Redis data");
         Ok(())
+    }
+
+    /// Consolidate duplicate transaction hashes by merging multi-step swaps into single transactions
+    /// This preprocessing step ensures each unique tx_hash results in exactly one transaction
+    /// preserving the existing P&L algorithm's expectation of one transaction = one buy/sell pair
+    fn consolidate_duplicate_hashes(transactions: Vec<GeneralTraderTransaction>) -> Vec<GeneralTraderTransaction> {
+        use std::collections::HashMap;
+        
+        // Group transactions by tx_hash
+        let mut tx_groups: HashMap<String, Vec<GeneralTraderTransaction>> = HashMap::new();
+        for tx in transactions {
+            tx_groups.entry(tx.tx_hash.clone()).or_insert_with(Vec::new).push(tx);
+        }
+
+        let mut consolidated_transactions = Vec::new();
+        let mut duplicates_found = 0;
+
+        for (tx_hash, entries) in tx_groups {
+            if entries.len() == 1 {
+                // Fast path: Single entry - pass through unchanged (99.7% of cases)
+                consolidated_transactions.push(entries.into_iter().next().unwrap());
+            } else {
+                // Consolidation path: Multiple entries - consolidate into single transaction (0.3% of cases)
+                duplicates_found += entries.len() - 1;
+                info!("🔄 Consolidating {} duplicate entries for tx_hash: {}", entries.len(), tx_hash);
+                consolidated_transactions.push(Self::consolidate_duplicate_entries(entries));
+            }
+        }
+
+        if duplicates_found > 0 {
+            info!("✅ Consolidated {} duplicate hash entries across {} unique transactions", 
+                  duplicates_found, consolidated_transactions.len());
+        }
+
+        consolidated_transactions
+    }
+
+    /// Consolidate multiple entries with the same tx_hash into a single net transaction
+    /// This handles multi-step swaps by calculating net token flows and weighted average pricing
+    fn consolidate_duplicate_entries(entries: Vec<GeneralTraderTransaction>) -> GeneralTraderTransaction {
+        use std::collections::HashMap;
+        
+        let first_entry = &entries[0];
+        
+        // Calculate net flows for each token address
+        let mut token_flows: HashMap<String, f64> = HashMap::new();
+        let mut token_prices: HashMap<String, f64> = HashMap::new();
+        let mut token_symbols: HashMap<String, String> = HashMap::new();
+        let mut token_side_info: HashMap<String, TokenTransactionSide> = HashMap::new();
+
+        for entry in &entries {
+            // Process quote side
+            let quote_addr = &entry.quote.address;
+            *token_flows.entry(quote_addr.clone()).or_insert(0.0) += entry.quote.ui_change_amount;
+            if let Some(price) = entry.quote.price {
+                token_prices.insert(quote_addr.clone(), price);
+            }
+            token_symbols.insert(quote_addr.clone(), entry.quote.symbol.clone());
+            token_side_info.insert(quote_addr.clone(), entry.quote.clone());
+
+            // Process base side
+            let base_addr = &entry.base.address;
+            *token_flows.entry(base_addr.clone()).or_insert(0.0) += entry.base.ui_change_amount;
+            if let Some(price) = entry.base.price {
+                token_prices.insert(base_addr.clone(), price);
+            }
+            token_symbols.insert(base_addr.clone(), entry.base.symbol.clone());
+            token_side_info.insert(base_addr.clone(), entry.base.clone());
+        }
+
+        // Find primary outflow (most negative) and inflow (most positive) tokens
+        let mut primary_outflow: Option<(String, f64)> = None;
+        let mut primary_inflow: Option<(String, f64)> = None;
+
+        for (token_addr, &net_flow) in &token_flows {
+            if net_flow.abs() < 0.000001 { continue; } // Skip dust amounts
+
+            if net_flow < 0.0 {
+                if primary_outflow.is_none() || net_flow.abs() > primary_outflow.as_ref().unwrap().1.abs() {
+                    primary_outflow = Some((token_addr.clone(), net_flow));
+                }
+            } else {
+                if primary_inflow.is_none() || net_flow > primary_inflow.as_ref().unwrap().1 {
+                    primary_inflow = Some((token_addr.clone(), net_flow));
+                }
+            }
+        }
+
+        let (outflow_addr, outflow_amount) = primary_outflow
+            .expect("No outflow token found in duplicate hash consolidation");
+        let (inflow_addr, inflow_amount) = primary_inflow
+            .expect("No inflow token found in duplicate hash consolidation");
+
+        // Create consolidated quote side (outflow - "from")
+        let mut consolidated_quote = token_side_info[&outflow_addr].clone();
+        consolidated_quote.ui_change_amount = outflow_amount; // negative
+        consolidated_quote.ui_amount = outflow_amount.abs();
+        consolidated_quote.type_swap = "from".to_string();
+
+        // Create consolidated base side (inflow - "to") 
+        let mut consolidated_base = token_side_info[&inflow_addr].clone();
+        consolidated_base.ui_change_amount = inflow_amount; // positive
+        consolidated_base.ui_amount = inflow_amount;
+        consolidated_base.type_swap = "to".to_string();
+
+        // Calculate consolidated volume_usd
+        let total_volume_usd = entries.iter()
+            .map(|e| e.volume_usd)
+            .sum::<f64>();
+
+        // Create consolidated transaction that maintains the same structure
+        GeneralTraderTransaction {
+            quote: consolidated_quote,
+            base: consolidated_base,
+            base_price: token_prices.get(&inflow_addr).copied(),
+            quote_price: token_prices.get(&outflow_addr).unwrap_or(&0.0).clone(),
+            tx_hash: first_entry.tx_hash.clone(),
+            source: format!("consolidated_{}_entries", entries.len()),
+            block_unix_time: first_entry.block_unix_time, // Use earliest timestamp
+            tx_type: first_entry.tx_type.clone(),
+            address: first_entry.address.clone(),
+            owner: first_entry.owner.clone(),
+            volume_usd: total_volume_usd,
+        }
     }
 
     /// Calculate P&L using the new algorithm as specified in the documentation
@@ -1353,17 +1341,26 @@ impl JobOrchestrator {
         wallet_address: &str,
         transactions: Vec<GeneralTraderTransaction>,
         _filters: PnLFilters,
-    ) -> Result<PnLReport> {
+    ) -> Result<PortfolioPnLResult> {
         info!("🚀 Starting new P&L algorithm for wallet: {}", wallet_address);
+        
+        // Step 0: Preprocessing - Consolidate duplicate transaction hashes
+        let original_count = transactions.len();
+        let consolidated_transactions = Self::consolidate_duplicate_hashes(transactions);
+        let consolidated_count = consolidated_transactions.len();
+        
+        if original_count != consolidated_count {
+            info!("📝 Preprocessing: {} transactions → {} consolidated transactions", 
+                  original_count, consolidated_count);
+        }
         
         // Step 1: Data Preparation & Parsing
         let parser = NewTransactionParser::new(wallet_address.to_string());
-        let transactions_count = transactions.len();
-        let financial_events = parser.parse_transactions(transactions).await
+        let financial_events = parser.parse_transactions(consolidated_transactions).await
             .map_err(|e| OrchestratorError::JobExecution(format!("Failed to parse transactions: {}", e)))?;
         
-        info!("📊 Parsed {} BirdEye transactions into {} financial events", 
-              transactions_count, financial_events.len());
+        info!("📊 Parsed {} consolidated transactions into {} financial events", 
+              consolidated_count, financial_events.len());
         
         // Step 2: Group events by token for P&L processing
         let events_by_token = NewTransactionParser::group_events_by_token(financial_events);
@@ -1384,15 +1381,14 @@ impl JobOrchestrator {
               portfolio_result.total_trades,
               portfolio_result.overall_win_rate_percentage);
         
-        // Step 4: Convert to legacy PnLReport format for compatibility
-        // This is a temporary bridge until we update the entire system
-        let legacy_report = self.convert_new_result_to_legacy_report(portfolio_result, current_prices).await?;
-        
-        Ok(legacy_report)
+        // Step 4: Return rich PortfolioPnLResult directly (breaking change)
+        // No longer converting to legacy format - using rich data throughout system
+        Ok(portfolio_result)
     }
     
-    /// Convert new algorithm result to legacy PnLReport format
-    /// This maintains compatibility with existing API endpoints
+    /// DEPRECATED: Convert new algorithm result to legacy PnLReport format
+    /// This method is no longer used since we now store PortfolioPnLResult directly
+    #[allow(dead_code)]
     async fn convert_new_result_to_legacy_report(
         &self,
         portfolio_result: PortfolioPnLResult,
@@ -1488,16 +1484,7 @@ impl JobOrchestrator {
                 }
             }
             
-            // Process unmatched sells
-            for unmatched in &token_result.unmatched_sells {
-                total_sold += unmatched.unmatched_quantity;
-                total_sell_revenue += unmatched.unmatched_quantity * unmatched.sell_event.usd_price_per_token;
-                sell_count += 1;
-                
-                if last_sell_time.is_none() || unmatched.sell_event.timestamp > last_sell_time.unwrap() {
-                    last_sell_time = Some(unmatched.sell_event.timestamp);
-                }
-            }
+            // Note: No unmatched sells anymore - all sells are matched against phantom buys if needed
             
             // Add remaining position to buy statistics
             if let Some(remaining) = &token_result.remaining_position {
@@ -1619,6 +1606,40 @@ impl JobOrchestrator {
             }
         }
     }
+
+    /// Process wallet-token pair using BirdEye API
+    async fn process_wallet_token_pair_with_birdeye(
+        &self,
+        pair: &DiscoveredWalletToken,
+        filters: &PnLFilters,
+    ) -> Result<Vec<GeneralTraderTransaction>> {
+        // Fetch all trading transactions for the wallet using BirdEye with pagination
+        let max_total_transactions = filters.max_transactions_to_fetch
+            .unwrap_or(self.config.birdeye.default_max_transactions);
+        
+        // Extract time bounds from filters for BirdEye API optimization
+        let (from_time, to_time) = Self::extract_time_bounds_for_birdeye(filters);
+        debug!("Fetching up to {} BirdEye transactions for wallet-token pair {} with time bounds: {:?} to {:?}", 
+               max_total_transactions, pair.wallet_address, from_time, to_time);
+        
+        let transactions = self
+            .birdeye_client
+            .get_all_trader_transactions_paginated(&pair.wallet_address, from_time, to_time, max_total_transactions)
+            .await?;
+
+        if transactions.is_empty() {
+            return Err(OrchestratorError::JobExecution(format!(
+                "No BirdEye transactions found for wallet: {} on token: {}",
+                pair.wallet_address, pair.token_symbol
+            )));
+        }
+
+        info!("📊 Found {} BirdEye transactions for {} trading {}", 
+              transactions.len(), pair.wallet_address, pair.token_symbol);
+
+        Ok(transactions)
+    }
+
 }
 
 // Clone implementation for JobOrchestrator
@@ -1627,9 +1648,8 @@ impl Clone for JobOrchestrator {
         Self {
             config: self.config.clone(),
             birdeye_client: self.birdeye_client.clone(),
-            helius_client: self.helius_client.clone(),
             price_fetching_service: self.price_fetching_service.clone(),
-            redis_client: self.redis_client.clone(),
+            persistence_client: self.persistence_client.clone(),
             running_jobs: self.running_jobs.clone(),
             continuous_mode_filters: self.continuous_mode_filters.clone(),
         }

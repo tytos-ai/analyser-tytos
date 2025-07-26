@@ -5,7 +5,7 @@ use axum::{
     response::Json,
 };
 use chrono::Utc;
-use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult};
+use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult, PriceFetcher};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -40,74 +40,13 @@ pub async fn get_wallet_analysis_v2(
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(500);
     
-    // Fetch transaction data based on configured data source
-    let transactions = match &state.config.data_source {
-        config_manager::DataSource::Helius => {
-            debug!("Using Helius data source for wallet analysis");
-            // First fetch Helius transactions, then convert to GeneralTraderTransaction
-            let helius_txs = state.helius_client
-                .fetch_wallet_transactions(&wallet_address, Some(max_transactions), None)
-                .await
-                .map_err(|e| ApiError::InternalServerError(format!("Helius error: {}", e)))?;
-            
-            state.helius_client
-                .helius_to_general_trader_transactions(&helius_txs, &wallet_address)
-                .await
-                .map_err(|e| ApiError::InternalServerError(format!("Helius conversion error: {}", e)))?
-        },
-        config_manager::DataSource::BirdEye => {
-            debug!("Using BirdEye data source for wallet analysis");
-            state.birdeye_client
-                .get_all_trader_transactions_paginated(&wallet_address, None, None, max_transactions)
-                .await
-                .map_err(|e| ApiError::InternalServerError(format!("BirdEye error: {}", e)))?
-        },
-        config_manager::DataSource::Both { primary, fallback: _ } => {
-            // Try primary first, fallback on error
-            match primary.as_ref() {
-                config_manager::DataSource::Helius => {
-                    match state.helius_client.fetch_wallet_transactions(&wallet_address, Some(max_transactions), None).await {
-                        Ok(helius_txs) => {
-                            match state.helius_client.helius_to_general_trader_transactions(&helius_txs, &wallet_address).await {
-                                Ok(transactions) => transactions,
-                                Err(e) => {
-                                    warn!("Helius conversion failed, falling back to BirdEye: {}", e);
-                                    state.birdeye_client
-                                        .get_all_trader_transactions_paginated(&wallet_address, None, None, max_transactions)
-                                        .await
-                                        .map_err(|e| ApiError::InternalServerError(format!("Fallback BirdEye error: {}", e)))?
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            warn!("Primary Helius failed, falling back to BirdEye: {}", e);
-                            state.birdeye_client
-                                .get_all_trader_transactions_paginated(&wallet_address, None, None, max_transactions)
-                                .await
-                                .map_err(|e| ApiError::InternalServerError(format!("Fallback BirdEye error: {}", e)))?
-                        }
-                    }
-                },
-                config_manager::DataSource::BirdEye => {
-                    match state.birdeye_client.get_all_trader_transactions_paginated(&wallet_address, None, None, max_transactions).await {
-                        Ok(transactions) => transactions,
-                        Err(e) => {
-                            warn!("Primary BirdEye failed, falling back to Helius: {}", e);
-                            let helius_txs = state.helius_client
-                                .fetch_wallet_transactions(&wallet_address, Some(max_transactions), None)
-                                .await
-                                .map_err(|e| ApiError::InternalServerError(format!("Fallback Helius fetch error: {}", e)))?;
-                            
-                            state.helius_client
-                                .helius_to_general_trader_transactions(&helius_txs, &wallet_address)
-                                .await
-                                .map_err(|e| ApiError::InternalServerError(format!("Fallback Helius conversion error: {}", e)))?
-                        }
-                    }
-                },
-                _ => return Err(ApiError::InternalServerError("Invalid nested data source configuration".to_string())),
-            }
-        }
+    // Fetch transaction data using BirdEye data source
+    let transactions = {
+        debug!("Using BirdEye data source for wallet analysis");
+        state.birdeye_client
+            .get_all_trader_transactions_paginated(&wallet_address, None, None, max_transactions)
+            .await
+            .map_err(|e| ApiError::InternalServerError(format!("BirdEye error: {}", e)))?
     };
     
     debug!("Fetched {} transactions for wallet {}", transactions.len(), wallet_address);
@@ -134,14 +73,9 @@ pub async fn get_wallet_analysis_v2(
     // Get current prices for unrealized P&L calculation
     let token_addresses: Vec<String> = events_by_token.keys().cloned().collect();
     let current_prices = if !token_addresses.is_empty() {
-        match state.price_fetching_service.fetch_jupiter_prices(&token_addresses).await {
+        match state.price_fetching_service.fetch_prices(&token_addresses, None).await {
             Ok(prices) => {
-                // Convert f64 to Decimal
-                let decimal_prices: HashMap<String, Decimal> = prices
-                    .into_iter()
-                    .map(|(k, v)| (k, Decimal::try_from(v).unwrap_or(Decimal::ZERO)))
-                    .collect();
-                Some(decimal_prices)
+                Some(prices)
             },
             Err(e) => {
                 warn!("Failed to fetch current prices: {}", e);
@@ -167,24 +101,17 @@ pub async fn get_wallet_analysis_v2(
             trading_style: TradingStyle::Mixed { 
                 predominant_style: Box::new(TradingStyle::LongTerm { avg_hold_days: Decimal::ZERO }) 
             },
-            consistency_score: Decimal::ZERO,
             risk_metrics: RiskMetrics {
                 max_position_percentage: Decimal::ZERO,
                 diversification_score: Decimal::ZERO,
-                max_consecutive_losses: 0,
                 avg_loss_per_trade: Decimal::ZERO,
                 max_win_streak: 0,
-                risk_adjusted_return: Decimal::ZERO,
             },
             position_patterns: PositionPatterns {
                 avg_hold_time_minutes: Decimal::ZERO,
-                position_size_consistency: Decimal::ZERO,
-                winner_hold_ratio: Decimal::ZERO,
                 partial_exit_frequency: Decimal::ZERO,
-                dca_frequency: Decimal::ZERO,
             },
             profit_distribution: ProfitDistribution {
-                high_profit_trades_pct: Decimal::ZERO,
                 breakeven_trades_pct: Decimal::ZERO,
                 avg_winning_trade_pct: Decimal::ZERO,
                 avg_losing_trade_pct: Decimal::ZERO,
@@ -245,14 +172,7 @@ pub async fn get_wallet_trades_v2(
             matched_trades.push(enhanced_trade);
         }
         
-        for sell in &token_result.unmatched_sells {
-            let enhanced_sell = EnhancedUnmatchedSell {
-                sell: sell.clone(),
-                likely_reason: classify_unmatched_reason(&sell),
-                portfolio_impact: calculate_portfolio_impact(&sell, &portfolio_result),
-            };
-            unmatched_sells.push(enhanced_sell);
-        }
+        // Note: No unmatched sells anymore - all sells are matched against phantom buys if needed
     }
     
     let statistics = calculate_trade_statistics(&matched_trades, &unmatched_sells);
@@ -369,35 +289,22 @@ fn calculate_copy_trading_metrics(portfolio_result: &PortfolioPnLResult) -> Copy
         TradingStyle::LongTerm { avg_hold_days: portfolio_result.avg_hold_time_minutes / Decimal::from(24 * 60) }
     };
     
-    // Calculate consistency score based on win rate and trade count
-    let consistency_score = if portfolio_result.total_trades > 0 {
-        portfolio_result.overall_win_rate_percentage.min(Decimal::from(100))
-    } else {
-        Decimal::ZERO
-    };
-    
     // Calculate risk metrics (simplified)
     let risk_metrics = RiskMetrics {
         max_position_percentage: Decimal::from(25), // TODO: Calculate from actual positions
         diversification_score: Decimal::from(portfolio_result.tokens_analyzed * 10).min(Decimal::from(100)),
-        max_consecutive_losses: 0, // TODO: Calculate from trade sequence
         avg_loss_per_trade: Decimal::ZERO, // TODO: Calculate from losing trades
         max_win_streak: 0, // TODO: Calculate from trade sequence
-        risk_adjusted_return: portfolio_result.total_pnl_usd / Decimal::from(100), // Simplified
     };
     
     // Position patterns (simplified)
     let position_patterns = PositionPatterns {
         avg_hold_time_minutes: portfolio_result.avg_hold_time_minutes,
-        position_size_consistency: Decimal::from(80), // TODO: Calculate actual consistency
-        winner_hold_ratio: rust_decimal_macros::dec!(1.2), // TODO: Calculate actual ratio
         partial_exit_frequency: rust_decimal_macros::dec!(0.1), // TODO: Calculate from partial sales
-        dca_frequency: rust_decimal_macros::dec!(0.05), // TODO: Calculate from multiple buys
     };
     
     // Profit distribution (simplified)
     let profit_distribution = ProfitDistribution {
-        high_profit_trades_pct: Decimal::from(20), // TODO: Calculate from actual trades
         breakeven_trades_pct: Decimal::from(10),
         avg_winning_trade_pct: Decimal::from(15),
         avg_losing_trade_pct: Decimal::from(-8),
@@ -410,7 +317,6 @@ fn calculate_copy_trading_metrics(portfolio_result: &PortfolioPnLResult) -> Copy
     
     CopyTradingMetrics {
         trading_style,
-        consistency_score,
         risk_metrics,
         position_patterns,
         profit_distribution,

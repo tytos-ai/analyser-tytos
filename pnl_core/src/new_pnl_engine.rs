@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -65,11 +65,8 @@ pub struct TokenPnLResult {
     pub token_address: String,
     pub token_symbol: String,
     
-    /// All matched trades for this token
+    /// All matched trades for this token (includes phantom buy matches)
     pub matched_trades: Vec<MatchedTrade>,
-    
-    /// All unmatched sells for this token
-    pub unmatched_sells: Vec<UnmatchedSell>,
     
     /// Remaining position (if any)
     pub remaining_position: Option<RemainingPosition>,
@@ -252,7 +249,11 @@ impl NewPnLEngine {
         let token_symbol = events[0].token_symbol.clone();
         
         // Sort events chronologically (required for FIFO)
-        events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        // Primary sort: timestamp, Secondary sort: transaction hash for stability
+        events.sort_by(|a, b| {
+            a.timestamp.cmp(&b.timestamp)
+                .then_with(|| a.transaction_hash.cmp(&b.transaction_hash))
+        });
         
         debug!(
             "Calculating FIFO P&L for token {} ({}) with {} events",
@@ -261,7 +262,7 @@ impl NewPnLEngine {
             events.len()
         );
         
-        // Separate buy and sell events
+        // Separate buy and sell events (already sorted chronologically)
         let mut buy_events: Vec<NewFinancialEvent> = events
             .iter()
             .filter(|e| e.event_type == NewEventType::Buy)
@@ -281,17 +282,15 @@ impl NewPnLEngine {
             sell_events.len()
         );
         
-        // Perform FIFO matching
-        let (matched_trades, unmatched_sells) = self.perform_fifo_matching(&mut buy_events, &sell_events)?;
+        // Perform FIFO matching (includes phantom buy creation for unmatched sells)
+        let matched_trades = self.perform_fifo_matching(&mut buy_events, &sell_events)?;
         
         // Calculate remaining position from unmatched buys
         let remaining_position = self.calculate_remaining_position(&buy_events, &token_address, &token_symbol)?;
         
-        // Calculate realized P&L
+        // Calculate realized P&L (all P&L is now captured in matched_trades)
         let total_realized_pnl: Decimal = matched_trades.iter()
             .map(|t| t.realized_pnl_usd)
-            .sum::<Decimal>() + unmatched_sells.iter()
-            .map(|u| u.phantom_pnl_usd)
             .sum::<Decimal>();
         
         // Calculate unrealized P&L
@@ -317,7 +316,6 @@ impl NewPnLEngine {
             token_address,
             token_symbol,
             matched_trades,
-            unmatched_sells,
             remaining_position,
             total_realized_pnl_usd: total_realized_pnl,
             total_unrealized_pnl_usd: total_unrealized_pnl,
@@ -345,14 +343,14 @@ impl NewPnLEngine {
     }
     
     /// Perform FIFO matching between buy and sell events
-    /// Returns (matched_trades, unmatched_sells)
+    /// Creates phantom buys for any sells that can't be matched against existing buys
+    /// Returns all matched trades (including phantom buy matches)
     fn perform_fifo_matching(
         &self,
         buy_events: &mut Vec<NewFinancialEvent>,
         sell_events: &[NewFinancialEvent],
-    ) -> Result<(Vec<MatchedTrade>, Vec<UnmatchedSell>), String> {
+    ) -> Result<Vec<MatchedTrade>, String> {
         let mut matched_trades = Vec::new();
-        let mut unmatched_sells = Vec::new();
         
         // Create working copies of buy events to track remaining quantities
         let mut buy_queue: Vec<(NewFinancialEvent, Decimal)> = buy_events
@@ -371,10 +369,13 @@ impl NewPnLEngine {
             );
             
             // Match against oldest available buys (FIFO)
+            // Only match against buys that occurred before this sell
             while remaining_sell_quantity > Decimal::ZERO && !buy_queue.is_empty() {
                 let buy_index = buy_queue
                     .iter()
-                    .position(|(_, remaining_qty)| *remaining_qty > Decimal::ZERO);
+                    .position(|(buy_event, remaining_qty)| {
+                        *remaining_qty > Decimal::ZERO && buy_event.timestamp <= sell_event.timestamp
+                    });
                 
                 if let Some(idx) = buy_index {
                     let (buy_event, available_buy_quantity) = &mut buy_queue[idx];
@@ -416,20 +417,40 @@ impl NewPnLEngine {
                 }
             }
             
-            // Handle any unmatched sell quantity
+            // Handle any unmatched sell quantity by creating chronological phantom buy
             if remaining_sell_quantity > Decimal::ZERO {
-                // Assume phantom buy at same price as sell (zero P&L)
-                let unmatched_sell = UnmatchedSell {
-                    sell_event: sell_event.clone(),
-                    unmatched_quantity: remaining_sell_quantity,
-                    phantom_buy_price: sell_event.usd_price_per_token,
-                    phantom_pnl_usd: Decimal::ZERO,
+                // Create phantom buy event chronologically before the sell
+                let phantom_buy_timestamp = sell_event.timestamp - Duration::seconds(1);
+                let phantom_buy_usd_value = remaining_sell_quantity * sell_event.usd_price_per_token;
+                
+                let phantom_buy_event = NewFinancialEvent {
+                    wallet_address: sell_event.wallet_address.clone(),
+                    token_address: sell_event.token_address.clone(),
+                    token_symbol: sell_event.token_symbol.clone(),
+                    event_type: NewEventType::Buy,
+                    quantity: remaining_sell_quantity,
+                    usd_price_per_token: sell_event.usd_price_per_token, // Same price = zero P&L
+                    usd_value: phantom_buy_usd_value,
+                    timestamp: phantom_buy_timestamp,
+                    transaction_hash: format!("phantom_buy_{}", sell_event.transaction_hash),
                 };
                 
-                unmatched_sells.push(unmatched_sell);
+                // Calculate hold time (will be 1 second)
+                let hold_time_seconds = sell_event.timestamp.timestamp() - phantom_buy_timestamp.timestamp();
+                
+                // Create matched trade with zero P&L
+                let matched_trade = MatchedTrade {
+                    buy_event: phantom_buy_event.clone(),
+                    sell_event: sell_event.clone(),
+                    matched_quantity: remaining_sell_quantity,
+                    realized_pnl_usd: Decimal::ZERO, // Same buy/sell price = zero P&L
+                    hold_time_seconds,
+                };
+                
+                matched_trades.push(matched_trade);
                 
                 debug!(
-                    "Unmatched sell: {} {} @ ${} (assuming phantom buy at same price)",
+                    "Created phantom buy: {} {} @ ${} (1 second before sell, zero P&L)",
                     remaining_sell_quantity,
                     sell_event.token_symbol,
                     sell_event.usd_price_per_token
@@ -450,12 +471,11 @@ impl NewPnLEngine {
         }
         
         debug!(
-            "FIFO matching completed: {} matched trades, {} unmatched sells",
-            matched_trades.len(),
-            unmatched_sells.len()
+            "FIFO matching completed: {} matched trades (including phantom buy matches)",
+            matched_trades.len()
         );
         
-        Ok((matched_trades, unmatched_sells))
+        Ok(matched_trades)
     }
     
     /// Calculate remaining position from unmatched buy events
