@@ -1,0 +1,385 @@
+{
+  "data": {
+    "job_id": "48505c3d-00bc-4f68-bc24-259df3cab30b",
+    "status": "Completed",
+    "summary": {
+      "total_wallets": 1,
+      "successful_analyses": 1,
+      "failed_analyses": 0,
+      "total_pnl_usd": "-1679.8436291807312624718785620",
+      "average_pnl_usd": "-1679.8436291807312624718785620",
+      "profitable_wallets": 0
+    },
+    "results": {
+      "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw": {
+        "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+        "status": "success",
+        "pnl_report": {
+          "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+          "token_results": [
+            {
+              "token_address": "So11111111111111111111111111111111111111112",
+              "token_symbol": "SOL",
+              "matched_trades": [],
+              "unmatched_sells": [
+                {
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "So11111111111111111111111111111111111111112",
+                    "token_symbol": "SOL",
+                    "event_type": "Sell",
+                    "quantity": "7.4",
+                    "usd_price_per_token": "141.3791051184358",
+                    "usd_value": "1046.20537787642492",
+                    "timestamp": "2025-06-23T21:21:54Z",
+                    "transaction_hash": "2dETabf2vq1fL1JEaAPyjbxJiKdxgijo5V7hPBSVd5b7HFXNMouSLyqijXvye1H64hnHhk5AG9q5vZeG1WGw4cCZ"
+                  },
+                  "unmatched_quantity": "7.4",
+                  "phantom_buy_price": "141.3791051184358",
+                  "phantom_pnl_usd": "0"
+                },
+                {
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "So11111111111111111111111111111111111111112",
+                    "token_symbol": "SOL",
+                    "event_type": "Sell",
+                    "quantity": "4.5",
+                    "usd_price_per_token": "146.3717452607079",
+                    "usd_value": "658.67285367318555",
+                    "timestamp": "2025-06-23T22:26:27Z",
+                    "transaction_hash": "5kyg3MqRzJvMVPcyCW6VTACyngYM2v3hnvcqr8rTiPjMXTJfc8JBRCXK7bcuoKZWkrtuW8X2RUyts8WkGV1dGEqw"
+                  },
+                  "unmatched_quantity": "4.5",
+                  "phantom_buy_price": "146.3717452607079",
+                  "phantom_pnl_usd": "0"
+                },
+                {
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "So11111111111111111111111111111111111111112",
+                    "token_symbol": "SOL",
+                    "event_type": "Sell",
+                    "quantity": "3.95",
+                    "usd_price_per_token": "144.6558097146926",
+                    "usd_value": "571.390448373035770",
+                    "timestamp": "2025-06-23T22:41:57Z",
+                    "transaction_hash": "5Cb3vjNWDJGPkayDbLFvFcD67aJA3q3u8TqMRmue4hMoxzG1f7SoGL4t1kXPwoKRfMTPYts68sQYNsbw6wkbNSYx"
+                  },
+                  "unmatched_quantity": "3.95",
+                  "phantom_buy_price": "144.6558097146926",
+                  "phantom_pnl_usd": "0"
+                },
+                {
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "So11111111111111111111111111111111111111112",
+                    "token_symbol": "SOL",
+                    "event_type": "Sell",
+                    "quantity": "2",
+                    "usd_price_per_token": "144.8371926472927",
+                    "usd_value": "289.6743852945854",
+                    "timestamp": "2025-06-23T23:03:36Z",
+                    "transaction_hash": "2fmEjJtxnmBioYGaYCzLcqaoxWbqzKiSV4UFygRpPz87EcUMmzLgWcwa5fkytEdadCzdCUDyT5t1hCimos92wQ4a"
+                  },
+                  "unmatched_quantity": "2",
+                  "phantom_buy_price": "144.8371926472927",
+                  "phantom_pnl_usd": "0"
+                },
+                {
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "So11111111111111111111111111111111111111112",
+                    "token_symbol": "SOL",
+                    "event_type": "Sell",
+                    "quantity": "6",
+                    "usd_price_per_token": "143.8749826599959",
+                    "usd_value": "863.2498959599754",
+                    "timestamp": "2025-06-24T00:22:44Z",
+                    "transaction_hash": "2rr3devz267Z8XGZYun6Luhi5dJwRJfMJuTD9fteiwi2oNaQzECz8AFiGJy4kPFEfaN5r6qRDn7aGeJ2ViBKMdUU"
+                  },
+                  "unmatched_quantity": "6",
+                  "phantom_buy_price": "143.8749826599959",
+                  "phantom_pnl_usd": "0"
+                },
+                {
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "So11111111111111111111111111111111111111112",
+                    "token_symbol": "SOL",
+                    "event_type": "Sell",
+                    "quantity": "6.4",
+                    "usd_price_per_token": "144.3713524775914",
+                    "usd_value": "923.97665585658496",
+                    "timestamp": "2025-06-24T09:55:55Z",
+                    "transaction_hash": "5ZazUichhVJSi76MdHtH5Wc26Juw1FudZevEDvFRpYCHGR3pLz8VKZad29irtyAw8LJAHSbMpeEyZ3syWMFPYCqW"
+                  },
+                  "unmatched_quantity": "6.4",
+                  "phantom_buy_price": "144.3713524775914",
+                  "phantom_pnl_usd": "0"
+                },
+                {
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "So11111111111111111111111111111111111111112",
+                    "token_symbol": "SOL",
+                    "event_type": "Sell",
+                    "quantity": "5.4",
+                    "usd_price_per_token": "144.8278112900949",
+                    "usd_value": "782.07018096651246",
+                    "timestamp": "2025-06-24T15:16:44Z",
+                    "transaction_hash": "3e5ZuemJWLeyZnFCzyMhjGWQijcGdbbanSrJt4USuoUbC86p8oZdiQfQuKTza54MhtEpgTiKsxdJk53UznhgyHHx"
+                  },
+                  "unmatched_quantity": "5.4",
+                  "phantom_buy_price": "144.8278112900949",
+                  "phantom_pnl_usd": "0"
+                }
+              ],
+              "remaining_position": {
+                "token_address": "So11111111111111111111111111111111111111112",
+                "token_symbol": "SOL",
+                "quantity": "18.166962957",
+                "avg_cost_basis_usd": "180.9062459659259",
+                "total_cost_basis_usd": "3286.5170691529065095068863"
+              },
+              "total_realized_pnl_usd": "0",
+              "total_unrealized_pnl_usd": "137.35542227628031024818241063",
+              "total_pnl_usd": "137.35542227628031024818241063",
+              "total_trades": 0,
+              "winning_trades": 0,
+              "losing_trades": 0,
+              "win_rate_percentage": "0",
+              "avg_hold_time_minutes": "0",
+              "min_hold_time_minutes": "0",
+              "max_hold_time_minutes": "0"
+            },
+            {
+              "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+              "token_symbol": "MASHA",
+              "matched_trades": [
+                {
+                  "buy_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Buy",
+                    "quantity": "61997.518352",
+                    "usd_price_per_token": "0.016757976964503",
+                    "usd_value": "1038.952984399167995059056",
+                    "timestamp": "2025-06-23T21:21:54Z",
+                    "transaction_hash": "2dETabf2vq1fL1JEaAPyjbxJiKdxgijo5V7hPBSVd5b7HFXNMouSLyqijXvye1H64hnHhk5AG9q5vZeG1WGw4cCZ"
+                  },
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Sell",
+                    "quantity": "288631.655632",
+                    "usd_price_per_token": "0.01138654407797582",
+                    "usd_value": "3286.51706915290583386281824",
+                    "timestamp": "2025-07-20T17:12:42Z",
+                    "transaction_hash": "rtpiTtneQ9NeasDydyjvLoAoAueKVUjfneocPVvJXit2rW29FA2Wfow4WAcFNzyqQ2AFdLqXyPcoXx19vaUPnjj"
+                  },
+                  "matched_quantity": "61997.518352",
+                  "realized_pnl_usd": "-333.01550895900517559680736",
+                  "hold_time_seconds": 2317848
+                },
+                {
+                  "buy_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Buy",
+                    "quantity": "37438.256807",
+                    "usd_price_per_token": "0.01759357699448311",
+                    "usd_value": "658.67285367318589440402977",
+                    "timestamp": "2025-06-23T22:26:27Z",
+                    "transaction_hash": "5kyg3MqRzJvMVPcyCW6VTACyngYM2v3hnvcqr8rTiPjMXTJfc8JBRCXK7bcuoKZWkrtuW8X2RUyts8WkGV1dGEqw"
+                  },
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Sell",
+                    "quantity": "288631.655632",
+                    "usd_price_per_token": "0.01138654407797582",
+                    "usd_value": "3286.51706915290583386281824",
+                    "timestamp": "2025-07-20T17:12:42Z",
+                    "transaction_hash": "rtpiTtneQ9NeasDydyjvLoAoAueKVUjfneocPVvJXit2rW29FA2Wfow4WAcFNzyqQ2AFdLqXyPcoXx19vaUPnjj"
+                  },
+                  "matched_quantity": "37438.256807",
+                  "realized_pnl_usd": "-232.38049233770211250762303",
+                  "hold_time_seconds": 2313975
+                },
+                {
+                  "buy_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Buy",
+                    "quantity": "32793.937936",
+                    "usd_price_per_token": "0.01742366072315408",
+                    "usd_value": "571.39044837303577768517888",
+                    "timestamp": "2025-06-23T22:41:57Z",
+                    "transaction_hash": "5Cb3vjNWDJGPkayDbLFvFcD67aJA3q3u8TqMRmue4hMoxzG1f7SoGL4t1kXPwoKRfMTPYts68sQYNsbw6wkbNSYx"
+                  },
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Sell",
+                    "quantity": "288631.655632",
+                    "usd_price_per_token": "0.01138654407797582",
+                    "usd_value": "3286.51706915290583386281824",
+                    "timestamp": "2025-07-20T17:12:42Z",
+                    "transaction_hash": "rtpiTtneQ9NeasDydyjvLoAoAueKVUjfneocPVvJXit2rW29FA2Wfow4WAcFNzyqQ2AFdLqXyPcoXx19vaUPnjj"
+                  },
+                  "matched_quantity": "32793.937936",
+                  "realized_pnl_usd": "-197.98082857436839209647136",
+                  "hold_time_seconds": 2313045
+                },
+                {
+                  "buy_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Buy",
+                    "quantity": "16515.934557",
+                    "usd_price_per_token": "0.01753908531756757",
+                    "usd_value": "289.67438529458554854551649",
+                    "timestamp": "2025-06-23T23:03:36Z",
+                    "transaction_hash": "2fmEjJtxnmBioYGaYCzLcqaoxWbqzKiSV4UFygRpPz87EcUMmzLgWcwa5fkytEdadCzdCUDyT5t1hCimos92wQ4a"
+                  },
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Sell",
+                    "quantity": "288631.655632",
+                    "usd_price_per_token": "0.01138654407797582",
+                    "usd_value": "3286.51706915290583386281824",
+                    "timestamp": "2025-07-20T17:12:42Z",
+                    "transaction_hash": "rtpiTtneQ9NeasDydyjvLoAoAueKVUjfneocPVvJXit2rW29FA2Wfow4WAcFNzyqQ2AFdLqXyPcoXx19vaUPnjj"
+                  },
+                  "matched_quantity": "16515.934557",
+                  "realized_pnl_usd": "-101.61496847234100039710475",
+                  "hold_time_seconds": 2311746
+                },
+                {
+                  "buy_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Buy",
+                    "quantity": "48809.563287",
+                    "usd_price_per_token": "0.01768608112480069",
+                    "usd_value": "863.24989595997542381626803",
+                    "timestamp": "2025-06-24T00:22:44Z",
+                    "transaction_hash": "2rr3devz267Z8XGZYun6Luhi5dJwRJfMJuTD9fteiwi2oNaQzECz8AFiGJy4kPFEfaN5r6qRDn7aGeJ2ViBKMdUU"
+                  },
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Sell",
+                    "quantity": "288631.655632",
+                    "usd_price_per_token": "0.01138654407797582",
+                    "usd_value": "3286.51706915290583386281824",
+                    "timestamp": "2025-07-20T17:12:42Z",
+                    "transaction_hash": "rtpiTtneQ9NeasDydyjvLoAoAueKVUjfneocPVvJXit2rW29FA2Wfow4WAcFNzyqQ2AFdLqXyPcoXx19vaUPnjj"
+                  },
+                  "matched_quantity": "48809.563287",
+                  "realized_pnl_usd": "-307.47765216579957467054769",
+                  "hold_time_seconds": 2306998
+                },
+                {
+                  "buy_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Buy",
+                    "quantity": "50923.469695",
+                    "usd_price_per_token": "0.0181444167373243",
+                    "usd_value": "923.9766558565847664370885",
+                    "timestamp": "2025-06-24T09:55:55Z",
+                    "transaction_hash": "5ZazUichhVJSi76MdHtH5Wc26Juw1FudZevEDvFRpYCHGR3pLz8VKZad29irtyAw8LJAHSbMpeEyZ3syWMFPYCqW"
+                  },
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Sell",
+                    "quantity": "288631.655632",
+                    "usd_price_per_token": "0.01138654407797582",
+                    "usd_value": "3286.51706915290583386281824",
+                    "timestamp": "2025-07-20T17:12:42Z",
+                    "transaction_hash": "rtpiTtneQ9NeasDydyjvLoAoAueKVUjfneocPVvJXit2rW29FA2Wfow4WAcFNzyqQ2AFdLqXyPcoXx19vaUPnjj"
+                  },
+                  "matched_quantity": "50923.469695",
+                  "realized_pnl_usd": "-344.13432357100137972431360",
+                  "hold_time_seconds": 2272607
+                },
+                {
+                  "buy_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Buy",
+                    "quantity": "42509.983171",
+                    "usd_price_per_token": "0.01807708153639864",
+                    "usd_value": "768.45643189310101034728744",
+                    "timestamp": "2025-06-24T15:16:44Z",
+                    "transaction_hash": "3e5ZuemJWLeyZnFCzyMhjGWQijcGdbbanSrJt4USuoUbC86p8oZdiQfQuKTza54MhtEpgTiKsxdJk53UznhgyHHx"
+                  },
+                  "sell_event": {
+                    "wallet_address": "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw",
+                    "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                    "token_symbol": "MASHA",
+                    "event_type": "Sell",
+                    "quantity": "288631.655632",
+                    "usd_price_per_token": "0.01138654407797582",
+                    "usd_value": "3286.51706915290583386281824",
+                    "timestamp": "2025-07-20T17:12:42Z",
+                    "transaction_hash": "rtpiTtneQ9NeasDydyjvLoAoAueKVUjfneocPVvJXit2rW29FA2Wfow4WAcFNzyqQ2AFdLqXyPcoXx19vaUPnjj"
+                  },
+                  "matched_quantity": "40152.974998",
+                  "realized_pnl_usd": "-268.64498329123395597265436",
+                  "hold_time_seconds": 2253358
+                }
+              ],
+              "unmatched_sells": [],
+              "remaining_position": {
+                "token_address": "mae8vJGf8Wju8Ron1oDTQVaTGGBpcpWDwoRQJALMMf2",
+                "token_symbol": "MASHA",
+                "quantity": "2357.008173",
+                "avg_cost_basis_usd": "0.01807708153639864",
+                "total_cost_basis_usd": "42.60782892527899146608472"
+              },
+              "total_realized_pnl_usd": "-1785.24875737145159096552215",
+              "total_unrealized_pnl_usd": "-31.950294085559981754538822630",
+              "total_pnl_usd": "-1817.1990514570115727200609726",
+              "total_trades": 7,
+              "winning_trades": 0,
+              "losing_trades": 7,
+              "win_rate_percentage": "0",
+              "avg_hold_time_minutes": "38308.516666666666666666666667",
+              "min_hold_time_minutes": "37555.966666666666666666666667",
+              "max_hold_time_minutes": "38630.80"
+            }
+          ],
+          "total_realized_pnl_usd": "-1785.24875737145159096552215",
+          "total_unrealized_pnl_usd": "105.40512819072032849364358800",
+          "total_pnl_usd": "-1679.8436291807312624718785620",
+          "total_trades": 7,
+          "overall_win_rate_percentage": "0",
+          "avg_hold_time_minutes": "19154.258333333333333333333334",
+          "tokens_analyzed": 2,
+          "events_processed": 16,
+          "analysis_timestamp": "2025-07-26T09:19:43.433568540Z"
+        },
+        "error_message": null
+      }
+    }
+  },
+  "timestamp": "2025-07-26T09:21:21.718196930Z"
+}

@@ -5,7 +5,7 @@ use axum::{
     response::Json,
 };
 use chrono::Utc;
-use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult, PriceFetcher};
+use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -70,15 +70,20 @@ pub async fn get_wallet_analysis_v2(
     let total_events: usize = events_by_token.values().map(|events| events.len()).sum();
     debug!("Grouped {} events across {} tokens", total_events, events_by_token.len());
     
-    // Get current prices for unrealized P&L calculation
+    // Get current prices for unrealized P&L calculation using BirdEye client directly
     let token_addresses: Vec<String> = events_by_token.keys().cloned().collect();
     let current_prices = if !token_addresses.is_empty() {
-        match state.price_fetching_service.fetch_prices(&token_addresses, None).await {
-            Ok(prices) => {
-                Some(prices)
+        match state.birdeye_client.get_current_prices(&token_addresses).await {
+            Ok(birdeye_prices) => {
+                // Convert f64 prices to Decimal
+                let mut decimal_prices = HashMap::new();
+                for (token, price) in birdeye_prices {
+                    decimal_prices.insert(token, rust_decimal::Decimal::from_f64_retain(price).unwrap_or(rust_decimal::Decimal::ZERO));
+                }
+                Some(decimal_prices)
             },
             Err(e) => {
-                warn!("Failed to fetch current prices: {}", e);
+                warn!("Failed to fetch current prices from BirdEye: {}", e);
                 None
             }
         }
@@ -101,17 +106,24 @@ pub async fn get_wallet_analysis_v2(
             trading_style: TradingStyle::Mixed { 
                 predominant_style: Box::new(TradingStyle::LongTerm { avg_hold_days: Decimal::ZERO }) 
             },
+            consistency_score: Decimal::ZERO,
             risk_metrics: RiskMetrics {
                 max_position_percentage: Decimal::ZERO,
                 diversification_score: Decimal::ZERO,
+                max_consecutive_losses: 0,
                 avg_loss_per_trade: Decimal::ZERO,
                 max_win_streak: 0,
+                risk_adjusted_return: Decimal::ZERO,
             },
             position_patterns: PositionPatterns {
                 avg_hold_time_minutes: Decimal::ZERO,
+                position_size_consistency: Decimal::ZERO,
+                winner_hold_ratio: Decimal::ZERO,
                 partial_exit_frequency: Decimal::ZERO,
+                dca_frequency: Decimal::ZERO,
             },
             profit_distribution: ProfitDistribution {
+                high_profit_trades_pct: Decimal::ZERO,
                 breakeven_trades_pct: Decimal::ZERO,
                 avg_winning_trade_pct: Decimal::ZERO,
                 avg_losing_trade_pct: Decimal::ZERO,
@@ -157,7 +169,7 @@ pub async fn get_wallet_trades_v2(
     let portfolio_result = &analysis_result.0.data.portfolio_result;
     
     let mut matched_trades = Vec::new();
-    let mut unmatched_sells = Vec::new();
+    let unmatched_sells = Vec::new();
     
     // Extract and enhance all trades from all tokens
     for token_result in &portfolio_result.token_results {
@@ -293,18 +305,24 @@ fn calculate_copy_trading_metrics(portfolio_result: &PortfolioPnLResult) -> Copy
     let risk_metrics = RiskMetrics {
         max_position_percentage: Decimal::from(25), // TODO: Calculate from actual positions
         diversification_score: Decimal::from(portfolio_result.tokens_analyzed * 10).min(Decimal::from(100)),
+        max_consecutive_losses: 0, // TODO: Calculate from trade sequence
         avg_loss_per_trade: Decimal::ZERO, // TODO: Calculate from losing trades
         max_win_streak: 0, // TODO: Calculate from trade sequence
+        risk_adjusted_return: Decimal::ZERO, // TODO: Calculate Sharpe-like ratio
     };
     
     // Position patterns (simplified)
     let position_patterns = PositionPatterns {
         avg_hold_time_minutes: portfolio_result.avg_hold_time_minutes,
+        position_size_consistency: Decimal::ZERO, // TODO: Calculate from position sizes
+        winner_hold_ratio: Decimal::ZERO, // TODO: Calculate hold time ratio
         partial_exit_frequency: rust_decimal_macros::dec!(0.1), // TODO: Calculate from partial sales
+        dca_frequency: Decimal::ZERO, // TODO: Calculate DCA patterns
     };
     
     // Profit distribution (simplified)
     let profit_distribution = ProfitDistribution {
+        high_profit_trades_pct: Decimal::ZERO, // TODO: Calculate high profit percentage
         breakeven_trades_pct: Decimal::from(10),
         avg_winning_trade_pct: Decimal::from(15),
         avg_losing_trade_pct: Decimal::from(-8),
@@ -317,6 +335,7 @@ fn calculate_copy_trading_metrics(portfolio_result: &PortfolioPnLResult) -> Copy
     
     CopyTradingMetrics {
         trading_style,
+        consistency_score: Decimal::ZERO, // TODO: Calculate consistency score
         risk_metrics,
         position_patterns,
         profit_distribution,
@@ -410,16 +429,6 @@ fn calculate_timing_score(_trade: &pnl_core::MatchedTrade) -> Decimal {
     Decimal::from(75) // Simplified
 }
 
-fn classify_unmatched_reason(_sell: &pnl_core::UnmatchedSell) -> UnmatchedReason {
-    UnmatchedReason::PreExistingPosition // Simplified
-}
-
-fn calculate_portfolio_impact(
-    _sell: &pnl_core::UnmatchedSell, 
-    _portfolio: &PortfolioPnLResult
-) -> Decimal {
-    Decimal::from(2) // Simplified
-}
 
 fn calculate_trade_statistics(
     _matched_trades: &[EnhancedMatchedTrade], 

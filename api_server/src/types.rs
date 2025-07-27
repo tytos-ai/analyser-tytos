@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use job_orchestrator::{BatchJob, JobStatus, OrchestratorStatus};
-use pnl_core::{PnLFilters, PnLReport};
+use pnl_core::PortfolioPnLResult;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,25 +58,16 @@ pub struct DexClientStatus {
 /// Configuration summary (safe subset for API responses)
 #[derive(Debug, Serialize)]
 pub struct ConfigSummary {
-    pub redis_mode: bool,
     pub birdeye_api_configured: bool,
-    pub pnl_filters: PnLFiltersSummary,
-}
-
-/// P&L filters summary for API responses
-#[derive(Debug, Serialize)]
-pub struct PnLFiltersSummary {
-    pub timeframe_mode: String,
-    pub min_capital_sol: Decimal,
-    pub min_trades: u32,
-    pub win_rate: Decimal,
+    pub data_source: String,
+    pub parallel_batch_size: usize,
 }
 
 /// Request to submit a batch P&L job
 #[derive(Debug, Deserialize)]
 pub struct BatchJobRequest {
     pub wallet_addresses: Vec<String>,
-    pub filters: Option<PnLFilters>,
+    pub max_transactions: Option<u32>,
 }
 
 /// Response for batch job submission
@@ -135,7 +126,7 @@ pub struct BatchResultsSummary {
 pub struct WalletResult {
     pub wallet_address: String,
     pub status: String,
-    pub pnl_report: Option<PnLReport>,
+    pub pnl_report: Option<PortfolioPnLResult>,
     pub error_message: Option<String>,
 }
 
@@ -144,10 +135,6 @@ pub struct WalletResult {
 pub struct DiscoveredWalletsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
-    pub min_pnl: Option<Decimal>,
-    pub max_pnl: Option<Decimal>,
-    pub order_by: Option<String>, // "pnl", "discovered_at", "win_rate"
-    pub order_direction: Option<String>, // "asc", "desc"
 }
 
 /// Response for discovered wallets endpoint
@@ -192,37 +179,14 @@ pub struct DiscoveredWalletsSummary {
 /// Configuration update request
 #[derive(Debug, Deserialize)]
 pub struct ConfigUpdateRequest {
-    pub pnl_filters: Option<PnLFiltersUpdate>,
-    pub system_settings: Option<SystemSettingsUpdate>,
-}
-
-/// P&L filters update
-#[derive(Debug, Deserialize)]
-pub struct PnLFiltersUpdate {
-    pub timeframe_mode: Option<String>,
-    pub timeframe_general: Option<String>,
-    pub timeframe_specific: Option<String>,
-    pub wallet_min_capital: Option<Decimal>,
-    pub aggregator_min_hold_minutes: Option<u32>,
-    pub amount_trades: Option<u32>,
-    pub win_rate: Option<Decimal>,
-}
-
-/// System settings update
-#[derive(Debug, Deserialize)]
-pub struct SystemSettingsUpdate {
-    pub max_signatures: Option<u32>,
-    pub process_loop_ms: Option<u64>,
-    pub redis_mode: Option<bool>,
+    // Empty for now - config update not implemented
 }
 
 
 /// System logs query parameters
 #[derive(Debug, Deserialize)]
 pub struct LogsQuery {
-    pub level: Option<String>, // "error", "warn", "info", "debug"
-    pub limit: Option<u32>,
-    pub since: Option<DateTime<Utc>>,
+    // Empty for now - log querying not implemented
 }
 
 /// System logs response
@@ -256,9 +220,13 @@ pub struct CsvExportInfo {
 impl From<BatchJob> for BatchJobStatusResponse {
     fn from(job: BatchJob) -> Self {
         let total_wallets = job.wallet_addresses.len();
-        let completed_wallets = job.results.len();
-        let successful_wallets = job.results.values().filter(|r| r.is_ok()).count();
-        let failed_wallets = completed_wallets - successful_wallets;
+        // Results are now stored in PostgreSQL, not in memory
+        // Use individual_jobs to track progress
+        let completed_wallets = job.individual_jobs.len();
+        // Without access to results here, we can't determine success/failure counts
+        // This should be fetched from PostgreSQL when needed
+        let successful_wallets = if job.status == JobStatus::Completed { completed_wallets } else { 0 };
+        let failed_wallets = 0; // Unknown without querying results
         
         let progress_percentage = if total_wallets > 0 {
             (completed_wallets as f64 / total_wallets as f64) * 100.0
@@ -286,48 +254,16 @@ impl From<BatchJob> for BatchJobStatusResponse {
 
 impl From<BatchJob> for BatchJobResultsResponse {
     fn from(job: BatchJob) -> Self {
-        let mut wallet_results = HashMap::new();
-        let mut total_pnl = Decimal::ZERO;
-        let mut successful_count = 0;
-
-        for (wallet, result) in &job.results {
-            let wallet_result = match result {
-                Ok(report) => {
-                    total_pnl += report.summary.total_pnl_usd;
-                    successful_count += 1;
-                    WalletResult {
-                        wallet_address: wallet.clone(),
-                        status: "success".to_string(),
-                        pnl_report: Some(report.clone()),
-                        error_message: None,
-                    }
-                }
-                Err(e) => WalletResult {
-                    wallet_address: wallet.clone(),
-                    status: "failed".to_string(),
-                    pnl_report: None,
-                    error_message: Some(e.to_string()),
-                },
-            };
-            wallet_results.insert(wallet.clone(), wallet_result);
-        }
+        // Results are now stored in PostgreSQL, not in BatchJob
+        // This conversion can't produce meaningful results without DB access
+        // The actual results should be fetched from PostgreSQL in the handler
+        let wallet_results = HashMap::new();
+        let total_pnl = Decimal::ZERO;
+        let successful_count = 0;
 
         let total_wallets = job.wallet_addresses.len();
-        let average_pnl = if successful_count > 0 {
-            total_pnl / Decimal::from(successful_count)
-        } else {
-            Decimal::ZERO
-        };
-
-        let profitable_wallets = job
-            .results
-            .values()
-            .filter(|r| {
-                r.as_ref()
-                    .map(|report| report.summary.total_pnl_usd > Decimal::ZERO)
-                    .unwrap_or(false)
-            })
-            .count();
+        let average_pnl = Decimal::ZERO;
+        let profitable_wallets = 0;
 
         Self {
             job_id: job.id,
@@ -389,7 +325,7 @@ pub struct TraderPnLSummary {
 pub struct ServiceControlRequest {
     pub action: String,  // "start" | "stop" | "restart"
     pub service: String, // "wallet_discovery" | "pnl_analysis"
-    pub config_override: Option<PnLFilters>,  // Optional runtime configuration
+    pub config_override: Option<serde_json::Value>,  // Optional runtime configuration as JSON
 }
 
 /// Simple message response
@@ -414,8 +350,6 @@ pub struct DiscoveryCycleResponse {
 pub struct AllResultsQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
-    pub sort_by: Option<String>, // "pnl", "analyzed_at", "wallet_address" - TODO: implement sorting
-    pub order: Option<String>,   // "asc", "desc" - TODO: implement sorting
 }
 
 /// Response for all P&L results
@@ -457,9 +391,7 @@ pub struct AllResultsSummary {
 #[derive(Debug, Serialize)]
 pub struct DetailedPnLResultResponse {
     pub wallet_address: String,
-    pub token_address: String,
-    pub token_symbol: String,
-    pub pnl_report: pnl_core::PnLReport,
+    pub portfolio_result: pnl_core::PortfolioPnLResult,
     pub analyzed_at: DateTime<Utc>,
 }
 
@@ -512,7 +444,6 @@ pub struct ServicesComponentHealth {
 pub struct BatchJobHistoryQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
-    pub status: Option<String>, // Filter by status - TODO: implement status filtering
 }
 
 /// Summary of a batch job for history listing

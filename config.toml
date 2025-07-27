@@ -1,17 +1,13 @@
 [system]
 debug_mode = true
-redis_mode = true
 process_loop_ms = 30000
-output_csv_file = "pnl_results.csv"
 pnl_parallel_batch_size = 20
 
-# Data source configuration for transaction fetching  
-# Options: "BirdEye", "Helius", or { Both = { primary = "BirdEye", fallback = "Helius" } }
-data_source = "Helius"
+# Data source for transaction data (currently only "BirdEye" is supported)
+data_source = "BirdEye"
 
 [redis]
 url = "redis://localhost:6379"
-connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
 
 
@@ -23,70 +19,35 @@ rate_limit_delay_ms = 1000  # 60 requests per minute = 1 request per second
 max_retries = 3
 enabled = true
 min_boost_amount = 100.0    # Minimum boost amount to consider
-max_boosted_tokens = 50     # Increased from 20 to process more boosted tokens
+max_boosted_tokens = 25     # Limit boosted tokens for quality filtering
 
 [birdeye]
 api_key = "5ff313b239ac42e297b830b10ea1871d"
 api_base_url = "https://public-api.birdeye.so"
 request_timeout_seconds = 30
-price_cache_ttl_seconds = 60
-rate_limit_per_second = 100
 max_traders_per_token = 100  # Increased from 20 for maximum coverage (doesn't affect BirdEye API limits)
 max_transactions_per_trader = 100  # API limit - DO NOT CHANGE
-default_max_transactions = 2000  # Default maximum transactions to fetch/analyze per wallet
-max_token_rank = 1000
+default_max_transactions = 100  # Default maximum transactions to fetch/analyze per wallet
 new_listing_enabled = true
 new_listing_min_liquidity = 1000.0
 new_listing_max_age_hours = 24
-new_listing_max_tokens = 100  # Increased from 25 to process more new listings
-max_trending_tokens = 10000  # Maximum trending tokens to process (0 = unlimited)
+new_listing_max_tokens = 25  # Limit new listings for quality filtering
+max_trending_tokens = 25  # Limit trending tokens for quality filtering
 
-# Helius API configuration (alternative data source)
-[helius]
-api_key = "bced755e-f559-4a04-ace6-d4f2967647a3"
-api_base_url = "https://api.helius.xyz/v0"
-request_timeout_seconds = 30
-rate_limit_ms = 100
-max_retry_attempts = 3
-enabled = true  # Set to true to enable Helius integration
 
-# Price fetching configuration (Jupiter + BirdEye)
-[price_fetching]
-primary_source = "jupiter"
-fallback_enabled = true
-fallback_source = "birdeye"
-jupiter_api_url = "https://lite-api.jup.ag"
-birdeye_api_url = "https://public-api.birdeye.so"
-request_timeout_seconds = 30
-price_cache_ttl_seconds = 300
-enable_caching = true
+# PnL filtering configuration section removed - these were never used in actual P&L processing
+# All P&L calculations are performed without filtering based on capital, hold time, trades, or win rate
 
-[pnl]
-timeframe_mode = "none"
-timeframe_general = "7d"
-wallet_min_capital = 0.0
-aggregator_min_hold_minutes = 0.0
-amount_trades = 0
-win_rate = 0.0
-aggregator_batch_size = 20
-max_signatures = 1000  # NOTE: This value is now ignored - automatically set to match birdeye.default_max_transactions
-
-# Advanced trader filtering for copy trading (more lenient for testing)
+# Trader filtering for wallet discovery (only these 3 fields are actually used)
 [trader_filter]
-min_realized_pnl_usd = 0.01       # Lower threshold for testing
-min_total_trades = 2               # Lower threshold
-min_winning_trades = 1             # Lower threshold  
-min_win_rate = 25.0                # Lower threshold
-min_roi_percentage = 5.0           # Lower threshold
-min_capital_deployed_sol = 0.001   # Much lower threshold for testing
-max_avg_hold_time_minutes = 1440   # 24 hours max
-min_avg_hold_time_minutes = 1      # 1 minute min
-exclude_holders_only = true        # Skip wallets with only buy transactions
-exclude_zero_pnl = true           # Skip wallets with no realized gains
-min_transaction_frequency = 0.05   # Lower frequency requirement
+min_capital_deployed_sol = 0.001   # Minimum capital in SOL
+min_total_trades = 2               # Minimum number of trades
+min_win_rate = 25.0                # Minimum win rate percentage
 
 [api]
 host = "0.0.0.0"
 port = 8080
-enable_cors = true
-request_timeout_seconds = 30
+
+[database]
+postgres_url = "postgresql://root:Great222*@localhost:5432/analyser"
+enabled = true

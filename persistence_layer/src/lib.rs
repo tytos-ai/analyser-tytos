@@ -5,6 +5,10 @@ use tracing::{debug, error, info, warn};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
+// Re-export postgres client
+pub mod postgres_client;
+pub use postgres_client::PostgresClient;
+
 /// Discovered wallet-token pair for targeted P&L analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredWalletToken {
@@ -28,7 +32,15 @@ pub struct StoredPnLResult {
     pub wallet_address: String,
     pub token_address: String,
     pub token_symbol: String,
-    pub pnl_report: pnl_core::PnLReport,
+    pub pnl_report: pnl_core::PortfolioPnLResult,
+    pub analyzed_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Stored portfolio P&L result with metadata (for PostgreSQL storage)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPortfolioPnLResult {
+    pub wallet_address: String,
+    pub portfolio_result: pnl_core::PortfolioPnLResult,
     pub analyzed_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -109,6 +121,8 @@ pub enum PersistenceError {
     Connection(#[from] redis::RedisError),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("Database pool creation error: {0}")]
+    PoolCreation(String),
     #[error("Lock acquisition failed")]
     LockFailed,
     #[error("Lock not found")]
@@ -116,6 +130,130 @@ pub enum PersistenceError {
 }
 
 pub type Result<T> = std::result::Result<T, PersistenceError>;
+
+/// Unified persistence client that combines Redis and PostgreSQL operations
+#[derive(Debug, Clone)]
+pub struct PersistenceClient {
+    redis_client: RedisClient,
+    postgres_client: PostgresClient,
+}
+
+impl PersistenceClient {
+    /// Create a new persistence client with both Redis and PostgreSQL connections
+    pub async fn new(redis_url: &str, postgres_url: &str) -> Result<Self> {
+        let redis_client = RedisClient::new(redis_url).await?;
+        let postgres_client = PostgresClient::new(postgres_url).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))?;
+        
+        Ok(Self {
+            redis_client,
+            postgres_client,
+        })
+    }
+    
+    // Delegate all Redis operations to RedisClient
+    pub async fn acquire_lock(&self, key: &str, ttl_seconds: u64) -> Result<LockHandle> {
+        self.redis_client.acquire_lock(key, ttl_seconds).await
+    }
+    
+    pub async fn release_lock(&self, handle: &LockHandle) -> Result<bool> {
+        self.redis_client.release_lock(handle).await.map(|_| true)
+    }
+    
+    pub async fn pop_discovered_wallet_token_pair(&self, count: usize) -> Result<Option<DiscoveredWalletToken>> {
+        self.redis_client.pop_discovered_wallet_token_pair(count as u64).await
+    }
+    
+    pub async fn pop_discovered_wallet_token_pairs(&self, count: usize) -> Result<Vec<DiscoveredWalletToken>> {
+        self.redis_client.pop_discovered_wallet_token_pairs(count).await
+    }
+    
+    pub async fn push_discovered_wallet_token_pairs_deduplicated(&self, pairs: &[DiscoveredWalletToken]) -> Result<usize> {
+        self.redis_client.push_discovered_wallet_token_pairs_deduplicated(pairs).await
+    }
+    
+    pub async fn push_failed_wallet_token_pairs_for_retry(&self, pairs: &[DiscoveredWalletToken]) -> Result<()> {
+        self.redis_client.push_failed_wallet_token_pairs_for_retry(pairs).await
+    }
+    
+    pub async fn mark_wallet_as_processed(&self, wallet_address: &str) -> Result<()> {
+        self.redis_client.mark_wallet_as_processed(wallet_address).await
+    }
+    
+    pub async fn mark_wallet_as_failed(&self, wallet_address: &str) -> Result<()> {
+        self.redis_client.mark_wallet_as_failed(wallet_address).await
+    }
+    
+    pub async fn get_wallet_token_pairs_queue_size(&self) -> Result<usize> {
+        self.redis_client.get_wallet_token_pairs_queue_size().await.map(|size| size as usize)
+    }
+    
+    pub async fn store_batch_job(&self, job: &BatchJob) -> Result<()> {
+        self.redis_client.store_batch_job(job).await
+    }
+    
+    pub async fn get_batch_job(&self, job_id: &str) -> Result<Option<BatchJob>> {
+        self.redis_client.get_batch_job(job_id).await
+    }
+    
+    pub async fn update_batch_job(&self, job: &BatchJob) -> Result<()> {
+        self.redis_client.update_batch_job(job).await
+    }
+    
+    pub async fn get_all_batch_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
+        self.redis_client.get_all_batch_jobs(limit, offset).await
+    }
+    
+    pub async fn get_batch_job_stats(&self) -> Result<BatchJobStats> {
+        self.redis_client.get_batch_job_stats().await
+    }
+    
+    pub async fn clear_temp_data(&self) -> Result<()> {
+        self.redis_client.clear_temp_data().await
+    }
+    
+    // Delegate PostgreSQL operations to PostgresClient
+    pub async fn store_pnl_result(&self, wallet_address: &str, portfolio_result: &pnl_core::PortfolioPnLResult) -> Result<()> {
+        self.postgres_client.store_pnl_result(wallet_address, portfolio_result).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+    
+    pub async fn get_portfolio_pnl_result(&self, wallet_address: &str) -> Result<Option<StoredPortfolioPnLResult>> {
+        self.postgres_client.get_portfolio_pnl_result(wallet_address).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+    
+    pub async fn get_all_pnl_results(&self, offset: usize, limit: usize) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
+        self.postgres_client.get_all_pnl_results(offset, limit).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+    
+    pub async fn get_stats(&self) -> Result<(usize, usize)> {
+        self.postgres_client.get_stats().await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+    
+    // Work-stealing delegation methods
+    pub async fn claim_wallet_batch(&self, instance_id: &str, batch_size: usize) -> Result<(Vec<DiscoveredWalletToken>, String)> {
+        self.redis_client.claim_wallet_batch(instance_id, batch_size).await
+    }
+    
+    pub async fn release_batch_claim(&self, batch_id: &str) -> Result<()> {
+        self.redis_client.release_batch_claim(batch_id).await
+    }
+    
+    pub async fn return_failed_batch(&self, batch_id: &str, failed_items: &[DiscoveredWalletToken]) -> Result<()> {
+        self.redis_client.return_failed_batch(batch_id, failed_items).await
+    }
+    
+    pub async fn cleanup_stale_processing_locks(&self, max_age_seconds: u64) -> Result<usize> {
+        self.redis_client.cleanup_stale_processing_locks(max_age_seconds).await
+    }
+    
+    pub async fn get_processing_stats(&self) -> Result<(usize, usize)> {
+        self.redis_client.get_processing_stats().await
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RedisClient {
@@ -457,7 +595,7 @@ impl RedisClient {
         wallet_address: &str,
         token_address: &str,
         token_symbol: &str,
-        pnl_report: &pnl_core::PnLReport,
+        pnl_report: &pnl_core::PortfolioPnLResult,
     ) -> Result<()> {
         let result_key = format!("pnl_result:{}:{}", wallet_address, token_address);
         
@@ -543,7 +681,7 @@ impl RedisClient {
     }
     
     /// Update summary statistics for aggregated P&L data
-    async fn update_pnl_summary_stats(&self, pnl_report: &pnl_core::PnLReport) -> Result<()> {
+    async fn update_pnl_summary_stats(&self, pnl_report: &pnl_core::PortfolioPnLResult) -> Result<()> {
         let mut conn = self.get_connection().await?;
         let stats_key = "pnl_summary_stats";
         
@@ -557,11 +695,11 @@ impl RedisClient {
         
         // Update stats
         stats.total_wallets_analyzed += 1;
-        stats.total_pnl_usd += pnl_report.summary.total_pnl_usd;
-        stats.total_realized_pnl_usd += pnl_report.summary.realized_pnl_usd;
-        stats.total_trades += pnl_report.summary.total_trades as u64;
+        stats.total_pnl_usd += pnl_report.total_pnl_usd;
+        stats.total_realized_pnl_usd += pnl_report.total_realized_pnl_usd;
+        stats.total_trades += pnl_report.total_trades as u64;
         
-        if pnl_report.summary.total_pnl_usd > Decimal::ZERO {
+        if pnl_report.total_pnl_usd > Decimal::ZERO {
             stats.profitable_wallets += 1;
         }
         
@@ -1352,7 +1490,7 @@ impl RedisClient {
     // =====================================
 
     /// Store results for a batch job
-    pub async fn store_batch_job_results(&self, job_id: &str, results: &std::collections::HashMap<String, std::result::Result<pnl_core::PnLReport, anyhow::Error>>) -> Result<()> {
+    pub async fn store_batch_job_results(&self, job_id: &str, results: &std::collections::HashMap<String, std::result::Result<pnl_core::PortfolioPnLResult, anyhow::Error>>) -> Result<()> {
         let results_key = format!("batch_job_results:{}", job_id);
         let mut conn = self.get_connection().await?;
         
@@ -1384,7 +1522,7 @@ impl RedisClient {
     }
 
     /// Get results for a batch job
-    pub async fn get_batch_job_results(&self, job_id: &str) -> Result<std::collections::HashMap<String, std::result::Result<pnl_core::PnLReport, anyhow::Error>>> {
+    pub async fn get_batch_job_results(&self, job_id: &str) -> Result<std::collections::HashMap<String, std::result::Result<pnl_core::PortfolioPnLResult, anyhow::Error>>> {
         let results_key = format!("batch_job_results:{}", job_id);
         let mut conn = self.get_connection().await?;
         
@@ -1399,7 +1537,7 @@ impl RedisClient {
                     if let Some(success) = result_data.get("success").and_then(|v| v.as_bool()) {
                         if success {
                             if let Some(data_str) = result_data.get("data").and_then(|v| v.as_str()) {
-                                match serde_json::from_str::<pnl_core::PnLReport>(data_str) {
+                                match serde_json::from_str::<pnl_core::PortfolioPnLResult>(data_str) {
                                     Ok(report) => {
                                         results.insert(wallet, Ok(report));
                                     }
@@ -1434,6 +1572,206 @@ impl RedisClient {
         
         let deleted: i32 = conn.del(&results_key).await?;
         Ok(deleted > 0)
+    }
+
+    // =====================================
+    // Work-Stealing for Multi-Instance Processing
+    // =====================================
+    
+    /// Atomically claim a batch of wallet-token pairs for processing by a specific instance
+    /// Returns the claimed batch and a unique batch ID for tracking
+    pub async fn claim_wallet_batch(&self, instance_id: &str, batch_size: usize) -> Result<(Vec<DiscoveredWalletToken>, String)> {
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let batch_id = format!("{}:{}", instance_id, Uuid::new_v4().to_string()[..8].to_string());
+        let processing_key = format!("processing:{}", batch_id);
+        
+        // Use Lua script for atomic batch claiming
+        let script = r#"
+            local queue_key = KEYS[1]
+            local processing_key = KEYS[2]
+            local batch_size = tonumber(ARGV[1])
+            local ttl_seconds = tonumber(ARGV[2])
+            local timestamp = ARGV[3]
+            
+            -- Pop batch_size items from the queue
+            local items = {}
+            for i = 1, batch_size do
+                local item = redis.call("RPOP", queue_key)
+                if not item then
+                    break
+                end
+                table.insert(items, item)
+            end
+            
+            -- If we got items, set processing lock with metadata
+            if #items > 0 then
+                local metadata = {
+                    timestamp = timestamp,
+                    count = #items,
+                    instance = ARGV[4]
+                }
+                redis.call("HMSET", processing_key, 
+                    "timestamp", timestamp,
+                    "count", #items,
+                    "instance", ARGV[4])
+                redis.call("EXPIRE", processing_key, ttl_seconds)
+                
+                -- Store the actual items for potential cleanup
+                for i, item in ipairs(items) do
+                    redis.call("LPUSH", processing_key .. ":items", item)
+                end
+                redis.call("EXPIRE", processing_key .. ":items", ttl_seconds)
+            end
+            
+            return items
+        "#;
+        
+        let mut conn = self.get_connection().await?;
+        let timestamp = chrono::Utc::now().timestamp();
+        let ttl_seconds = 300; // 5 minutes TTL for processing locks
+        
+        let items: Vec<String> = redis::Script::new(script)
+            .key(queue_key)
+            .key(&processing_key)
+            .arg(batch_size)
+            .arg(ttl_seconds)
+            .arg(timestamp)
+            .arg(instance_id)
+            .invoke_async(&mut conn)
+            .await?;
+        
+        // Deserialize the items
+        let mut wallet_tokens = Vec::new();
+        for item in items {
+            match serde_json::from_str::<DiscoveredWalletToken>(&item) {
+                Ok(wallet_token) => wallet_tokens.push(wallet_token),
+                Err(e) => warn!("Failed to deserialize claimed wallet-token pair: {}", e),
+            }
+        }
+        
+        if !wallet_tokens.is_empty() {
+            info!("Claimed batch {} with {} wallet-token pairs for instance {}", 
+                  batch_id, wallet_tokens.len(), instance_id);
+        }
+        
+        Ok((wallet_tokens, batch_id))
+    }
+    
+    /// Release a claimed batch (called when processing completes successfully)
+    pub async fn release_batch_claim(&self, batch_id: &str) -> Result<()> {
+        let processing_key = format!("processing:{}", batch_id);
+        let items_key = format!("{}:items", processing_key);
+        
+        let mut conn = self.get_connection().await?;
+        
+        // Delete both the metadata and items
+        let _: () = conn.del(&[&processing_key, &items_key]).await?;
+        
+        debug!("Released batch claim: {}", batch_id);
+        Ok(())
+    }
+    
+    /// Return failed items back to the queue for retry
+    pub async fn return_failed_batch(&self, batch_id: &str, failed_items: &[DiscoveredWalletToken]) -> Result<()> {
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let processing_key = format!("processing:{}", batch_id);
+        let items_key = format!("{}:items", processing_key);
+        
+        let mut conn = self.get_connection().await?;
+        
+        // Push failed items back to the front of the queue for priority retry
+        for item in failed_items {
+            let json_data = serde_json::to_string(item)?;
+            let _: () = conn.lpush(queue_key, json_data).await?;
+        }
+        
+        // Clean up the processing keys
+        let _: () = conn.del(&[&processing_key, &items_key]).await?;
+        
+        if !failed_items.is_empty() {
+            info!("Returned {} failed items from batch {} back to queue", 
+                  failed_items.len(), batch_id);
+        }
+        
+        Ok(())
+    }
+    
+    /// Cleanup stale processing locks from dead instances
+    pub async fn cleanup_stale_processing_locks(&self, max_age_seconds: u64) -> Result<usize> {
+        let mut conn = self.get_connection().await?;
+        let current_time = chrono::Utc::now().timestamp();
+        let cutoff_time = current_time - max_age_seconds as i64;
+        
+        // Find all processing keys
+        let pattern = "processing:*";
+        let processing_keys: Vec<String> = conn.keys(pattern).await?;
+        
+        let mut cleaned_count = 0;
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        
+        for key in processing_keys {
+            // Skip item keys (they have :items suffix)
+            if key.ends_with(":items") {
+                continue;
+            }
+            
+            // Get the timestamp from the processing metadata
+            let timestamp: Option<i64> = conn.hget(&key, "timestamp").await?;
+            
+            match timestamp {
+                Some(ts) if ts < cutoff_time => {
+                    // This lock is stale, return items to queue
+                    let items_key = format!("{}:items", key);
+                    let items: Vec<String> = conn.lrange(&items_key, 0, -1).await?;
+                    
+                    // Return items to the front of the queue
+                    for item in items.iter().rev() { // Reverse to maintain order
+                        let _: () = conn.lpush(queue_key, item).await?;
+                    }
+                    
+                    // Delete the stale processing keys
+                    let _: () = conn.del(&[&key, &items_key]).await?;
+                    cleaned_count += 1;
+                    
+                    if !items.is_empty() {
+                        warn!("Cleaned up stale processing lock {} and returned {} items to queue", 
+                              key, items.len());
+                    }
+                }
+                Some(_) => {
+                    // Lock is still fresh, skip
+                }
+                None => {
+                    // Malformed lock, clean it up
+                    let items_key = format!("{}:items", key);
+                    let _: () = conn.del(&[&key, &items_key]).await?;
+                    cleaned_count += 1;
+                    warn!("Cleaned up malformed processing lock: {}", key);
+                }
+            }
+        }
+        
+        if cleaned_count > 0 {
+            info!("Cleaned up {} stale processing locks", cleaned_count);
+        }
+        
+        Ok(cleaned_count)
+    }
+    
+    /// Get statistics about current processing locks
+    pub async fn get_processing_stats(&self) -> Result<(usize, usize)> {
+        let mut conn = self.get_connection().await?;
+        
+        // Count processing locks (not including :items keys)
+        let pattern = "processing:*";
+        let all_keys: Vec<String> = conn.keys(pattern).await?;
+        let processing_locks = all_keys.iter().filter(|k| !k.ends_with(":items")).count();
+        
+        // Get queue size
+        let queue_key = "discovered_wallet_token_pairs_queue";
+        let queue_size: usize = conn.llen(queue_key).await?;
+        
+        Ok((processing_locks, queue_size))
     }
 }
 

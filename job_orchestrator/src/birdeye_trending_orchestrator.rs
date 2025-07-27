@@ -2,16 +2,13 @@ use anyhow::Result;
 use config_manager::SystemConfig;
 use dex_client::{BirdEyeClient, TopTrader, TrendingToken as BirdEyeTrendingToken, GeneralTraderTransaction, GainerLoser, DexScreenerClient, DexScreenerBoostedToken, NewListingToken, NewListingTokenFilter};
 use persistence_layer::{RedisClient, DiscoveredWalletToken};
-use pnl_core::{FinancialEvent, EventType, EventMetadata};
+// NewFinancialEvent/NewEventType imports removed - using GeneralTraderTransaction directly
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 // BirdEyeTrendingConfig removed - now uses SystemConfig directly
 
@@ -95,8 +92,28 @@ impl BirdEyeTrendingOrchestrator {
                 }
             }
 
-            // Wait before next cycle
-            tokio::time::sleep(Duration::from_secs(60)).await; // BirdEye polling interval
+            // Wait before next cycle (interruptible sleep)
+            let sleep_duration = Duration::from_secs(60); // BirdEye polling interval
+            let mut interval = tokio::time::interval(Duration::from_millis(500)); // Check stop flag every 500ms
+            let start_time = std::time::Instant::now();
+            
+            loop {
+                interval.tick().await;
+                
+                // Check if we should stop during sleep
+                {
+                    let is_running = self.is_running.lock().await;
+                    if !*is_running {
+                        info!("🛑 Stop requested during sleep, breaking out early");
+                        return Ok(());
+                    }
+                }
+                
+                // Check if we've slept long enough
+                if start_time.elapsed() >= sleep_duration {
+                    break;
+                }
+            }
         }
 
         Ok(())
@@ -132,6 +149,16 @@ impl BirdEyeTrendingOrchestrator {
 
         // Step 2: For each trending token, get top traders
         for (i, token) in trending_tokens.iter().enumerate() {
+            // Check if we should stop before processing each token
+            {
+                let is_running = self.is_running.lock().await;
+                if !*is_running {
+                    info!("🛑 Stop requested during token processing, breaking out of loop at token {}/{}", 
+                          i + 1, trending_tokens.len());
+                    break;
+                }
+            }
+
             debug!("🎯 Processing token {}/{}: {} ({})", 
                    i + 1, trending_tokens.len(), token.symbol, token.address);
 
@@ -161,9 +188,25 @@ impl BirdEyeTrendingOrchestrator {
                 }
             }
 
-            // Rate limiting between tokens
+            // Rate limiting between tokens (interruptible)
             if i < trending_tokens.len() - 1 {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Make this sleep interruptible by checking stop flag every 100ms
+                let sleep_duration = Duration::from_millis(500);
+                let check_interval = Duration::from_millis(100);
+                let start_time = std::time::Instant::now();
+                
+                while start_time.elapsed() < sleep_duration {
+                    tokio::time::sleep(check_interval).await;
+                    
+                    // Check if we should stop during rate limiting sleep
+                    {
+                        let is_running = self.is_running.lock().await;
+                        if !*is_running {
+                            info!("🛑 Stop requested during trending token rate limiting, breaking out early");
+                            return Ok(total_discovered_wallets);
+                        }
+                    }
+                }
             }
         }
 
@@ -355,6 +398,16 @@ impl BirdEyeTrendingOrchestrator {
 
         // For each boosted token, get top traders using BirdEye
         for (i, boosted_token) in processed_tokens.iter().enumerate() {
+            // Check if we should stop before processing each boosted token
+            {
+                let is_running = self.is_running.lock().await;
+                if !*is_running {
+                    info!("🛑 Stop requested during boosted token processing, breaking out of loop at token {}/{}", 
+                          i + 1, processed_tokens.len());
+                    break;
+                }
+            }
+
             debug!("🎯 Processing boosted token {}/{}: {}", 
                    i + 1, processed_tokens.len(), boosted_token.token_address);
 
@@ -405,9 +458,25 @@ impl BirdEyeTrendingOrchestrator {
                 }
             }
 
-            // Rate limiting between boosted tokens
+            // Rate limiting between boosted tokens (interruptible)
             if i < processed_tokens.len() - 1 {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Make this sleep interruptible by checking stop flag every 100ms
+                let sleep_duration = Duration::from_millis(500);
+                let check_interval = Duration::from_millis(100);
+                let start_time = std::time::Instant::now();
+                
+                while start_time.elapsed() < sleep_duration {
+                    tokio::time::sleep(check_interval).await;
+                    
+                    // Check if we should stop during rate limiting sleep
+                    {
+                        let is_running = self.is_running.lock().await;
+                        if !*is_running {
+                            info!("🛑 Stop requested during boosted token rate limiting, breaking out early");
+                            return Ok(total_discovered_wallets);
+                        }
+                    }
+                }
             }
         }
 
@@ -596,6 +665,16 @@ impl BirdEyeTrendingOrchestrator {
         let mut total_discovered_wallets = 0;
         
         for (i, token) in new_listing_tokens.iter().enumerate() {
+            // Check if we should stop before processing each new listing token
+            {
+                let is_running = self.is_running.lock().await;
+                if !*is_running {
+                    info!("🛑 Stop requested during new listing token processing, breaking out of loop at token {}/{}", 
+                          i + 1, new_listing_tokens.len());
+                    break;
+                }
+            }
+
             debug!("🎯 Processing new listing token {}/{}: {} ({})", 
                    i + 1, new_listing_tokens.len(), token.symbol, token.address);
             
@@ -643,9 +722,25 @@ impl BirdEyeTrendingOrchestrator {
                 }
             }
             
-            // Rate limiting between tokens
+            // Rate limiting between tokens (interruptible)
             if i < new_listing_tokens.len() - 1 {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Make this sleep interruptible by checking stop flag every 100ms
+                let sleep_duration = Duration::from_millis(500);
+                let check_interval = Duration::from_millis(100);
+                let start_time = std::time::Instant::now();
+                
+                while start_time.elapsed() < sleep_duration {
+                    tokio::time::sleep(check_interval).await;
+                    
+                    // Check if we should stop during rate limiting sleep
+                    {
+                        let is_running = self.is_running.lock().await;
+                        if !*is_running {
+                            info!("🛑 Stop requested during new listing token rate limiting, breaking out early");
+                            return Ok(total_discovered_wallets);
+                        }
+                    }
+                }
             }
         }
         
@@ -783,49 +878,9 @@ impl ProcessedSwap {
         Ok(processed_swaps)
     }
     
-    /// Convert ProcessedSwap to FinancialEvent
-    pub fn to_financial_event(&self, wallet_address: &str) -> FinancialEvent {
-        // Determine if this is a buy or sell based on the token being acquired
-        let sol_mint = "So11111111111111111111111111111111111111112";
-        let event_type = if self.token_out == sol_mint {
-            EventType::Sell // Selling token for SOL
-        } else {
-            EventType::Buy // Buying token with something else
-        };
-        
-        let (token_mint, token_amount, sol_amount) = if event_type == EventType::Buy {
-            (self.token_out.clone(), self.amount_out, -self.sol_equivalent)
-        } else {
-            (self.token_in.clone(), self.amount_in, self.sol_equivalent)
-        };
-        
-        let timestamp = DateTime::from_timestamp(self.timestamp, 0)
-            .unwrap_or_else(Utc::now);
-        
-        let mut extra = HashMap::new();
-        extra.insert("source".to_string(), self.source.clone());
-        extra.insert("tx_hash".to_string(), self.tx_hash.clone());
-        
-        FinancialEvent {
-            id: Uuid::new_v4(),
-            transaction_id: self.tx_hash.clone(),
-            wallet_address: wallet_address.to_string(),
-            event_type,
-            token_mint,
-            token_amount,
-            sol_amount,
-            usd_value: self.price_per_token * token_amount,
-            timestamp,
-            transaction_fee: Decimal::ZERO,
-            metadata: EventMetadata {
-                program_id: None,
-                instruction_index: None,
-                exchange: Some(self.source.clone()),
-                price_per_token: Some(self.price_per_token),
-                extra,
-            },
-        }
-    }
+    // LEGACY METHOD REMOVED: to_financial_event()
+    // This method converted ProcessedSwap to legacy FinancialEvent format
+    // New P&L engine uses GeneralTraderTransaction directly with embedded prices
 }
 
 // Tests removed - will use integration tests with SystemConfig

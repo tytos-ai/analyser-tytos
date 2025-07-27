@@ -7,7 +7,7 @@ use axum::{
 use config_manager::{SystemConfig, ConfigurationError};
 use job_orchestrator::{JobOrchestrator, OrchestratorError};
 use pnl_core::PnLError;
-use dex_client::{BirdEyeClient, HeliusClient, PriceFetchingService};
+use dex_client::BirdEyeClient;
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -31,8 +31,6 @@ pub struct AppState {
     pub service_manager: Arc<ServiceManager>,
     // API v2 dependencies
     pub birdeye_client: Arc<BirdEyeClient>,
-    pub helius_client: Arc<HeliusClient>,
-    pub price_fetching_service: Arc<PriceFetchingService>,
 }
 
 /// Main application error type
@@ -107,11 +105,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize clients for API v2
     let birdeye_client = Arc::new(BirdEyeClient::new(config.birdeye.clone())?);
-    let helius_client = Arc::new(HeliusClient::new(config.helius.clone())?);
-    let price_fetching_service = Arc::new(PriceFetchingService::new(
-        config.price_fetching.clone(),
-        Some(config.birdeye.clone()),
-    )?);
     info!("API v2 clients initialized");
 
     // Create application state
@@ -120,8 +113,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orchestrator,
         service_manager,
         birdeye_client,
-        helius_client,
-        price_fetching_service,
     };
 
     // Build the application router

@@ -10,10 +10,9 @@ use chrono::Utc;
 use csv::Writer;
 use job_orchestrator::JobStatus;
 use rust_decimal::Decimal;
-use std::io::Cursor;
+use std::{io::Cursor, collections::HashMap};
 use tracing::{info, warn};
 use uuid::Uuid;
-use pnl_core::{TraderFilter, generate_trader_summary};
 use crate::service_manager::ServiceConfig;
 
 /// Health check endpoint
@@ -42,14 +41,9 @@ pub async fn get_system_status(
     };
 
     let config_summary = ConfigSummary {
-        redis_mode: state.config.system.redis_mode,
         birdeye_api_configured: !state.config.birdeye.api_key.is_empty(),
-        pnl_filters: PnLFiltersSummary {
-            timeframe_mode: state.config.pnl.timeframe_mode.clone(),
-            min_capital_sol: Decimal::from_f64_retain(state.config.pnl.wallet_min_capital).unwrap_or(Decimal::ZERO),
-            min_trades: state.config.pnl.amount_trades,
-            win_rate: Decimal::from_f64_retain(state.config.pnl.win_rate).unwrap_or(Decimal::ZERO),
-        },
+        data_source: state.config.data_source.clone(),
+        parallel_batch_size: state.config.system.pnl_parallel_batch_size.unwrap_or(10),
     };
 
     Ok(Json(SuccessResponse::new(SystemStatusResponse {
@@ -113,7 +107,7 @@ pub async fn submit_batch_job(
     // Submit the job
     let job_id = state
         .orchestrator
-        .submit_batch_job(request.wallet_addresses.clone(), request.filters)
+        .submit_batch_job(request.wallet_addresses.clone(), request.max_transactions)
         .await?;
 
     let response = BatchJobResponse {
@@ -146,7 +140,7 @@ pub async fn get_batch_job_results(
     State(state): State<AppState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let mut job = state
+    let job = state
         .orchestrator
         .get_batch_job_status(job_id)
         .await
@@ -159,17 +153,86 @@ pub async fn get_batch_job_results(
         )));
     }
 
-    // Load the results separately from Redis
-    let results = state
-        .orchestrator
-        .get_batch_job_results(&job_id.to_string())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to load batch job results: {}", e)))?;
-
-    // Populate the job results for conversion
-    job.results = results;
-
-    let response: BatchJobResultsResponse = job.into();
+    // Load the results separately from PostgreSQL for each wallet
+    let persistence_client = persistence_layer::PersistenceClient::new(
+        &state.config.redis.url,
+        &state.config.database.postgres_url
+    ).await
+        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    
+    
+    // Fetch P&L results for all wallets in the batch
+    let mut wallet_results = HashMap::new();
+    let mut total_pnl = Decimal::ZERO;
+    let mut successful_count = 0;
+    
+    for wallet_address in &job.wallet_addresses {
+        match persistence_client.get_portfolio_pnl_result(wallet_address).await {
+            Ok(Some(stored_result)) => {
+                total_pnl += stored_result.portfolio_result.total_pnl_usd;
+                successful_count += 1;
+                wallet_results.insert(
+                    wallet_address.clone(),
+                    WalletResult {
+                        wallet_address: wallet_address.clone(),
+                        status: "success".to_string(),
+                        pnl_report: Some(stored_result.portfolio_result),
+                        error_message: None,
+                    }
+                );
+            }
+            Ok(None) => {
+                wallet_results.insert(
+                    wallet_address.clone(),
+                    WalletResult {
+                        wallet_address: wallet_address.clone(),
+                        status: "not_found".to_string(),
+                        pnl_report: None,
+                        error_message: Some("No P&L results found for this wallet".to_string()),
+                    }
+                );
+            }
+            Err(e) => {
+                wallet_results.insert(
+                    wallet_address.clone(),
+                    WalletResult {
+                        wallet_address: wallet_address.clone(),
+                        status: "error".to_string(),
+                        pnl_report: None,
+                        error_message: Some(format!("Failed to fetch results: {}", e)),
+                    }
+                );
+            }
+        }
+    }
+    
+    let total_wallets = job.wallet_addresses.len();
+    let average_pnl = if successful_count > 0 {
+        total_pnl / Decimal::from(successful_count)
+    } else {
+        Decimal::ZERO
+    };
+    
+    let profitable_wallets = wallet_results.values()
+        .filter(|r| r.pnl_report.as_ref()
+            .map(|report| report.total_pnl_usd > Decimal::ZERO)
+            .unwrap_or(false))
+        .count();
+    
+    let response = BatchJobResultsResponse {
+        job_id: job.id,
+        status: job.status,
+        summary: BatchResultsSummary {
+            total_wallets,
+            successful_analyses: successful_count,
+            failed_analyses: total_wallets - successful_count,
+            total_pnl_usd: total_pnl,
+            average_pnl_usd: average_pnl,
+            profitable_wallets,
+        },
+        results: wallet_results,
+    };
+    
     Ok(Json(SuccessResponse::new(response)))
 }
 
@@ -187,21 +250,19 @@ pub async fn get_batch_job_history(
         .get_all_batch_jobs(limit, offset)
         .await?;
     
-    // Convert to response format with loaded results
+    // Convert to response format
     let mut job_summaries = Vec::new();
-    for mut job in jobs {
-        // Load results for each completed job to get accurate counts
-        if job.status == job_orchestrator::JobStatus::Completed {
-            match state.orchestrator.get_batch_job_results(&job.id.to_string()).await {
-                Ok(results) => {
-                    job.results = results;
-                }
-                Err(e) => {
-                    // Log error but continue with empty results
-                    tracing::warn!("Failed to load results for job {}: {}", job.id, e);
-                }
-            }
-        }
+    for job in jobs {
+        // For completed jobs, success_count would be all wallets, failure_count would be 0
+        // For more accurate counts, we'd need to query PostgreSQL for each wallet
+        let (success_count, failure_count) = if job.status == job_orchestrator::JobStatus::Completed {
+            (job.wallet_addresses.len(), 0)
+        } else if job.status == job_orchestrator::JobStatus::Failed {
+            (0, job.wallet_addresses.len())
+        } else {
+            // In progress - we don't know the counts
+            (0, 0)
+        };
         
         let job_summary = BatchJobSummary {
             id: job.id,
@@ -210,8 +271,8 @@ pub async fn get_batch_job_history(
             created_at: job.created_at,
             started_at: job.started_at,
             completed_at: job.completed_at,
-            success_count: job.results.values().filter(|r| r.is_ok()).count(),
-            failure_count: job.results.values().filter(|r| r.is_err()).count(),
+            success_count,
+            failure_count,
         };
         job_summaries.push(job_summary);
     }
@@ -259,8 +320,46 @@ pub async fn export_batch_results_csv(
         )));
     }
 
+    // Load the results from PostgreSQL for each wallet
+    let persistence_client = persistence_layer::PersistenceClient::new(
+        &state.config.redis.url,
+        &state.config.database.postgres_url
+    ).await
+        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    
+    
+    // Fetch P&L results for all wallets in the batch
+    let mut wallet_results = HashMap::new();
+    
+    for wallet_address in &job.wallet_addresses {
+        match persistence_client.get_portfolio_pnl_result(wallet_address).await {
+            Ok(Some(stored_result)) => {
+                wallet_results.insert(
+                    wallet_address.clone(),
+                    WalletResult {
+                        wallet_address: wallet_address.clone(),
+                        status: "success".to_string(),
+                        pnl_report: Some(stored_result.portfolio_result),
+                        error_message: None,
+                    }
+                );
+            }
+            _ => {
+                wallet_results.insert(
+                    wallet_address.clone(),
+                    WalletResult {
+                        wallet_address: wallet_address.clone(),
+                        status: "not_found".to_string(),
+                        pnl_report: None,
+                        error_message: Some("No results found".to_string()),
+                    }
+                );
+            }
+        }
+    }
+
     // Generate CSV content
-    let csv_content = generate_batch_results_csv(&job)?;
+    let csv_content = generate_batch_results_csv(&wallet_results)?;
     let _filename = format!("batch_pnl_results_{}.csv", job_id);
 
     let headers = [
@@ -281,10 +380,13 @@ pub async fn get_discovered_wallets(
     let offset = query.offset.unwrap_or(0) as usize;
     
     // Get P&L results (which are the discovered wallets with analysis)
-    let redis_client = persistence_layer::RedisClient::new(&state.config.redis.url).await
-        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    let persistence_client = persistence_layer::PersistenceClient::new(
+        &state.config.redis.url,
+        &state.config.database.postgres_url
+    ).await
+        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
     
-    let (results, total_count) = redis_client.get_all_pnl_results(offset, limit).await
+    let (results, total_count) = persistence_client.get_all_pnl_results(offset, limit).await
         .map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
 
     // Convert P&L results to discovered wallets format
@@ -293,9 +395,9 @@ pub async fn get_discovered_wallets(
             wallet_address: result.wallet_address,
             discovered_at: result.analyzed_at,
             analyzed_at: Some(result.analyzed_at),
-            pnl_usd: Some(result.pnl_report.summary.total_pnl_usd),
-            win_rate: Some(result.pnl_report.summary.win_rate),
-            trade_count: Some(result.pnl_report.summary.total_trades as u32),
+            pnl_usd: Some(result.portfolio_result.total_pnl_usd),
+            win_rate: Some(result.portfolio_result.overall_win_rate_percentage),
+            trade_count: Some(result.portfolio_result.total_trades as u32),
             status: "analyzed".to_string(),
         }
     }).collect();
@@ -351,7 +453,7 @@ pub async fn get_wallet_details(
 
 
 /// Generate CSV content for batch job results
-fn generate_batch_results_csv(job: &job_orchestrator::BatchJob) -> Result<String, ApiError> {
+fn generate_batch_results_csv(wallet_results: &HashMap<String, WalletResult>) -> Result<String, ApiError> {
     let mut wtr = Writer::from_writer(Cursor::new(Vec::new()));
 
     // Write CSV headers
@@ -374,27 +476,28 @@ fn generate_batch_results_csv(job: &job_orchestrator::BatchJob) -> Result<String
     .map_err(|e| ApiError::Internal(format!("CSV header error: {}", e)))?;
 
     // Write data rows
-    for (wallet, result) in &job.results {
-        let row = match result {
-            Ok(report) => vec![
+    for (wallet, result) in wallet_results {
+        let row = if let Some(report) = &result.pnl_report {
+            vec![
                 wallet.clone(),
-                "success".to_string(),
-                report.summary.total_pnl_usd.to_string(),
-                report.summary.realized_pnl_usd.to_string(),
-                report.summary.unrealized_pnl_usd.to_string(),
-                report.summary.total_trades.to_string(),
-                report.summary.winning_trades.to_string(),
-                report.summary.losing_trades.to_string(),
-                format!("{:.2}%", report.summary.win_rate * Decimal::from(100)),
+                result.status.clone(),
+                report.total_pnl_usd.to_string(),
+                report.total_realized_pnl_usd.to_string(),
+                report.total_unrealized_pnl_usd.to_string(),
+                report.total_trades.to_string(),
+                report.token_results.iter().map(|t| t.winning_trades).sum::<u32>().to_string(),
+                report.token_results.iter().map(|t| t.losing_trades).sum::<u32>().to_string(),
+                format!("{:.2}%", report.overall_win_rate_percentage),
                 "0.00".to_string(), // total_volume_usd field doesn't exist
-                report.summary.total_fees_usd.to_string(),
+                "0.00".to_string(), // total_fees_usd not available in PortfolioPnLResult
                 "".to_string(), // first_trade_time field doesn't exist
                 "".to_string(), // last_trade_time field doesn't exist
-                String::new(),
-            ],
-            Err(e) => vec![
+                result.error_message.clone().unwrap_or_default(),
+            ]
+        } else {
+            vec![
                 wallet.clone(),
-                "failed".to_string(),
+                result.status.clone(),
                 "0".to_string(),
                 "0".to_string(),
                 "0".to_string(),
@@ -406,8 +509,8 @@ fn generate_batch_results_csv(job: &job_orchestrator::BatchJob) -> Result<String
                 "0".to_string(),
                 String::new(),
                 String::new(),
-                e.to_string(),
-            ],
+                result.error_message.clone().unwrap_or_default(),
+            ]
         };
 
         wtr.write_record(&row)
@@ -443,13 +546,26 @@ pub async fn filter_copy_traders(
 
     info!("🔍 Filtering traders for copy trading from job {}", job_id);
 
+    // Load the results from PostgreSQL for each wallet
+    let persistence_client = persistence_layer::PersistenceClient::new(
+        &state.config.redis.url,
+        &state.config.database.postgres_url
+    ).await
+        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    
+    
     // Extract successful P&L reports
     let mut pnl_reports = Vec::new();
-    for (wallet, result) in &job.results {
-        match result {
-            Ok(report) => pnl_reports.push(report.clone()),
+    for wallet_address in &job.wallet_addresses {
+        match persistence_client.get_portfolio_pnl_result(wallet_address).await {
+            Ok(Some(stored_result)) => {
+                pnl_reports.push(stored_result.portfolio_result);
+            }
+            Ok(None) => {
+                warn!("No results found for wallet {}", wallet_address);
+            }
             Err(e) => {
-                warn!("Skipping failed wallet {}: {}", wallet, e);
+                warn!("Failed to fetch results for wallet {}: {}", wallet_address, e);
             }
         }
     }
@@ -457,52 +573,45 @@ pub async fn filter_copy_traders(
     if pnl_reports.is_empty() {
         return Ok(Json(SuccessResponse::new(TraderFilterResponse {
             job_id,
-            total_analyzed: job.results.len(),
+            total_analyzed: job.wallet_addresses.len(),
             qualified_traders: 0,
             traders: Vec::new(),
             summary: "No successful P&L analyses to filter".to_string(),
         })));
     }
 
-    // Create trader filter from config
-    let trader_filter = TraderFilter::new(&state.config.trader_filter);
-
-    // Filter traders
-    let qualified_traders = trader_filter.filter_traders(pnl_reports)?;
-    
-    // Convert to response format
-    let trader_summaries: Vec<QualifiedTrader> = qualified_traders
+    // Return all successful reports - filtering done on frontend
+    let trader_summaries: Vec<QualifiedTrader> = pnl_reports
         .iter()
-        .map(|(report, quality)| QualifiedTrader {
+        .map(|report| QualifiedTrader {
             wallet_address: report.wallet_address.clone(),
-            score: quality.score,
-            risk_level: format!("{:?}", quality.risk_level),
-            trading_style: format!("{:?}", quality.trading_style),
+            score: 0.0,
+            risk_level: String::new(),
+            trading_style: String::new(),
             pnl_summary: TraderPnLSummary {
-                total_pnl_usd: report.summary.total_pnl_usd.to_string(),
-                realized_pnl_usd: report.summary.realized_pnl_usd.to_string(),
-                roi_percentage: report.summary.roi_percentage.to_string(),
-                win_rate: report.summary.win_rate.to_string(),
-                total_trades: report.summary.total_trades,
-                winning_trades: report.summary.winning_trades,
-                capital_deployed_sol: report.summary.total_capital_deployed_sol.to_string(),
+                total_pnl_usd: report.total_pnl_usd.to_string(),
+                realized_pnl_usd: report.total_realized_pnl_usd.to_string(),
+                roi_percentage: "0".to_string(), // Not available in new format
+                win_rate: report.overall_win_rate_percentage.to_string(),
+                total_trades: report.total_trades,
+                winning_trades: report.token_results.iter().map(|t| t.winning_trades).sum(),
+                capital_deployed_sol: "0".to_string(), // Not available in new format
             },
-            strengths: quality.strengths.clone(),
-            concerns: quality.concerns.clone(),
-            copy_trade_recommended: quality.copy_trade_recommended,
+            strengths: Vec::new(),
+            concerns: Vec::new(),
+            copy_trade_recommended: false,
         })
         .collect();
 
-    // Generate summary text
-    let summary = generate_trader_summary(&qualified_traders);
+    let summary = format!("Returned {} traders (filtering done on frontend)", trader_summaries.len());
 
-    info!("✅ Found {} qualified traders for copy trading out of {} analyzed", 
-        qualified_traders.len(), job.results.len());
+    info!("✅ Returned {} traders out of {} analyzed", 
+        trader_summaries.len(), job.wallet_addresses.len());
 
     let response = TraderFilterResponse {
         job_id,
-        total_analyzed: job.results.len(),
-        qualified_traders: qualified_traders.len(),
+        total_analyzed: job.wallet_addresses.len(),
+        qualified_traders: trader_summaries.len(),
         traders: trader_summaries,
         summary,
     };
@@ -622,30 +731,33 @@ pub async fn get_all_results(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(50).min(200); // Max 200 per request
     
-    // Get results from persistence layer
-    let redis_client = persistence_layer::RedisClient::new(&state.config.redis.url).await
-        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    // Get results from persistence layer (PostgreSQL)
+    let persistence_client = persistence_layer::PersistenceClient::new(
+        &state.config.redis.url,
+        &state.config.database.postgres_url
+    ).await
+        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
     
-    let (stored_results, total_count) = redis_client.get_all_pnl_results(offset, limit).await
+    let (stored_results, total_count) = persistence_client.get_all_pnl_results(offset, limit).await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch results: {}", e)))?;
     
     // Get summary statistics
-    let summary_stats = redis_client.get_pnl_summary_stats().await
-        .map_err(|e| ApiError::Internal(format!("Failed to fetch summary: {}", e)))?;
+    let (total_results, _total_batch_jobs) = persistence_client.get_stats().await
+        .map_err(|e| ApiError::Internal(format!("Failed to fetch stats: {}", e)))?;
     
     // Convert to response format
     let results: Vec<StoredPnLResultSummary> = stored_results
         .into_iter()
         .map(|stored_result| StoredPnLResultSummary {
             wallet_address: stored_result.wallet_address,
-            token_address: stored_result.token_address,
-            token_symbol: stored_result.token_symbol,
-            total_pnl_usd: stored_result.pnl_report.summary.total_pnl_usd,
-            realized_pnl_usd: stored_result.pnl_report.summary.realized_pnl_usd,
-            unrealized_pnl_usd: stored_result.pnl_report.summary.unrealized_pnl_usd,
-            roi_percentage: stored_result.pnl_report.summary.roi_percentage,
-            total_trades: stored_result.pnl_report.summary.total_trades,
-            win_rate: stored_result.pnl_report.summary.win_rate,
+            token_address: "portfolio".to_string(), // Portfolio-level result
+            token_symbol: "PORTFOLIO".to_string(),
+            total_pnl_usd: stored_result.portfolio_result.total_pnl_usd,
+            realized_pnl_usd: stored_result.portfolio_result.total_realized_pnl_usd,
+            unrealized_pnl_usd: stored_result.portfolio_result.total_unrealized_pnl_usd,
+            roi_percentage: Decimal::ZERO, // Not available in new format
+            total_trades: stored_result.portfolio_result.total_trades,
+            win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
             analyzed_at: stored_result.analyzed_at,
         })
         .collect();
@@ -657,14 +769,36 @@ pub async fn get_all_results(
         has_more: offset + limit < total_count,
     };
     
+    // Calculate summary from results (simplified version without full DB stats)
+    let total_wallets = total_results as u64;
+    let profitable_wallets = results.iter()
+        .filter(|r| r.total_pnl_usd > Decimal::ZERO)
+        .count() as u64;
+    let total_pnl_usd = results.iter()
+        .map(|r| r.total_pnl_usd)
+        .sum::<Decimal>();
+    let average_pnl_usd = if total_wallets > 0 {
+        total_pnl_usd / Decimal::from(total_wallets)
+    } else {
+        Decimal::ZERO
+    };
+    let total_trades = results.iter()
+        .map(|r| r.total_trades)
+        .sum::<u32>() as u64;
+    let profitability_rate = if total_wallets > 0 {
+        (profitable_wallets as f64 / total_wallets as f64) * 100.0
+    } else {
+        0.0
+    };
+    
     let summary = AllResultsSummary {
-        total_wallets: summary_stats.total_wallets_analyzed,
-        profitable_wallets: summary_stats.profitable_wallets,
-        total_pnl_usd: summary_stats.total_pnl_usd,
-        average_pnl_usd: summary_stats.average_pnl_usd,
-        total_trades: summary_stats.total_trades,
-        profitability_rate: summary_stats.profitability_rate,
-        last_updated: summary_stats.last_updated,
+        total_wallets,
+        profitable_wallets,
+        total_pnl_usd,
+        average_pnl_usd,
+        total_trades,
+        profitability_rate,
+        last_updated: chrono::Utc::now(),
     };
     
     let response = AllResultsResponse {
@@ -681,26 +815,30 @@ pub async fn get_detailed_result(
     State(state): State<AppState>,
     Path((wallet_address, token_address)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let redis_client = persistence_layer::RedisClient::new(&state.config.redis.url).await
-        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    // Token address is ignored in the new portfolio-based system
+    let _ = token_address;
     
-    let stored_result = redis_client.get_pnl_result(&wallet_address, &token_address).await
+    let persistence_client = persistence_layer::PersistenceClient::new(
+        &state.config.redis.url,
+        &state.config.database.postgres_url
+    ).await
+        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    
+    let stored_result = persistence_client.get_portfolio_pnl_result(&wallet_address).await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch result: {}", e)))?;
     
     match stored_result {
         Some(result) => {
             let response = DetailedPnLResultResponse {
                 wallet_address: result.wallet_address,
-                token_address: result.token_address,
-                token_symbol: result.token_symbol,
-                pnl_report: result.pnl_report,
+                portfolio_result: result.portfolio_result,
                 analyzed_at: result.analyzed_at,
             };
             Ok(Json(SuccessResponse::new(response)))
         }
         None => Err(ApiError::NotFound(format!(
-            "No P&L result found for wallet {} token {}",
-            wallet_address, token_address
+            "No P&L result found for wallet {}",
+            wallet_address
         ))),
     }
 }

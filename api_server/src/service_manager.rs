@@ -3,6 +3,7 @@ use job_orchestrator::{JobOrchestrator, BirdEyeTrendingOrchestrator};
 use config_manager::SystemConfig;
 use persistence_layer::RedisClient;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{info, error, debug};
@@ -157,7 +158,7 @@ impl ServiceManager {
     }
 
     /// Start wallet discovery service with optional runtime configuration
-    pub async fn start_wallet_discovery_with_config(&self, runtime_filters: Option<pnl_core::PnLFilters>) -> Result<()> {
+    pub async fn start_wallet_discovery_with_config(&self, runtime_config: Option<serde_json::Value>) -> Result<()> {
         let config = self.config.read().await;
         if !config.enable_wallet_discovery {
             return Err(anyhow::anyhow!("Wallet discovery service is disabled in configuration"));
@@ -171,13 +172,9 @@ impl ServiceManager {
         *state = ServiceState::Starting;
         drop(state);
 
-        // Set runtime filters for continuous mode if provided
-        if let Some(filters) = runtime_filters {
-            info!("🔧 Setting runtime configuration for continuous mode");
-            self.orchestrator.set_continuous_mode_filters(Some(filters)).await;
-        } else {
-            // Clear any previous runtime filters
-            self.orchestrator.set_continuous_mode_filters(None).await;
+        // Log runtime configuration if provided
+        if let Some(config_json) = runtime_config {
+            info!("🔧 Starting with runtime configuration: {}", config_json);
         }
 
         info!("🚀 Starting BirdEye wallet discovery service");
@@ -276,19 +273,33 @@ impl ServiceManager {
         *state = ServiceState::Stopping;
         drop(state);
 
-        // Stop the BirdEye orchestrator if running
+        // Stop the BirdEye orchestrator if running and wait for it to stop gracefully
         {
             let guard = self.birdeye_orchestrator.lock().await;
             if let Some(ref orchestrator) = *guard {
+                info!("🛑 Requesting orchestrator to stop gracefully");
                 orchestrator.stop().await;
             }
         }
 
-        // Cancel the background task
+        // Wait for the background task to finish gracefully (with timeout)
         {
             let mut handle_guard = self.wallet_discovery_handle.lock().await;
             if let Some(handle) = handle_guard.take() {
-                handle.abort();
+                info!("🛑 Waiting for discovery task to finish gracefully (10s timeout)");
+                
+                // Give the task 10 seconds to stop gracefully
+                match tokio::time::timeout(Duration::from_secs(10), async {
+                    let _ = handle.await;
+                }).await {
+                    Ok(_) => {
+                        info!("✅ Discovery task stopped gracefully");
+                    }
+                    Err(_) => {
+                        info!("⚠️ Discovery task timeout - this shouldn't happen with the new fix");
+                        // Note: handle is already dropped, so task should be cancelled
+                    }
+                }
             }
         }
 

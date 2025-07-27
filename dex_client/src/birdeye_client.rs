@@ -1,17 +1,13 @@
 use anyhow::Result;
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use config_manager::BirdEyeConfig;
-use pnl_core::{PriceFetcher, Result as PnLResult, GeneralTraderTransaction, TokenTransactionSide};
+use pnl_core::{GeneralTraderTransaction, TokenTransactionSide};
 use reqwest::Client;
-use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, error, warn};
-use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum BirdEyeError {
@@ -1581,84 +1577,9 @@ impl BirdEyeClient {
                net_change.net_ui_amount, net_change.usd_value);
     }
     
-    /// Convert consolidated transactions to FinancialEvents for P&L calculation
-    pub fn consolidated_to_financial_events(
-        &self,
-        consolidated_txs: Vec<ConsolidatedTransaction>,
-    ) -> Result<Vec<pnl_core::FinancialEvent>, BirdEyeError> {
-        use pnl_core::{FinancialEvent, EventType, EventMetadata};
-        use rust_decimal::Decimal;
-        use chrono::{DateTime, Utc};
-        use std::collections::HashMap;
-        
-        let mut financial_events = Vec::new();
-        let consolidated_tx_count = consolidated_txs.len();
-        
-        for consolidated_tx in consolidated_txs {
-            let timestamp = DateTime::from_timestamp(consolidated_tx.block_unix_time, 0)
-                .unwrap_or_else(Utc::now);
-            
-            for (token_address, token_change) in consolidated_tx.net_token_changes {
-                // Skip tokens with zero net change
-                if token_change.net_ui_amount.abs() < f64::EPSILON {
-                    continue;
-                }
-                
-                // Determine event type based on net change
-                let event_type = if token_change.net_ui_amount > 0.0 {
-                    EventType::Buy // Net positive = received tokens
-                } else {
-                    EventType::Sell // Net negative = sent tokens
-                };
-                
-                let token_amount = Decimal::from_f64_retain(token_change.net_ui_amount.abs())
-                    .unwrap_or(Decimal::ZERO);
-                
-                let usd_value = Decimal::from_f64_retain(token_change.usd_value.abs())
-                    .unwrap_or(Decimal::ZERO);
-                
-                let price_per_token = Decimal::from_f64_retain(token_change.price_per_token)
-                    .unwrap_or(Decimal::ZERO);
-                
-                // Create metadata with embedded price
-                let mut metadata = EventMetadata {
-                    program_id: None,
-                    instruction_index: None,
-                    exchange: Some(consolidated_tx.source.clone()),
-                    price_per_token: Some(price_per_token),
-                    extra: HashMap::new(),
-                };
-                
-                // Add main_operation to metadata for FIFO engine
-                metadata.extra.insert("main_operation".to_string(), "swap".to_string());
-                
-                let financial_event = FinancialEvent {
-                    id: Uuid::new_v4(),
-                    transaction_id: consolidated_tx.tx_hash.clone(),
-                    wallet_address: consolidated_tx.wallet_address.clone(),
-                    event_type,
-                    token_mint: token_address,
-                    token_amount,
-                    sol_amount: Decimal::ZERO, // Not used in USD-based calculations
-                    usd_value, // This is the key - embedded USD value
-                    timestamp,
-                    transaction_fee: Decimal::ZERO, // TODO: Extract from data if available
-                    metadata,
-                };
-                
-                debug!("Created FinancialEvent: {:?} {} {} for ${}", 
-                       financial_event.event_type, token_change.symbol, 
-                       token_amount, usd_value);
-                
-                financial_events.push(financial_event);
-            }
-        }
-        
-        info!("Converted {} consolidated transactions into {} financial events", 
-              consolidated_tx_count, financial_events.len());
-        
-        Ok(financial_events)
-    }
+    // LEGACY FUNCTION REMOVED - consolidated_to_financial_events()
+    // This function converted transactions to legacy FinancialEvents
+    // Now we use NewTransactionParser with GeneralTraderTransaction directly
 }
 
 /// Quality criteria for filtering trending tokens
@@ -1744,39 +1665,7 @@ impl Default for NewListingTokenFilter {
 
 
 
-/// Implementation of PriceFetcher trait for BirdEye
-#[async_trait]
-impl PriceFetcher for BirdEyeClient {
-    async fn fetch_prices(
-        &self,
-        token_mints: &[String],
-        _vs_token: Option<&str>,
-    ) -> PnLResult<HashMap<String, Decimal>> {
-        match self.get_current_prices(token_mints).await {
-            Ok(prices) => {
-                let mut result = HashMap::new();
-                for (mint, price) in prices {
-                    result.insert(mint, Decimal::from_f64_retain(price).unwrap_or(Decimal::ZERO));
-                }
-                Ok(result)
-            }
-            Err(e) => {
-                warn!("Failed to fetch prices from BirdEye: {}", e);
-                Err(pnl_core::PnLError::PriceFetch(format!("BirdEye error: {}", e)))
-            }
-        }
-    }
-
-    async fn fetch_historical_price(
-        &self,
-        token_mint: &str,
-        _timestamp: DateTime<Utc>,
-        _vs_token: Option<&str>,
-    ) -> PnLResult<Option<Decimal>> {
-        // Historical prices should use embedded data from transactions
-        // This method should not be called for embedded price systems
-        debug!("Historical price requested for {} - should use embedded transaction prices instead", token_mint);
-        Ok(None)
-    }
-}
+// LEGACY: PriceFetcher implementation removed
+// BirdEyeClient now provides current prices directly via get_current_prices()
+// Historical prices come from embedded transaction data via NewTransactionParser
 
