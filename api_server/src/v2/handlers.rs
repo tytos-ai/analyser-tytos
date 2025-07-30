@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::v2::types::*;
 use crate::{ApiError, AppState};
-use crate::types::SuccessResponse;
+use crate::types::{SuccessResponse, validate_chain};
 
 /// Get comprehensive wallet analysis with full P&L engine data
 pub async fn get_wallet_analysis_v2(
@@ -40,11 +40,20 @@ pub async fn get_wallet_analysis_v2(
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(500);
     
+    // Get chain parameter or use default
+    let chain = params.get("chain")
+        .map(|s| s.as_str())
+        .unwrap_or(&state.config.multichain.default_chain);
+    
+    // Validate chain is enabled
+    validate_chain(chain, &state.config.multichain.enabled_chains)
+        .map_err(|e| ApiError::BadRequest(e))?;
+    
     // Fetch transaction data using BirdEye data source
     let transactions = {
-        debug!("Using BirdEye data source for wallet analysis");
+        debug!("Using BirdEye data source for wallet analysis on chain: {}", chain);
         state.birdeye_client
-            .get_all_trader_transactions_paginated(&wallet_address, None, None, max_transactions)
+            .get_all_trader_transactions_paginated(&wallet_address, chain, None, None, max_transactions)
             .await
             .map_err(|e| ApiError::InternalServerError(format!("BirdEye error: {}", e)))?
     };
@@ -73,7 +82,7 @@ pub async fn get_wallet_analysis_v2(
     // Get current prices for unrealized P&L calculation using BirdEye client directly
     let token_addresses: Vec<String> = events_by_token.keys().cloned().collect();
     let current_prices = if !token_addresses.is_empty() {
-        match state.birdeye_client.get_current_prices(&token_addresses).await {
+        match state.birdeye_client.get_current_prices(&token_addresses, chain).await {
             Ok(birdeye_prices) => {
                 // Convert f64 prices to Decimal
                 let mut decimal_prices = HashMap::new();

@@ -80,6 +80,7 @@ export interface ResultsSummary {
 
 export interface WalletResult {
   wallet_address: string
+  chain: string
   token_address: string
   token_symbol?: string
   total_pnl_usd: number
@@ -103,6 +104,7 @@ export interface BatchJobSummary {
   id: string
   status: 'Pending' | 'Running' | 'Completed' | 'Failed'
   wallet_count: number
+  chain: string
   created_at: string
   started_at?: string
   completed_at?: string
@@ -125,11 +127,13 @@ export interface BatchJobHistoryResponse {
 // Discovered Wallets Types
 export interface DiscoveredWallet {
   wallet_address: string
+  chain: string
   discovered_at: string
   analyzed_at?: string
   pnl_usd?: number
   win_rate?: number
   trade_count?: number
+  avg_hold_time_minutes?: number
   status: string
 }
 
@@ -181,4 +185,95 @@ export interface ActivityItem {
   timestamp: string
   value?: number
   status?: 'success' | 'error' | 'warning'
+}
+
+// Detailed Portfolio Types
+export interface MatchedTrade {
+  buy_event: FinancialEvent
+  sell_event: FinancialEvent
+  matched_quantity: string
+  realized_pnl_usd: string
+  hold_time_seconds: number
+}
+
+export interface UnmatchedSell {
+  sell_event: FinancialEvent
+  unmatched_quantity: string
+  phantom_buy_price: string
+  phantom_pnl_usd: string
+}
+
+export interface RemainingPosition {
+  token_address: string
+  token_symbol: string
+  quantity: string
+  avg_cost_basis_usd: string
+  total_cost_basis_usd: string
+}
+
+export interface FinancialEvent {
+  event_type: 'Buy' | 'Sell'
+  transaction_signature: string
+  timestamp: string
+  token_address: string
+  token_symbol: string
+  token_name: string
+  quantity: string
+  price_per_token_usd: string
+  total_value_usd: string
+  platform?: string
+}
+
+export interface TokenPnLResult {
+  token_address: string
+  token_symbol: string
+  token_name: string
+  matched_trades: MatchedTrade[]
+  remaining_position?: RemainingPosition
+  total_realized_pnl_usd: string
+  total_unrealized_pnl_usd: string
+  total_pnl_usd: string
+  total_invested_usd?: string
+  total_returned_usd?: string
+  total_trades: number
+  winning_trades?: number
+  losing_trades?: number
+  win_rate_percentage: string
+  avg_hold_time_minutes: string
+  min_hold_time_minutes: string
+  max_hold_time_minutes: string
+  current_winning_streak?: number
+  longest_winning_streak?: number
+  current_losing_streak?: number
+  longest_losing_streak?: number
+}
+
+export interface PortfolioPnLResult {
+  wallet_address: string
+  token_results: TokenPnLResult[]
+  total_realized_pnl_usd: string
+  total_unrealized_pnl_usd: string
+  total_pnl_usd: string
+  total_invested_usd?: string
+  total_returned_usd?: string
+  total_trades: number
+  winning_trades?: number
+  losing_trades?: number
+  overall_win_rate_percentage: string
+  avg_hold_time_minutes: string
+  tokens_analyzed: number
+  events_processed: number
+  analysis_timestamp: string
+  current_winning_streak?: number
+  longest_winning_streak?: number
+  current_losing_streak?: number
+  longest_losing_streak?: number
+  profit_percentage?: string
+}
+
+export interface WalletDetailResponse {
+  wallet_address: string
+  chain: string
+  portfolio_result: PortfolioPnLResult
+  analyzed_at: string
 }

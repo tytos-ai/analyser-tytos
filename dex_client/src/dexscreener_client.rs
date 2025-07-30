@@ -95,19 +95,14 @@ impl DexScreenerClient {
         // DexScreener API returns an array of boosted tokens
         let boosted_tokens: Vec<DexScreenerBoostedToken> = response.json().await?;
         
-        // Filter for Solana tokens only
-        let solana_tokens: Vec<DexScreenerBoostedToken> = boosted_tokens
-            .into_iter()
-            .filter(|token| token.chain_id.to_lowercase() == "solana")
-            .collect();
-
-        info!("📊 Retrieved {} latest boosted tokens from DexScreener (Solana only)", solana_tokens.len());
+        // Return all tokens without chain filtering to support multichain
+        info!("📊 Retrieved {} latest boosted tokens from DexScreener (all chains)", boosted_tokens.len());
         
         if self.config.rate_limit_delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.config.rate_limit_delay_ms)).await;
         }
 
-        Ok(solana_tokens)
+        Ok(boosted_tokens)
     }
 
     /// Get the top boosted tokens (most active boosts)
@@ -130,19 +125,14 @@ impl DexScreenerClient {
         // DexScreener API returns an array of boosted tokens
         let boosted_tokens: Vec<DexScreenerBoostedToken> = response.json().await?;
         
-        // Filter for Solana tokens only
-        let solana_tokens: Vec<DexScreenerBoostedToken> = boosted_tokens
-            .into_iter()
-            .filter(|token| token.chain_id.to_lowercase() == "solana")
-            .collect();
-
-        info!("📊 Retrieved {} top boosted tokens from DexScreener (Solana only)", solana_tokens.len());
+        // Return all tokens without chain filtering to support multichain
+        info!("📊 Retrieved {} top boosted tokens from DexScreener (all chains)", boosted_tokens.len());
         
         if self.config.rate_limit_delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.config.rate_limit_delay_ms)).await;
         }
 
-        Ok(solana_tokens)
+        Ok(boosted_tokens)
     }
 
     /// Get both latest and top boosted tokens in a single call

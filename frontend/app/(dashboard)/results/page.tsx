@@ -5,22 +5,29 @@ import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { ChainBadge } from '@/components/ui/chain-badge'
+import { ChainSelectItem, AllChainsSelectItem } from '@/components/ui/chain-select-item'
+import { SortSelectItem, sortOptions } from '@/components/ui/sort-select-item'
+import { TokenTabs } from '@/components/ui/token-tabs'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
 import { api } from '@/lib/api'
-import { formatCurrency, formatPercentage, truncateAddress } from '@/lib/utils'
+import { formatCurrency, formatPercentage, truncateAddress, getPnLColorClass, getWinRateColorClass } from '@/lib/utils'
 import { 
   Download, Filter, Search, Eye, TrendingUp, TrendingDown, 
   ChevronLeft, ChevronRight, ArrowUpDown, ExternalLink,
   BarChart3, Wallet, Target, Calendar, DollarSign, Copy,
-  Activity, Clock, Award, Zap, TrendingUpIcon, AlertTriangle
+  Activity, Clock, Award, Zap, TrendingUpIcon, AlertTriangle,
+  ChevronDown, ChevronUp, Coins, PieChart
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import type { WalletDetailResponse } from '@/types/api'
 
 interface WalletResult {
   wallet_address: string
+  chain: string
   token_address: string
   token_symbol: string
   total_pnl_usd: string
@@ -91,14 +98,19 @@ export default function Results() {
   const [maxWinRate, setMaxWinRate] = useState<string>('')
   const [minHoldTime, setMinHoldTime] = useState<string>('')
   const [maxHoldTime, setMaxHoldTime] = useState<string>('')
+  const [selectedChain, setSelectedChain] = useState<string>('all')
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
-  const pageSize = 25
+  const itemsPerPage = 15
 
-  const { data: resultsData, isLoading } = useQuery<ResultsResponse>({
-    queryKey: ['results'],
+  // Fetch results data
+  const { data: resultsData, isLoading, error } = useQuery<ResultsResponse>({
+    queryKey: ['results', currentPage, sortBy, sortOrder, minPnl, maxPnl, minWinRate, selectedChain],
     queryFn: () => api.results.getResults({
-      limit: 500,
-      offset: 0
+      limit: itemsPerPage,
+      offset: (currentPage - 1) * itemsPerPage,
+      min_pnl: minPnl ? parseFloat(minPnl) : undefined,
+      max_pnl: maxPnl ? parseFloat(maxPnl) : undefined,
+      min_win_rate: minWinRate ? parseFloat(minWinRate) : undefined,
     }),
     refetchInterval: 30000 // Refresh every 30 seconds
   })
@@ -109,177 +121,155 @@ export default function Results() {
     return resultsData.results.find(r => r.wallet_address === showDetailModal)
   }, [showDetailModal, resultsData?.results])
 
-  // Calculate composite score for ranking best traders
-  const calculateCompositeScore = (result: WalletResult, allResults: WalletResult[]) => {
-    const pnl = parseFloat(result.total_pnl_usd)
-    const winRate = parseFloat(result.win_rate)
-    const holdTime = parseFloat(result.avg_hold_time_minutes)
-    const trades = result.total_trades
+  // Fetch detailed portfolio data when modal opens
+  const { data: portfolioDetailData, isLoading: isLoadingPortfolio } = useQuery<WalletDetailResponse>({
+    queryKey: ['walletDetail', showDetailModal, selectedWalletData?.chain],
+    queryFn: () => api.results.getWalletDetail(
+      showDetailModal!, 
+      selectedWalletData?.token_address || 'portfolio',
+      selectedWalletData?.chain
+    ),
+    enabled: !!showDetailModal && !!selectedWalletData,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  })
 
-    // Normalize P&L (0-100 scale)
-    const pnlValues = allResults.map(r => parseFloat(r.total_pnl_usd))
-    const maxPnl = Math.max(...pnlValues)
-    const minPnl = Math.min(...pnlValues)
-    const pnlNormalized = maxPnl > minPnl ? ((pnl - minPnl) / (maxPnl - minPnl)) * 100 : 50
+  // Get wallet data for trade history modal
+  const tradeHistoryWalletData = useMemo(() => {
+    if (!showTradeHistoryModal || !resultsData?.results) return null
+    return resultsData.results.find(r => r.wallet_address === showTradeHistoryModal)
+  }, [showTradeHistoryModal, resultsData?.results])
 
-    // Hold time efficiency (optimal range: 30min - 24hrs)
-    let holdTimeEfficiency = 0
-    if (holdTime >= 30 && holdTime <= 1440) {
-      holdTimeEfficiency = 100 // Optimal range
-    } else if (holdTime < 30) {
-      holdTimeEfficiency = Math.max(0, (holdTime / 30) * 70) // Scalping penalty
-    } else {
-      holdTimeEfficiency = Math.max(0, 100 - ((holdTime - 1440) / 1440) * 50) // Long hold penalty
+  // Apply client-side filtering and sorting
+  const filteredAndSortedResults = useMemo(() => {
+    if (!resultsData?.results) return []
+    
+    let filtered = [...resultsData.results]
+    
+    // Apply chain filter
+    if (selectedChain !== 'all') {
+      filtered = filtered.filter(r => r.chain.toLowerCase() === selectedChain.toLowerCase())
     }
 
-    // Normalize trade volume (0-100 scale)
-    const tradeValues = allResults.map(r => r.total_trades)
-    const maxTrades = Math.max(...tradeValues)
-    const minTrades = Math.min(...tradeValues)
-    const tradesNormalized = maxTrades > minTrades ? ((trades - minTrades) / (maxTrades - minTrades)) * 100 : 50
+    // Apply hold time filters
+    if (minHoldTime) {
+      filtered = filtered.filter(r => parseFloat(r.avg_hold_time_minutes) >= parseFloat(minHoldTime))
+    }
+    if (maxHoldTime) {
+      filtered = filtered.filter(r => parseFloat(r.avg_hold_time_minutes) <= parseFloat(maxHoldTime))
+    }
 
-    // Composite score with weights
-    return (
-      (pnlNormalized * 0.4) +           // 40% P&L
-      (winRate * 0.35) +                // 35% Win Rate
-      (holdTimeEfficiency * 0.15) +     // 15% Hold Time Efficiency
-      (tradesNormalized * 0.1)          // 10% Trade Volume
-    )
-  }
-
-  // Sort and filter results locally for responsiveness
-  const processedResults = useMemo(() => {
-    if (!resultsData?.results) return {
-      results: [],
-      totalFiltered: 0,
-      totalOriginal: 0
+    // Apply win rate filters (convert from percentage)
+    if (maxWinRate) {
+      filtered = filtered.filter(r => parseFloat(r.win_rate) <= parseFloat(maxWinRate) / 100)
     }
     
-    // Apply ALL filters consistently (no conditional logic)
-    let filtered = resultsData.results.filter(result => {
-      const pnl = parseFloat(result.total_pnl_usd)
-      const winRate = parseFloat(result.win_rate)
-      const holdTime = parseFloat(result.avg_hold_time_minutes)
-      
-      // P&L Range Filters
-      if (minPnl && pnl < parseFloat(minPnl)) return false
-      if (maxPnl && pnl > parseFloat(maxPnl)) return false
-      
-      // Win Rate Range Filters (THIS WAS THE MISSING PART!)
-      if (minWinRate && winRate < parseFloat(minWinRate)) return false
-      if (maxWinRate && winRate > parseFloat(maxWinRate)) return false
-      
-      // Hold Time Range Filters
-      if (minHoldTime && holdTime < parseFloat(minHoldTime)) return false
-      if (maxHoldTime && holdTime > parseFloat(maxHoldTime)) return false
-      
-      return true
-    })
-    
-    // Apply local sorting
+    // Sort results
     filtered.sort((a, b) => {
-      let aVal: number, bVal: number
+      let comparison = 0
       
       switch (sortBy) {
-        case 'composite':
-          aVal = calculateCompositeScore(a, filtered)
-          bVal = calculateCompositeScore(b, filtered)
-          break
         case 'pnl':
-          aVal = parseFloat(a.total_pnl_usd)
-          bVal = parseFloat(b.total_pnl_usd)
+          comparison = parseFloat(a.total_pnl_usd) - parseFloat(b.total_pnl_usd)
           break
         case 'win_rate':
-          aVal = parseFloat(a.win_rate)
-          bVal = parseFloat(b.win_rate)
+          comparison = parseFloat(a.win_rate) - parseFloat(b.win_rate)
           break
         case 'trades':
-          aVal = a.total_trades
-          bVal = b.total_trades
+          comparison = a.total_trades - b.total_trades
           break
         case 'analyzed_at':
-          aVal = new Date(a.analyzed_at).getTime()
-          bVal = new Date(b.analyzed_at).getTime()
+          comparison = new Date(a.analyzed_at).getTime() - new Date(b.analyzed_at).getTime()
           break
         case 'hold_time':
-          aVal = parseFloat(a.avg_hold_time_minutes)
-          bVal = parseFloat(b.avg_hold_time_minutes)
+          comparison = parseFloat(a.avg_hold_time_minutes) - parseFloat(b.avg_hold_time_minutes)
           break
-        default:
-          return 0
+        case 'composite':
+          // Composite score: 40% P&L, 30% win rate, 20% trades, 10% hold time
+          const scoreA = (
+            parseFloat(a.total_pnl_usd) * 0.4 +
+            parseFloat(a.win_rate) * 10000 * 0.3 +
+            a.total_trades * 100 * 0.2 +
+            (1 / (parseFloat(a.avg_hold_time_minutes) + 1)) * 1000 * 0.1
+          )
+          const scoreB = (
+            parseFloat(b.total_pnl_usd) * 0.4 +
+            parseFloat(b.win_rate) * 10000 * 0.3 +
+            b.total_trades * 100 * 0.2 +
+            (1 / (parseFloat(b.avg_hold_time_minutes) + 1)) * 1000 * 0.1
+          )
+          comparison = scoreA - scoreB
+          break
       }
       
-      return sortOrder === 'desc' ? bVal - aVal : aVal - bVal
+      return sortOrder === 'desc' ? -comparison : comparison
     })
     
-    // Apply client-side pagination
-    const startIndex = (currentPage - 1) * pageSize
-    const endIndex = startIndex + pageSize
-    const paginatedResults = filtered.slice(startIndex, endIndex)
-    
-    return {
-      results: paginatedResults,
-      totalFiltered: filtered.length,
-      totalOriginal: resultsData?.results.length || 0
-    }
-  }, [resultsData?.results, sortBy, sortOrder, minPnl, maxPnl, minWinRate, maxWinRate, minHoldTime, maxHoldTime, currentPage])
+    return filtered
+  }, [resultsData?.results, sortBy, sortOrder, minHoldTime, maxHoldTime, maxWinRate, selectedChain])
 
-  const totalPages = Math.ceil((processedResults.totalFiltered || 0) / pageSize)
+  const totalPages = Math.ceil((resultsData?.pagination.total_count || 0) / itemsPerPage)
 
-  const getPnLBadge = (pnl: number) => {
-    if (pnl > 0) {
-      return <Badge className="bg-green-success/20 text-green-success border-green-success/30">
-        <TrendingUp className="w-3 h-3 mr-1" />
-        +{formatCurrency(pnl)}
-      </Badge>
-    }
-    return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">
-      <TrendingDown className="w-3 h-3 mr-1" />
-      {formatCurrency(pnl)}
-    </Badge>
-  }
-
-  const getWinRateColor = (winRate: number) => {
-    if (winRate >= 70) return 'text-green-success'
-    if (winRate >= 50) return 'text-orange-warning'
-    return 'text-red-400'
-  }
-
-  const handleSortChange = (field: typeof sortBy) => {
-    if (sortBy === field) {
+  const handleSort = (newSortBy: typeof sortBy) => {
+    if (sortBy === newSortBy) {
       setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')
     } else {
-      setSortBy(field)
+      setSortBy(newSortBy)
       setSortOrder('desc')
     }
   }
 
-  const clearAllFilters = () => {
+  const clearFilters = () => {
     setMinPnl('')
     setMaxPnl('')
     setMinWinRate('')
     setMaxWinRate('')
     setMinHoldTime('')
     setMaxHoldTime('')
-    setCurrentPage(1)
+    setSelectedChain('all')
   }
 
-  const applyFilters = () => {
-    setCurrentPage(1)
-    // Trigger re-fetch with new filters
+  const hasActiveFilters = minPnl || maxPnl || minWinRate || maxWinRate || minHoldTime || maxHoldTime || selectedChain !== 'all'
+
+  const getWinRateColor = (winRate: number) => {
+    return getWinRateColorClass(winRate * 100) // Convert to percentage
+  }
+
+  const getPnLBadge = (pnl: number) => {
+    const colorClass = getPnLColorClass(pnl)
+    return (
+      <div className={`flex items-center space-x-1 ${colorClass}`}>
+        {pnl > 0 ? <TrendingUp className="w-4 h-4" /> : pnl < 0 ? <TrendingDown className="w-4 h-4" /> : null}
+        <span className="font-semibold">{formatCurrency(pnl)}</span>
+      </div>
+    )
   }
 
   const exportToCSV = () => {
-    if (!resultsData?.results) return
+    if (!filteredAndSortedResults.length) return
+
+    const headers = [
+      'Wallet Address',
+      'Chain',
+      'Token',
+      'Total P&L',
+      'Realized P&L',
+      'Unrealized P&L',
+      'ROI %',
+      'Win Rate',
+      'Total Trades',
+      'Avg Hold Time (min)',
+      'Analyzed At'
+    ]
     
-    const headers = ['Wallet Address', 'Token', 'Total P&L (USD)', 'Realized P&L (USD)', 'Unrealized P&L (USD)', 'Win Rate (%)', 'Total Trades', 'Avg Hold Time (mins)', 'Analyzed At']
-    const csvData = resultsData.results.map(result => [
+    const csvData = filteredAndSortedResults.map(result => [
       result.wallet_address,
+      result.chain,
       result.token_symbol,
       result.total_pnl_usd,
       result.realized_pnl_usd,
       result.unrealized_pnl_usd,
-      result.win_rate,
+      result.roi_percentage,
+      (parseFloat(result.win_rate) * 100).toFixed(2) + '%',
       result.total_trades.toString(),
       result.avg_hold_time_minutes,
       result.analyzed_at
@@ -305,6 +295,21 @@ export default function Results() {
       await navigator.clipboard.writeText(text)
     } catch (err) {
       console.error('Failed to copy text: ', err)
+    }
+  }
+
+  const getExplorerUrl = (address: string, chain: string) => {
+    switch (chain.toLowerCase()) {
+      case 'solana':
+        return `https://solscan.io/account/${address}`
+      case 'ethereum':
+        return `https://etherscan.io/address/${address}`
+      case 'bsc':
+        return `https://bscscan.com/address/${address}`
+      case 'base':
+        return `https://basescan.org/address/${address}`
+      default:
+        return `https://solscan.io/account/${address}`
     }
   }
 
@@ -409,11 +414,7 @@ export default function Results() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-400">Total P&L</p>
-                <p className={`text-2xl font-bold ${
-                  parseFloat(resultsData?.summary.total_pnl_usd || '0') >= 0 
-                    ? 'text-green-success' 
-                    : 'text-red-400'
-                }`}>
+                <p className={`text-2xl font-bold ${getPnLColorClass(resultsData?.summary.total_pnl_usd || '0')}`}>
                   {formatCurrency(parseFloat(resultsData?.summary.total_pnl_usd || '0'))}
                 </p>
               </div>
@@ -427,11 +428,7 @@ export default function Results() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-400">Average P&L</p>
-                <p className={`text-2xl font-bold ${
-                  parseFloat(resultsData?.summary.average_pnl_usd || '0') >= 0 
-                    ? 'text-green-success' 
-                    : 'text-red-400'
-                }`}>
+                <p className={`text-2xl font-bold ${getPnLColorClass(resultsData?.summary.average_pnl_usd || '0')}`}>
                   {formatCurrency(parseFloat(resultsData?.summary.average_pnl_usd || '0'))}
                 </p>
               </div>
@@ -465,52 +462,123 @@ export default function Results() {
                 <p className="text-2xl font-bold text-white">
                   {(resultsData?.summary.total_trades || 0).toLocaleString()}
                 </p>
-                <p className="text-xs text-cyan-bright">
-                  Success Rate: {resultsData?.summary.profitability_rate?.toFixed(1) || 0}%
+                <p className="text-xs text-gray-500">
+                  {resultsData?.summary.last_updated 
+                    ? `Updated ${new Date(resultsData.summary.last_updated).toLocaleDateString()}` 
+                    : 'Real-time'}
                 </p>
               </div>
-              <Target className="w-8 h-8 text-purple-400" />
+              <Activity className="w-8 h-8 text-purple-400" />
             </div>
           </CardContent>
         </Card>
       </motion.div>
 
-      {/* Search and Filters */}
+      {/* Filters and Controls */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, delay: 0.2 }}
       >
         <Card className="glass-card border-blue-ice/20">
-          <CardContent className="pt-6 space-y-4">
-            {/* Basic Filters and Sorting */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex space-x-2">
-                <Button 
-                  variant="outline" 
+          <CardContent className="p-4">
+            {/* Main Filters Row */}
+            <div className="flex flex-col lg:flex-row gap-4 items-end">
+              <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Chain Filter */}
+                <div>
+                  <label className="text-sm text-gray-400 mb-1 block">Chain</label>
+                  <Select value={selectedChain} onValueChange={setSelectedChain}>
+                    <SelectTrigger className="bg-navy-deep border-blue-ice/20 text-white">
+                      <SelectValue placeholder="Select chain" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-navy-deep border-blue-ice/20">
+                      <SelectItem value="all">
+                        <AllChainsSelectItem />
+                      </SelectItem>
+                      <SelectItem value="solana">
+                        <ChainSelectItem chain="solana" label="Solana" />
+                      </SelectItem>
+                      <SelectItem value="ethereum">
+                        <ChainSelectItem chain="ethereum" label="Ethereum" />
+                      </SelectItem>
+                      <SelectItem value="bsc">
+                        <ChainSelectItem chain="bsc" label="BSC" />
+                      </SelectItem>
+                      <SelectItem value="base">
+                        <ChainSelectItem chain="base" label="Base" />
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Sort By */}
+                <div>
+                  <label className="text-sm text-gray-400 mb-1 block">Sort By</label>
+                  <Select value={sortBy} onValueChange={(value: any) => setSortBy(value)}>
+                    <SelectTrigger className="bg-navy-deep border-blue-ice/20 text-white">
+                      <SelectValue placeholder="Sort by" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-navy-deep border-blue-ice/20">
+                      {Object.entries(sortOptions).map(([key, { icon, label }]) => (
+                        <SelectItem key={key} value={key}>
+                          <SortSelectItem icon={icon} label={label} />
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Sort Order */}
+                <div>
+                  <label className="text-sm text-gray-400 mb-1 block">Order</label>
+                  <Button
+                    variant="outline"
+                    onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')}
+                    className="w-full bg-navy-deep border-blue-ice/20 text-white hover:bg-blue-ice/20"
+                  >
+                    {sortOrder === 'desc' ? (
+                      <>
+                        <ChevronDown className="w-4 h-4 mr-2" />
+                        Descending
+                      </>
+                    ) : (
+                      <>
+                        <ChevronUp className="w-4 h-4 mr-2" />
+                        Ascending
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
                   size="sm"
                   onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                  className="border-cyan-bright/50 text-cyan-bright hover:bg-cyan-bright/20"
+                  className={`border-blue-ice/20 ${
+                    showAdvancedFilters ? 'bg-blue-ice/20 text-white' : 'text-gray-400 hover:text-white'
+                  }`}
                 >
                   <Filter className="w-4 h-4 mr-2" />
-                  Advanced Filters
+                  Advanced
+                  {hasActiveFilters && (
+                    <Badge variant="destructive" className="ml-2 px-1 py-0 text-xs">
+                      {[minPnl, maxPnl, minWinRate, maxWinRate, minHoldTime, maxHoldTime, selectedChain !== 'all'].filter(Boolean).length}
+                    </Badge>
+                  )}
                 </Button>
-                <Button 
-                  variant="ghost" 
-                  size="sm"
-                  onClick={clearAllFilters}
-                >
-                  Clear All
-                </Button>
-              </div>
-              
-              <div className="flex items-center space-x-2 text-sm text-gray-400">
-                <Calendar className="w-4 h-4" />
-                <span>
-                  Last updated: {resultsData?.summary.last_updated 
-                    ? new Date(resultsData.summary.last_updated).toLocaleString()
-                    : 'Loading...'}
-                </span>
+                {hasActiveFilters && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={clearFilters}
+                    className="border-red-400/20 text-red-400 hover:bg-red-400/20"
+                  >
+                    Clear
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -518,111 +586,78 @@ export default function Results() {
             <AnimatePresence>
               {showAdvancedFilters && (
                 <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
                   transition={{ duration: 0.3 }}
-                  className="border-t border-blue-ice/20 pt-4"
+                  className="overflow-hidden"
                 >
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* P&L Range */}
-                    <div className="space-y-3">
-                      <h4 className="text-sm font-medium text-white flex items-center">
-                        <DollarSign className="w-4 h-4 mr-2 text-green-success" />
-                        P&L Range (USD)
-                      </h4>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Input
-                          type="number"
-                          placeholder="Min P&L"
-                          value={minPnl}
-                          onChange={(e) => setMinPnl(e.target.value)}
-                          className="bg-navy-deep/50 border-blue-ice/20 text-white placeholder-gray-400"
-                        />
-                        <Input
-                          type="number"
-                          placeholder="Max P&L"
-                          value={maxPnl}
-                          onChange={(e) => setMaxPnl(e.target.value)}
-                          className="bg-navy-deep/50 border-blue-ice/20 text-white placeholder-gray-400"
-                        />
-                      </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-blue-ice/20">
+                    <div>
+                      <label className="text-sm text-gray-400 mb-1 block">Min P&L</label>
+                      <Input
+                        type="number"
+                        value={minPnl}
+                        onChange={(e) => setMinPnl(e.target.value)}
+                        placeholder="e.g. 1000"
+                        className="bg-navy-deep border-blue-ice/20 text-white"
+                      />
                     </div>
-
-                    {/* Win Rate Range */}
-                    <div className="space-y-3">
-                      <h4 className="text-sm font-medium text-white flex items-center">
-                        <Target className="w-4 h-4 mr-2 text-orange-warning" />
-                        Win Rate Range (%)
-                      </h4>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Input
-                          type="number"
-                          placeholder="Min %"
-                          value={minWinRate}
-                          onChange={(e) => setMinWinRate(e.target.value)}
-                          min="0"
-                          max="100"
-                          className="bg-navy-deep/50 border-blue-ice/20 text-white placeholder-gray-400"
-                        />
-                        <Input
-                          type="number"
-                          placeholder="Max %"
-                          value={maxWinRate}
-                          onChange={(e) => setMaxWinRate(e.target.value)}
-                          min="0"
-                          max="100"
-                          className="bg-navy-deep/50 border-blue-ice/20 text-white placeholder-gray-400"
-                        />
-                      </div>
+                    <div>
+                      <label className="text-sm text-gray-400 mb-1 block">Max P&L</label>
+                      <Input
+                        type="number"
+                        value={maxPnl}
+                        onChange={(e) => setMaxPnl(e.target.value)}
+                        placeholder="e.g. 50000"
+                        className="bg-navy-deep border-blue-ice/20 text-white"
+                      />
                     </div>
-
-                    {/* Hold Time Range */}
-                    <div className="space-y-3">
-                      <h4 className="text-sm font-medium text-white flex items-center">
-                        <Clock className="w-4 h-4 mr-2 text-purple-400" />
-                        Hold Time Range (minutes)
-                      </h4>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Input
-                          type="number"
-                          placeholder="Min minutes"
-                          value={minHoldTime}
-                          onChange={(e) => setMinHoldTime(e.target.value)}
-                          className="bg-navy-deep/50 border-blue-ice/20 text-white placeholder-gray-400"
-                        />
-                        <Input
-                          type="number"
-                          placeholder="Max minutes"
-                          value={maxHoldTime}
-                          onChange={(e) => setMaxHoldTime(e.target.value)}
-                          className="bg-navy-deep/50 border-blue-ice/20 text-white placeholder-gray-400"
-                        />
-                      </div>
+                    <div>
+                      <label className="text-sm text-gray-400 mb-1 block">Min Win Rate (%)</label>
+                      <Input
+                        type="number"
+                        value={minWinRate}
+                        onChange={(e) => setMinWinRate(e.target.value)}
+                        placeholder="e.g. 60"
+                        min="0"
+                        max="100"
+                        className="bg-navy-deep border-blue-ice/20 text-white"
+                      />
                     </div>
-                  </div>
-
-                  <div className="flex items-center justify-between mt-4 pt-4 border-t border-blue-ice/20">
-                    <div className="text-sm text-gray-400">
-                      Showing {processedResults.results.length} of {processedResults.totalFiltered} filtered wallets
-                      (Total: {processedResults.totalOriginal} wallets)
+                    <div>
+                      <label className="text-sm text-gray-400 mb-1 block">Max Win Rate (%)</label>
+                      <Input
+                        type="number"
+                        value={maxWinRate}
+                        onChange={(e) => setMaxWinRate(e.target.value)}
+                        placeholder="e.g. 90"
+                        min="0"
+                        max="100"
+                        className="bg-navy-deep border-blue-ice/20 text-white"
+                      />
                     </div>
-                    <div className="flex space-x-2">
-                      <Button 
-                        variant="outline" 
-                        size="sm"
-                        onClick={applyFilters}
-                        className="border-green-success/50 text-green-success hover:bg-green-success/20"
-                      >
-                        Apply Filters
-                      </Button>
-                      <Button 
-                        variant="ghost" 
-                        size="sm"
-                        onClick={clearAllFilters}
-                      >
-                        Reset All
-                      </Button>
+                    <div>
+                      <label className="text-sm text-gray-400 mb-1 block">Min Hold Time (min)</label>
+                      <Input
+                        type="number"
+                        value={minHoldTime}
+                        onChange={(e) => setMinHoldTime(e.target.value)}
+                        placeholder="e.g. 5"
+                        min="0"
+                        className="bg-navy-deep border-blue-ice/20 text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-gray-400 mb-1 block">Max Hold Time (min)</label>
+                      <Input
+                        type="number"
+                        value={maxHoldTime}
+                        onChange={(e) => setMaxHoldTime(e.target.value)}
+                        placeholder="e.g. 1440"
+                        min="0"
+                        className="bg-navy-deep border-blue-ice/20 text-white"
+                      />
                     </div>
                   </div>
                 </motion.div>
@@ -639,213 +674,122 @@ export default function Results() {
         transition={{ duration: 0.6, delay: 0.3 }}
       >
         <Card className="glass-card border-blue-ice/20">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-white">Analysis Results</CardTitle>
-                <CardDescription className="text-gray-400">
-                  Showing {processedResults.results.length} of {processedResults.totalFiltered} filtered results
-                  (Total: {processedResults.totalOriginal} wallets)
-                </CardDescription>
-              </div>
-              <div className="flex items-center space-x-3">
-                <span className="text-sm text-gray-400">Sort by:</span>
-                <Select value={sortBy} onValueChange={(value) => setSortBy(value as typeof sortBy)}>
-                  <SelectTrigger className="w-48 bg-navy-deep/50 border-blue-ice/20 text-white">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="composite">🏆 Best Overall Traders</SelectItem>
-                    <SelectItem value="pnl">💰 Highest P&L</SelectItem>
-                    <SelectItem value="win_rate">🎯 Best Win Rate</SelectItem>
-                    <SelectItem value="hold_time">⏱️ Hold Time</SelectItem>
-                    <SelectItem value="trades">📈 Most Active</SelectItem>
-                    <SelectItem value="analyzed_at">📅 Recent Analysis</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')}
-                  className="text-cyan-bright hover:bg-cyan-bright/20"
-                >
-                  {sortOrder === 'desc' ? '↓' : '↑'}
-                </Button>
-              </div>
-            </div>
+          <CardHeader className="pb-4">
+            <CardTitle className="text-lg font-semibold text-white">
+              Analysis Results
+              {filteredAndSortedResults.length > 0 && (
+                <span className="ml-2 text-sm text-gray-400">
+                  ({filteredAndSortedResults.length} wallets)
+                </span>
+              )}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
                 <LoadingSpinner size="lg" />
               </div>
+            ) : error ? (
+              <div className="text-center py-12">
+                <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+                <p className="text-red-400">Failed to load results</p>
+                <p className="text-sm text-gray-500 mt-2">Please try again later</p>
+              </div>
+            ) : filteredAndSortedResults.length === 0 ? (
+              <div className="text-center py-12">
+                <Search className="w-12 h-12 text-gray-500 mx-auto mb-4" />
+                <p className="text-gray-400">No results found</p>
+                <p className="text-sm text-gray-500 mt-2">Try adjusting your filters</p>
+              </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-blue-ice/20">
-                      <th className="text-left py-3 px-4 font-medium text-gray-400">
-                        Wallet Address
-                      </th>
-                      <th className="text-left py-3 px-4 font-medium text-gray-400">
-                        Token
-                      </th>
-                      <th 
-                        className="text-left py-3 px-4 font-medium text-gray-400 cursor-pointer hover:text-white transition-colors"
-                        onClick={() => handleSortChange('pnl')}
-                      >
-                        <div className="flex items-center space-x-1">
-                          <span>Total P&L</span>
-                          <ArrowUpDown className="w-3 h-3" />
-                          {sortBy === 'pnl' && (
-                            <span className="text-cyan-bright">{sortOrder === 'desc' ? '↓' : '↑'}</span>
-                          )}
-                        </div>
-                      </th>
-                      <th className="text-left py-3 px-4 font-medium text-gray-400">
-                        Realized / Unrealized
-                      </th>
-                      <th 
-                        className="text-left py-3 px-4 font-medium text-gray-400 cursor-pointer hover:text-white transition-colors"
-                        onClick={() => handleSortChange('win_rate')}
-                      >
-                        <div className="flex items-center space-x-1">
-                          <span>Win Rate</span>
-                          <ArrowUpDown className="w-3 h-3" />
-                          {sortBy === 'win_rate' && (
-                            <span className="text-cyan-bright">{sortOrder === 'desc' ? '↓' : '↑'}</span>
-                          )}
-                        </div>
-                      </th>
-                      <th 
-                        className="text-left py-3 px-4 font-medium text-gray-400 cursor-pointer hover:text-white transition-colors"
-                        onClick={() => handleSortChange('hold_time')}
-                      >
-                        <div className="flex items-center space-x-1">
-                          <span>Hold Time</span>
-                          <ArrowUpDown className="w-3 h-3" />
-                          {sortBy === 'hold_time' && (
-                            <span className="text-cyan-bright">{sortOrder === 'desc' ? '↓' : '↑'}</span>
-                          )}
-                        </div>
-                      </th>
-                      <th 
-                        className="text-left py-3 px-4 font-medium text-gray-400 cursor-pointer hover:text-white transition-colors"
-                        onClick={() => handleSortChange('analyzed_at')}
-                      >
-                        <div className="flex items-center space-x-1">
-                          <span>Analyzed</span>
-                          <ArrowUpDown className="w-3 h-3" />
-                          {sortBy === 'analyzed_at' && (
-                            <span className="text-cyan-bright">{sortOrder === 'desc' ? '↓' : '↑'}</span>
-                          )}
-                        </div>
-                      </th>
-                      <th className="text-left py-3 px-4 font-medium text-gray-400">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {processedResults.results.map((result, index) => (
-                      <motion.tr 
-                        key={`${result.wallet_address}-${result.token_address}`}
-                        className="border-b border-blue-ice/10 hover:bg-navy-deep/30 transition-colors"
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ duration: 0.3, delay: index * 0.05 }}
-                      >
-                        <td className="py-3 px-4">
-                          <button
-                            onClick={() => setShowTradeHistoryModal(result.wallet_address)}
-                            className="font-mono text-sm text-cyan-bright hover:text-cyan-bright/80 hover:underline cursor-pointer transition-colors"
-                            title="Click to view full P&L report and trade history"
-                          >
-                            {truncateAddress(result.wallet_address)}
-                          </button>
-                        </td>
-                        <td className="py-3 px-4">
-                          <Badge className="bg-blue-steel/20 text-blue-steel border-blue-steel/30">
-                            {result.token_symbol}
-                          </Badge>
-                        </td>
-                        <td className="py-3 px-4">
-                          {getPnLBadge(parseFloat(result.total_pnl_usd))}
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="text-xs space-y-1">
-                            <div className="text-cyan-bright">
-                              R: {formatCurrency(parseFloat(result.realized_pnl_usd))}
+              <div className="space-y-4">
+                {filteredAndSortedResults.map((result, index) => (
+                  <motion.div
+                    key={`${result.wallet_address}-${result.token_address}`}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.3, delay: index * 0.02 }}
+                    className="group"
+                  >
+                    <div className="p-4 bg-navy-deep/50 rounded-lg border border-blue-ice/10 hover:border-blue-ice/30 transition-all duration-200">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-4">
+                          <div className="flex-shrink-0">
+                            <div className={`w-2 h-2 rounded-full ${
+                              parseFloat(result.total_pnl_usd) > 0 ? 'bg-green-success' : 
+                              parseFloat(result.total_pnl_usd) < 0 ? 'bg-red-400' : 'bg-gray-400'
+                            }`} />
+                          </div>
+                          <div>
+                            <div className="flex items-center space-x-3">
+                              <p className="font-mono text-sm text-white">
+                                {truncateAddress(result.wallet_address)}
+                              </p>
+                              <ChainBadge chain={result.chain} />
+                              <Badge variant="outline" className="text-xs">
+                                {result.token_symbol}
+                              </Badge>
                             </div>
-                            <div className="text-orange-warning">
-                              U: {formatCurrency(parseFloat(result.unrealized_pnl_usd))}
+                            <div className="flex items-center space-x-4 mt-2 text-sm text-gray-400">
+                              <span className="flex items-center">
+                                <Target className="w-3 h-3 mr-1" />
+                                {formatPercentage(parseFloat(result.win_rate))} win
+                              </span>
+                              <span className="flex items-center">
+                                <Activity className="w-3 h-3 mr-1" />
+                                {result.total_trades} trades
+                              </span>
+                              <span className="flex items-center">
+                                <Clock className="w-3 h-3 mr-1" />
+                                {Math.round(parseFloat(result.avg_hold_time_minutes))}m avg
+                              </span>
+                              <span className="flex items-center">
+                                <Calendar className="w-3 h-3 mr-1" />
+                                {new Date(result.analyzed_at).toLocaleDateString()}
+                              </span>
                             </div>
                           </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className={`font-medium ${getWinRateColor(parseFloat(result.win_rate))}`}>
-                            {formatPercentage(parseFloat(result.win_rate))}
+                        </div>
+                        
+                        <div className="flex items-center space-x-4">
+                          <div className="text-right">
+                            {getPnLBadge(parseFloat(result.total_pnl_usd))}
+                            <p className="text-xs text-gray-500 mt-1">
+                              ROI: {formatPercentage(parseFloat(result.roi_percentage))}
+                            </p>
                           </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="text-white font-medium">
-                            {Math.round(parseFloat(result.avg_hold_time_minutes))}m
-                          </div>
-                          <div className="text-xs text-gray-400">
-                            {Math.round(parseFloat(result.avg_hold_time_minutes)) < 60 
-                              ? "Scalper" 
-                              : Math.round(parseFloat(result.avg_hold_time_minutes)) < 1440 
-                              ? "Day Trader" 
-                              : "Swing Trader"}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="text-sm text-gray-400">
-                            {new Date(result.analyzed_at).toLocaleDateString()}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex items-center space-x-1">
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
+                          
+                          <div className="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               onClick={() => setShowDetailModal(result.wallet_address)}
                               className="text-cyan-bright hover:bg-cyan-bright/20"
-                              title="View P&L Analysis"
                             >
                               <Eye className="w-4 h-4" />
                             </Button>
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              onClick={() => setShowTradeHistoryModal(result.wallet_address)}
-                              className="text-green-success hover:bg-green-success/20"
-                              title="View Trade History"
-                            >
-                              <Activity className="w-4 h-4" />
-                            </Button>
-                            <Button 
-                              variant="ghost" 
+                            <Button
+                              variant="ghost"
                               size="sm"
-                              onClick={() => window.open(`https://solscan.io/account/${result.wallet_address}`, '_blank')}
-                              className="text-blue-steel hover:bg-blue-steel/20"
-                              title="View on Solscan"
+                              onClick={() => window.open(getExplorerUrl(result.wallet_address, result.chain), '_blank')}
+                              className="text-blue-soft hover:bg-blue-soft/20"
                             >
-                              <ExternalLink className="w-3 h-3" />
+                              <ExternalLink className="w-4 h-4" />
                             </Button>
-                            <Button 
-                              variant="ghost" 
+                            <Button
+                              variant="ghost"
                               size="sm"
-                              onClick={() => window.open(`https://gmgn.ai/sol/address/${result.wallet_address}`, '_blank')}
-                              className="text-green-success hover:bg-green-success/20"
-                              title="View on GMGN"
+                              onClick={() => copyToClipboard(result.wallet_address)}
+                              className="text-gray-400 hover:bg-gray-400/20"
                             >
-                              <ExternalLink className="w-3 h-3" />
+                              <Copy className="w-4 h-4" />
                             </Button>
                           </div>
-                        </td>
-                      </motion.tr>
-                    ))}
-                  </tbody>
-                </table>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
               </div>
             )}
           </CardContent>
@@ -854,7 +798,7 @@ export default function Results() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <motion.div
+        <motion.div 
           className="flex items-center justify-center space-x-2"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -872,33 +816,32 @@ export default function Results() {
           
           <div className="flex items-center space-x-1">
             {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-              const pageNum = i + 1
+              let pageNum
+              if (totalPages <= 5) {
+                pageNum = i + 1
+              } else if (currentPage <= 3) {
+                pageNum = i + 1
+              } else if (currentPage >= totalPages - 2) {
+                pageNum = totalPages - 4 + i
+              } else {
+                pageNum = currentPage - 2 + i
+              }
+              
               return (
                 <Button
                   key={pageNum}
-                  variant={currentPage === pageNum ? "neon" : "ghost"}
+                  variant={currentPage === pageNum ? "default" : "outline"}
                   size="sm"
                   onClick={() => setCurrentPage(pageNum)}
-                  className="w-8 h-8 p-0"
+                  className={currentPage === pageNum 
+                    ? "bg-cyan-bright/20 border-cyan-bright text-cyan-bright" 
+                    : "border-blue-ice/20 text-gray-400 hover:text-white hover:bg-blue-ice/20"
+                  }
                 >
                   {pageNum}
                 </Button>
               )
             })}
-            
-            {totalPages > 5 && (
-              <>
-                <span className="text-gray-400">...</span>
-                <Button
-                  variant={currentPage === totalPages ? "neon" : "ghost"}
-                  size="sm"
-                  onClick={() => setCurrentPage(totalPages)}
-                  className="w-8 h-8 p-0"
-                >
-                  {totalPages}
-                </Button>
-              </>
-            )}
           </div>
           
           <Button
@@ -917,7 +860,7 @@ export default function Results() {
       <AnimatePresence>
         {showDetailModal && selectedWalletData && (
           <Dialog open={!!showDetailModal} onOpenChange={() => setShowDetailModal(null)}>
-            <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-navy-deep border-blue-ice/20">
+            <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle className="text-xl font-bold text-white flex items-center space-x-2">
                   <Wallet className="w-6 h-6 text-cyan-bright" />
@@ -929,370 +872,322 @@ export default function Results() {
               </DialogHeader>
 
               <div className="space-y-6">
-                {/* Wallet Overview Section */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.4 }}
-                  className="grid grid-cols-1 md:grid-cols-2 gap-4"
-                >
-                  <Card className="glass-card border-blue-ice/20">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm font-medium text-gray-400 flex items-center">
-                        <Activity className="w-4 h-4 mr-2" />
-                        Wallet Information
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-gray-400">Address:</span>
-                        <div className="flex items-center space-x-2">
-                          <span className="font-mono text-sm text-white">
-                            {truncateAddress(selectedWalletData.wallet_address)}
-                          </span>
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
-                            onClick={() => copyToClipboard(selectedWalletData.wallet_address)}
-                            className="h-6 w-6 p-0 text-gray-400 hover:text-white"
-                          >
-                            <Copy className="w-3 h-3" />
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-gray-400">Token:</span>
-                        <Badge className="bg-blue-steel/20 text-blue-steel border-blue-steel/30">
-                          {selectedWalletData.token_symbol}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-gray-400">Analyzed:</span>
-                        <span className="text-sm text-white">
-                          {new Date(selectedWalletData.analyzed_at).toLocaleString()}
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
+                {isLoadingPortfolio ? (
+                  <div className="flex items-center justify-center py-12">
+                    <LoadingSpinner size="lg" />
+                  </div>
+                ) : portfolioDetailData ? (
+                  <>
+                    {/* Portfolio Overview Section */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.4 }}
+                    >
+                      <Card className="glass-card border-blue-ice/20">
+                        <CardHeader>
+                          <div className="flex items-center justify-between">
+                            <CardTitle className="text-lg font-bold text-white flex items-center gap-2">
+                              <PieChart className="w-5 h-5 text-cyan-bright" />
+                              Portfolio Overview
+                            </CardTitle>
+                            <div className="flex items-center gap-2">
+                              <ChainBadge chain={portfolioDetailData.chain} />
+                              <Badge variant="outline" className="font-normal">
+                                {portfolioDetailData.portfolio_result.tokens_analyzed} tokens
+                              </Badge>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Left side - Wallet info and P&L */}
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between p-3 bg-navy-deep/50 rounded-lg">
+                                <span className="text-sm text-gray-400">Wallet Address</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-sm text-white">
+                                    {truncateAddress(portfolioDetailData.wallet_address)}
+                                  </span>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => copyToClipboard(portfolioDetailData.wallet_address)}
+                                    className="h-6 w-6 p-0"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => window.open(getExplorerUrl(portfolioDetailData.wallet_address, portfolioDetailData.chain), '_blank')}
+                                    className="h-6 w-6 p-0"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </Button>
+                                </div>
+                              </div>
 
-                  <Card className="glass-card border-blue-ice/20">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm font-medium text-gray-400 flex items-center">
-                        <TrendingUpIcon className="w-4 h-4 mr-2" />
-                        Performance Summary
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-gray-400">Total P&L:</span>
-                        {getPnLBadge(parseFloat(selectedWalletData.total_pnl_usd))}
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-gray-400">Win Rate:</span>
-                        <span className={`text-sm font-medium ${getWinRateColor(parseFloat(selectedWalletData.win_rate))}`}>
-                          {formatPercentage(parseFloat(selectedWalletData.win_rate))}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-gray-400">Total Trades:</span>
-                        <span className="text-sm font-medium text-white">
-                          {selectedWalletData.total_trades}
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <DollarSign className="w-4 h-4 text-green-success" />
+                                    <span className="text-sm text-gray-400">Total P&L</span>
+                                  </div>
+                                  <span className={`text-xl font-bold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.total_pnl_usd)
+                                  }`}>
+                                    {formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_pnl_usd))}
+                                  </span>
+                                </div>
 
-                <div className="w-full h-px bg-blue-ice/20 my-4" />
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Zap className="w-4 h-4 text-cyan-bright" />
+                                    <span className="text-sm text-gray-400">Realized</span>
+                                  </div>
+                                  <span className={`font-semibold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.total_realized_pnl_usd)
+                                  }`}>
+                                    {formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_realized_pnl_usd))}
+                                  </span>
+                                </div>
 
-                {/* P&L Breakdown Section */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.4, delay: 0.1 }}
-                >
-                  <Card className="glass-card border-blue-ice/20">
-                    <CardHeader>
-                      <CardTitle className="text-lg font-bold text-white flex items-center">
-                        <BarChart3 className="w-5 h-5 mr-2 text-cyan-bright" />
-                        Profit & Loss Breakdown
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <DollarSign className="w-4 h-4 text-green-success" />
-                            <span className="text-sm font-medium text-gray-400">Total P&L</span>
-                          </div>
-                          <div className={`text-2xl font-bold ${
-                            parseFloat(selectedWalletData.total_pnl_usd) >= 0 
-                              ? 'text-green-success' 
-                              : 'text-red-400'
-                          }`}>
-                            {formatCurrency(parseFloat(selectedWalletData.total_pnl_usd))}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            Overall portfolio performance
-                          </div>
-                        </div>
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Clock className="w-4 h-4 text-orange-warning" />
+                                    <span className="text-sm text-gray-400">Unrealized</span>
+                                  </div>
+                                  <span className={`font-semibold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.total_unrealized_pnl_usd)
+                                  }`}>
+                                    {formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_unrealized_pnl_usd))}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
 
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <Zap className="w-4 h-4 text-cyan-bright" />
-                            <span className="text-sm font-medium text-gray-400">Realized P&L</span>
-                          </div>
-                          <div className={`text-2xl font-bold ${
-                            parseFloat(selectedWalletData.realized_pnl_usd) >= 0 
-                              ? 'text-cyan-bright' 
-                              : 'text-red-400'
-                          }`}>
-                            {formatCurrency(parseFloat(selectedWalletData.realized_pnl_usd))}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            Profits/losses from closed positions
-                          </div>
-                        </div>
+                            {/* Right side - Trading metrics */}
+                            <div className="space-y-4">
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Target className="w-4 h-4 text-purple-400" />
+                                    <span className="text-sm text-gray-400">Win Rate</span>
+                                  </div>
+                                  <p className={`text-lg font-bold ${
+                                    getWinRateColorClass(portfolioDetailData.portfolio_result.overall_win_rate_percentage)
+                                  }`}>
+                                    {formatPercentage(parseFloat(portfolioDetailData.portfolio_result.overall_win_rate_percentage))}
+                                  </p>
+                                </div>
 
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <Clock className="w-4 h-4 text-orange-warning" />
-                            <span className="text-sm font-medium text-gray-400">Unrealized P&L</span>
-                          </div>
-                          <div className={`text-2xl font-bold ${
-                            parseFloat(selectedWalletData.unrealized_pnl_usd) >= 0 
-                              ? 'text-orange-warning' 
-                              : 'text-red-400'
-                          }`}>
-                            {formatCurrency(parseFloat(selectedWalletData.unrealized_pnl_usd))}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            Current open position value
-                          </div>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Activity className="w-4 h-4 text-blue-steel" />
+                                    <span className="text-sm text-gray-400">Total Trades</span>
+                                  </div>
+                                  <p className="text-lg font-bold text-white">
+                                    {portfolioDetailData.portfolio_result.total_trades}
+                                  </p>
+                                  <div className="flex gap-2 text-xs mt-1">
+                                    <span className="text-green-success">
+                                      W: {Math.round(portfolioDetailData.portfolio_result.total_trades * parseFloat(portfolioDetailData.portfolio_result.overall_win_rate_percentage) / 100)}
+                                    </span>
+                                    <span className="text-red-400">
+                                      L: {portfolioDetailData.portfolio_result.total_trades - Math.round(portfolioDetailData.portfolio_result.total_trades * parseFloat(portfolioDetailData.portfolio_result.overall_win_rate_percentage) / 100)}
+                                    </span>
+                                  </div>
+                                </div>
 
-                {/* Trading Metrics Section */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.4, delay: 0.2 }}
-                  className="grid grid-cols-1 md:grid-cols-2 gap-4"
-                >
-                  <Card className="glass-card border-blue-ice/20">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm font-medium text-gray-400 flex items-center">
-                        <Target className="w-4 h-4 mr-2" />
-                        Trading Performance
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-400">Win Rate</span>
-                          <span className={`font-bold ${getWinRateColor(parseFloat(selectedWalletData.win_rate))}`}>
-                            {formatPercentage(parseFloat(selectedWalletData.win_rate))}
-                          </span>
-                        </div>
-                        <div className="w-full bg-navy-deep rounded-full h-2">
-                          <div 
-                            className={`h-2 rounded-full transition-all duration-300 ${
-                              parseFloat(selectedWalletData.win_rate) >= 70 
-                                ? 'bg-green-success' 
-                                : parseFloat(selectedWalletData.win_rate) >= 50 
-                                ? 'bg-orange-warning' 
-                                : 'bg-red-400'
-                            }`}
-                            style={{ width: `${Math.min(parseFloat(selectedWalletData.win_rate), 100)}%` }}
-                          />
-                        </div>
-                      </div>
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Clock className="w-4 h-4 text-cyan-bright" />
+                                    <span className="text-sm text-gray-400">Avg Hold</span>
+                                  </div>
+                                  <p className="text-lg font-bold text-white">
+                                    {Math.round(parseFloat(portfolioDetailData.portfolio_result.avg_hold_time_minutes))}m
+                                  </p>
+                                </div>
 
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-400">Total Trades</span>
-                        <div className="flex items-center space-x-2">
-                          <Activity className="w-4 h-4 text-blue-steel" />
-                          <span className="font-bold text-white">{selectedWalletData.total_trades}</span>
-                        </div>
-                      </div>
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Coins className="w-4 h-4 text-orange-warning" />
+                                    <span className="text-sm text-gray-400">Tokens</span>
+                                  </div>
+                                  <p className="text-lg font-bold text-white">
+                                    {portfolioDetailData.portfolio_result.tokens_analyzed}
+                                  </p>
+                                </div>
+                              </div>
 
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-400">Avg Hold Time</span>
-                        <div className="flex items-center space-x-2">
-                          <Clock className="w-4 h-4 text-purple-400" />
-                          <span className="font-bold text-white">
-                            {Math.round(parseFloat(selectedWalletData.avg_hold_time_minutes))}m
-                          </span>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Total Invested</p>
+                                  <p className="text-sm font-semibold text-white">
+                                    {portfolioDetailData.portfolio_result.total_invested_usd && !isNaN(parseFloat(portfolioDetailData.portfolio_result.total_invested_usd))
+                                      ? formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_invested_usd))
+                                      : 'N/A'
+                                    }
+                                  </p>
+                                </div>
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Total Returned</p>
+                                  <p className="text-sm font-semibold text-white">
+                                    {portfolioDetailData.portfolio_result.total_returned_usd && !isNaN(parseFloat(portfolioDetailData.portfolio_result.total_returned_usd))
+                                      ? formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_returned_usd))
+                                      : 'N/A'
+                                    }
+                                  </p>
+                                </div>
+                              </div>
 
-                  <Card className="glass-card border-blue-ice/20">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm font-medium text-gray-400 flex items-center">
-                        <Award className="w-4 h-4 mr-2" />
-                        Trading Style Analysis
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-gray-400">Style:</span>
-                          <Badge className={
-                            Math.round(parseFloat(selectedWalletData.avg_hold_time_minutes)) < 60
-                              ? "bg-red-500/20 text-red-400 border-red-500/30"
-                              : Math.round(parseFloat(selectedWalletData.avg_hold_time_minutes)) < 1440
-                              ? "bg-orange-warning/20 text-orange-warning border-orange-warning/30"
-                              : "bg-green-success/20 text-green-success border-green-success/30"
-                          }>
-                            {Math.round(parseFloat(selectedWalletData.avg_hold_time_minutes)) < 60 
-                              ? "Scalper" 
-                              : Math.round(parseFloat(selectedWalletData.avg_hold_time_minutes)) < 1440 
-                              ? "Day Trader" 
-                              : "Swing Trader"}
-                          </Badge>
-                        </div>
+                              <div className="grid grid-cols-2 gap-3 mt-3">
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Profit %</p>
+                                  <p className={`text-sm font-semibold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.profit_percentage || '0')
+                                  }`}>
+                                    {portfolioDetailData.portfolio_result.profit_percentage 
+                                      ? `${parseFloat(portfolioDetailData.portfolio_result.profit_percentage) >= 0 ? '+' : ''}${portfolioDetailData.portfolio_result.profit_percentage}%`
+                                      : 'N/A'
+                                    }
+                                  </p>
+                                </div>
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Streaks</p>
+                                  <div className="text-xs">
+                                    <span className="text-green-success">W: {portfolioDetailData.portfolio_result.current_winning_streak ?? 0}/{portfolioDetailData.portfolio_result.longest_winning_streak ?? 0}</span>
+                                    <span className="text-gray-400"> | </span>
+                                    <span className="text-red-400">L: {portfolioDetailData.portfolio_result.current_losing_streak ?? 0}/{portfolioDetailData.portfolio_result.longest_losing_streak ?? 0}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </motion.div>
 
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-gray-400">Performance:</span>
-                          <Badge className={
-                            parseFloat(selectedWalletData.win_rate) >= 70 && parseFloat(selectedWalletData.total_pnl_usd) > 0
-                              ? "bg-green-success/20 text-green-success border-green-success/30"
-                              : parseFloat(selectedWalletData.win_rate) >= 50 || parseFloat(selectedWalletData.total_pnl_usd) > 0
-                              ? "bg-orange-warning/20 text-orange-warning border-orange-warning/30"
-                              : "bg-red-500/20 text-red-400 border-red-500/30"
-                          }>
-                            {parseFloat(selectedWalletData.win_rate) >= 70 && parseFloat(selectedWalletData.total_pnl_usd) > 0
-                              ? "Elite Trader"
-                              : parseFloat(selectedWalletData.win_rate) >= 50 || parseFloat(selectedWalletData.total_pnl_usd) > 0
-                              ? "Profitable"
-                              : "Needs Improvement"}
-                          </Badge>
-                        </div>
+                    <div className="w-full h-px bg-blue-ice/20" />
 
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-gray-400">Activity:</span>
-                          <Badge className={
-                            selectedWalletData.total_trades >= 100
-                              ? "bg-cyan-bright/20 text-cyan-bright border-cyan-bright/30"
-                              : selectedWalletData.total_trades >= 20
-                              ? "bg-blue-steel/20 text-blue-steel border-blue-steel/30"
-                              : "bg-gray-500/20 text-gray-400 border-gray-500/30"
-                          }>
-                            {selectedWalletData.total_trades >= 100 
-                              ? "High Volume" 
-                              : selectedWalletData.total_trades >= 20 
-                              ? "Active" 
-                              : "Casual"}
-                          </Badge>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
+                    {/* Token Tabs Section */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.4, delay: 0.1 }}
+                    >
+                      <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                        <Coins className="w-5 h-5 text-cyan-bright" />
+                        Token-by-Token Breakdown
+                      </h3>
+                      <TokenTabs tokenResults={portfolioDetailData.portfolio_result.token_results} />
+                    </motion.div>
+                  </>
+                ) : (
+                  /* Fallback to original view if no portfolio data */
+                  <>
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.4 }}
+                      className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+                    >
+                      <Card className="glass-card border-blue-ice/20">
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm font-medium text-gray-400 flex items-center">
+                            <Activity className="w-4 h-4 mr-2" />
+                            Wallet Information
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-400">Address:</span>
+                            <div className="flex items-center space-x-2">
+                              <span className="font-mono text-sm text-white">
+                                {truncateAddress(selectedWalletData.wallet_address)}
+                              </span>
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => copyToClipboard(selectedWalletData.wallet_address)}
+                                className="h-6 w-6 p-0 text-gray-400 hover:text-white"
+                              >
+                                <Copy className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-400">Chain:</span>
+                            <ChainBadge chain={selectedWalletData.chain} />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-400">Token:</span>
+                            <Badge className="bg-blue-steel/20 text-blue-steel border-blue-steel/30">
+                              {selectedWalletData.token_symbol}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-400">Analyzed:</span>
+                            <span className="text-sm text-white">
+                              {new Date(selectedWalletData.analyzed_at).toLocaleString()}
+                            </span>
+                          </div>
+                        </CardContent>
+                      </Card>
 
-                {/* ROI and Risk Assessment */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.4, delay: 0.3 }}
-                >
-                  <Card className="glass-card border-blue-ice/20">
-                    <CardHeader>
-                      <CardTitle className="text-lg font-bold text-white flex items-center">
-                        <AlertTriangle className="w-5 h-5 mr-2 text-yellow-500" />
-                        ROI & Risk Assessment
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <TrendingUp className="w-4 h-4 text-green-success" />
-                            <span className="text-sm font-medium text-gray-400">ROI Percentage</span>
+                      <Card className="glass-card border-blue-ice/20">
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-sm font-medium text-gray-400 flex items-center">
+                            <TrendingUpIcon className="w-4 h-4 mr-2" />
+                            Performance Summary
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-400">Total P&L:</span>
+                            {getPnLBadge(parseFloat(selectedWalletData.total_pnl_usd))}
                           </div>
-                          <div className={`text-2xl font-bold ${
-                            parseFloat(selectedWalletData.roi_percentage) >= 0 
-                              ? 'text-green-success' 
-                              : 'text-red-400'
-                          }`}>
-                            {formatPercentage(parseFloat(selectedWalletData.roi_percentage))}
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-400">Win Rate:</span>
+                            <span className={`text-sm font-medium ${getWinRateColor(parseFloat(selectedWalletData.win_rate))}`}>
+                              {formatPercentage(parseFloat(selectedWalletData.win_rate))}
+                            </span>
                           </div>
-                          <div className="text-xs text-gray-500">
-                            Return on investment ratio
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-gray-400">Total Trades:</span>
+                            <span className="text-sm font-medium text-white">
+                              {selectedWalletData.total_trades}
+                            </span>
                           </div>
-                        </div>
-
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <BarChart3 className="w-4 h-4 text-blue-steel" />
-                            <span className="text-sm font-medium text-gray-400">Avg P&L per Trade</span>
-                          </div>
-                          <div className={`text-2xl font-bold ${
-                            parseFloat(selectedWalletData.total_pnl_usd) / selectedWalletData.total_trades >= 0 
-                              ? 'text-blue-steel' 
-                              : 'text-red-400'
-                          }`}>
-                            {formatCurrency(parseFloat(selectedWalletData.total_pnl_usd) / selectedWalletData.total_trades)}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            Average profit per trade
-                          </div>
-                        </div>
-
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <Target className="w-4 h-4 text-purple-400" />
-                            <span className="text-sm font-medium text-gray-400">Copy Trading Score</span>
-                          </div>
-                          <div className={`text-2xl font-bold ${
-                            parseFloat(selectedWalletData.win_rate) >= 70 && parseFloat(selectedWalletData.total_pnl_usd) > 5000
-                              ? 'text-green-success'
-                              : parseFloat(selectedWalletData.win_rate) >= 50 && parseFloat(selectedWalletData.total_pnl_usd) > 1000
-                              ? 'text-orange-warning'
-                              : 'text-red-400'
-                          }`}>
-                            {Math.round(
-                              (parseFloat(selectedWalletData.win_rate) / 100) * 50 +
-                              Math.min(Math.log10(Math.abs(parseFloat(selectedWalletData.total_pnl_usd)) + 1) * 10, 30) +
-                              Math.min(selectedWalletData.total_trades / 10, 20)
-                            )}/100
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            Algorithmic copy-worthiness rating
-                          </div>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
+                        </CardContent>
+                      </Card>
+                    </motion.div>
+                  </>   
+                )}
               </div>
 
               <DialogFooter className="flex items-center space-x-2">
                 <Button 
                   variant="outline"
-                  onClick={() => window.open(`https://solscan.io/account/${selectedWalletData.wallet_address}`, '_blank')}
+                  onClick={() => window.open(getExplorerUrl(selectedWalletData.wallet_address, selectedWalletData.chain), '_blank')}
                   className="border-blue-steel/50 text-blue-steel hover:bg-blue-steel/20"
                 >
                   <ExternalLink className="w-4 h-4 mr-2" />
-                  View on Solscan
+                  View on Explorer
                 </Button>
                 <Button 
                   variant="outline"
                   onClick={() => window.open(`https://gmgn.ai/sol/address/${selectedWalletData.wallet_address}`, '_blank')}
                   className="border-green-success/50 text-green-success hover:bg-green-success/20"
                 >
-                  <ExternalLink className="w-4 h-4 mr-2" />
+                  <BarChart3 className="w-4 h-4 mr-2" />
                   View on GMGN
                 </Button>
                 <Button 
                   variant="outline"
                   onClick={() => copyToClipboard(selectedWalletData.wallet_address)}
-                  className="border-cyan-bright/50 text-cyan-bright hover:bg-cyan-bright/20"
+                  className="border-orange-warning/50 text-orange-warning hover:bg-orange-warning/20"
                 >
                   <Copy className="w-4 h-4 mr-2" />
                   Copy Address
@@ -1313,84 +1208,87 @@ export default function Results() {
       <AnimatePresence>
         {showTradeHistoryModal && tradeHistoryData && (
           <Dialog open={!!showTradeHistoryModal} onOpenChange={() => setShowTradeHistoryModal(null)}>
-            <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto bg-navy-deep border-blue-ice/20">
+            <DialogContent className="max-w-7xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle className="text-xl font-bold text-white flex items-center space-x-2">
-                  <Activity className="w-6 h-6 text-green-success" />
-                  <span>Complete Trading History & Holdings</span>
+                  <BarChart3 className="w-6 h-6 text-orange-warning" />
+                  <span>Trade History</span>
                 </DialogTitle>
                 <DialogDescription className="text-gray-400">
-                  Full P&L report with all trades and current positions for {truncateAddress(showTradeHistoryModal)}
+                  Detailed trading activity for {truncateAddress(showTradeHistoryModal)}
                 </DialogDescription>
               </DialogHeader>
 
               <div className="space-y-6">
-                {/* Current Holdings Section */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.4 }}
-                >
-                  <Card className="glass-card border-blue-ice/20">
-                    <CardHeader>
-                      <CardTitle className="text-lg font-bold text-white flex items-center">
-                        <Wallet className="w-5 h-5 mr-2 text-cyan-bright" />
-                        Current Holdings
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="overflow-x-auto">
-                        <table className="w-full">
-                          <thead>
-                            <tr className="border-b border-blue-ice/20">
-                              <th className="text-left py-2 px-3 font-medium text-gray-400">Token</th>
-                              <th className="text-left py-2 px-3 font-medium text-gray-400">Amount</th>
-                              <th className="text-left py-2 px-3 font-medium text-gray-400">Current Price</th>
-                              <th className="text-left py-2 px-3 font-medium text-gray-400">Current Value</th>
-                              <th className="text-left py-2 px-3 font-medium text-gray-400">Avg Buy Price</th>
-                              <th className="text-left py-2 px-3 font-medium text-gray-400">Unrealized P&L</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {tradeHistoryData.holdings.map((holding, index) => (
-                              <tr key={holding.token_address} className="border-b border-blue-ice/10 hover:bg-navy-deep/30">
-                                <td className="py-2 px-3">
-                                  <Badge className="bg-blue-steel/20 text-blue-steel border-blue-steel/30">
-                                    {holding.token_symbol}
-                                  </Badge>
-                                </td>
-                                <td className="py-2 px-3 text-white font-medium">
-                                  {parseFloat(holding.amount).toLocaleString()}
-                                </td>
-                                <td className="py-2 px-3 text-white">
-                                  ${holding.current_price_usd}
-                                </td>
-                                <td className="py-2 px-3 text-white font-medium">
-                                  ${parseFloat(holding.current_value_usd).toLocaleString()}
-                                </td>
-                                <td className="py-2 px-3 text-gray-400">
-                                  ${holding.avg_buy_price}
-                                </td>
-                                <td className="py-2 px-3">
-                                  <div className={`font-medium ${
-                                    parseFloat(holding.unrealized_pnl_usd) >= 0 ? 'text-green-success' : 'text-red-400'
+                {/* Current Holdings */}
+                {tradeHistoryData.holdings.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4 }}
+                  >
+                    <Card className="glass-card border-blue-ice/20">
+                      <CardHeader>
+                        <CardTitle className="text-lg font-bold text-white flex items-center">
+                          <Wallet className="w-5 h-5 mr-2 text-cyan-bright" />
+                          Current Holdings
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {tradeHistoryData.holdings.map((holding, index) => (
+                            <motion.div
+                              key={holding.token_address}
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ duration: 0.3, delay: index * 0.05 }}
+                              className="p-4 bg-navy-deep/50 rounded-lg border border-blue-ice/10"
+                            >
+                              <div className="flex items-center justify-between mb-3">
+                                <h4 className="font-semibold text-white">{holding.token_symbol}</h4>
+                                <Badge className={parseFloat(holding.unrealized_pnl_usd) > 0 
+                                  ? "bg-green-success/20 text-green-success border-green-success/30" 
+                                  : parseFloat(holding.unrealized_pnl_usd) < 0
+                                  ? "bg-red-500/20 text-red-400 border-red-500/30"
+                                  : "bg-gray-500/20 text-gray-400 border-gray-500/30"
+                                }>
+                                  {parseFloat(holding.unrealized_pnl_percentage) >= 0 ? '+' : ''}
+                                  {holding.unrealized_pnl_percentage}%
+                                </Badge>
+                              </div>
+                              <div className="space-y-2 text-sm">
+                                <div className="flex justify-between">
+                                  <span className="text-gray-400">Amount:</span>
+                                  <span className="text-white">{parseFloat(holding.amount).toLocaleString()}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-400">Avg Cost:</span>
+                                  <span className="text-white">{formatCurrency(parseFloat(holding.avg_buy_price))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-400">Current:</span>
+                                  <span className="text-white">{formatCurrency(parseFloat(holding.current_price_usd))}</span>
+                                </div>
+                                <div className="flex justify-between pt-2 border-t border-blue-ice/10">
+                                  <span className="text-gray-400">Value:</span>
+                                  <span className="font-semibold text-white">{formatCurrency(parseFloat(holding.current_value_usd))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-400">P&L:</span>
+                                  <span className={`font-semibold ${
+                                    getPnLColorClass(holding.unrealized_pnl_usd)
                                   }`}>
-                                    ${holding.unrealized_pnl_usd}
-                                  </div>
-                                  <div className={`text-xs ${
-                                    parseFloat(holding.unrealized_pnl_percentage) >= 0 ? 'text-green-success' : 'text-red-400'
-                                  }`}>
-                                    ({holding.unrealized_pnl_percentage}%)
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
+                                    {formatCurrency(parseFloat(holding.unrealized_pnl_usd))}
+                                  </span>
+                                </div>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                )}
 
                 <div className="w-full h-px bg-blue-ice/20 my-4" />
 
@@ -1444,53 +1342,37 @@ export default function Results() {
                                   </div>
                                 </td>
                                 <td className="py-2 px-3">
-                                  <Badge className={
-                                    trade.type === 'buy' 
-                                      ? "bg-green-success/20 text-green-success border-green-success/30"
-                                      : trade.type === 'sell'
-                                      ? "bg-red-500/20 text-red-400 border-red-500/30"
-                                      : trade.type === 'transfer_in'
-                                      ? "bg-blue-steel/20 text-blue-steel border-blue-steel/30"
-                                      : "bg-orange-warning/20 text-orange-warning border-orange-warning/30"
+                                  <Badge className={trade.type === 'buy' 
+                                    ? "bg-green-success/20 text-green-success border-green-success/30" 
+                                    : "bg-red-500/20 text-red-400 border-red-500/30"
                                   }>
-                                    {trade.type.replace('_', ' ').toUpperCase()}
+                                    {trade.type.toUpperCase()}
                                   </Badge>
                                 </td>
-                                <td className="py-2 px-3">
-                                  <Badge className="bg-blue-steel/20 text-blue-steel border-blue-steel/30">
-                                    {trade.token_symbol}
-                                  </Badge>
-                                </td>
-                                <td className="py-2 px-3 text-white font-medium">
-                                  {parseFloat(trade.amount).toLocaleString()}
-                                </td>
-                                <td className="py-2 px-3 text-white">
-                                  ${trade.price_usd}
-                                </td>
-                                <td className="py-2 px-3 text-white font-medium">
-                                  ${parseFloat(trade.value_usd).toLocaleString()}
-                                </td>
-                                <td className="py-2 px-3">
+                                <td className="py-2 px-3 text-sm text-white">{trade.token_symbol}</td>
+                                <td className="py-2 px-3 text-sm text-white">{parseFloat(trade.amount).toLocaleString()}</td>
+                                <td className="py-2 px-3 text-sm text-white">{formatCurrency(parseFloat(trade.price_usd))}</td>
+                                <td className="py-2 px-3 text-sm text-white">{formatCurrency(parseFloat(trade.value_usd))}</td>
+                                <td className="py-2 px-3 text-sm">
                                   {trade.realized_pnl ? (
-                                    <div className={`font-medium ${
-                                      parseFloat(trade.realized_pnl) >= 0 ? 'text-green-success' : 'text-red-400'
-                                    }`}>
-                                      ${trade.realized_pnl}
-                                    </div>
+                                    <span className={getPnLColorClass(trade.realized_pnl)}>
+                                      {formatCurrency(parseFloat(trade.realized_pnl))}
+                                    </span>
                                   ) : (
                                     <span className="text-gray-500">-</span>
                                   )}
                                 </td>
-                                <td className="py-2 px-3 text-gray-400">
-                                  ${trade.fees_usd}
-                                </td>
+                                <td className="py-2 px-3 text-sm text-gray-400">{formatCurrency(parseFloat(trade.fees_usd))}</td>
                                 <td className="py-2 px-3">
-                                  <button
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
                                     onClick={() => window.open(`https://solscan.io/tx/${trade.signature}`, '_blank')}
-                                    className="font-mono text-xs text-cyan-bright hover:text-cyan-bright/80 hover:underline"
+                                    className="text-blue-soft hover:text-cyan-bright text-xs"
                                   >
                                     {trade.signature}
-                                  </button>
+                                    <ExternalLink className="w-3 h-3 ml-1" />
+                                  </Button>
                                 </td>
                               </motion.tr>
                             ))}
@@ -1505,24 +1387,24 @@ export default function Results() {
               <DialogFooter className="flex items-center space-x-2">
                 <Button 
                   variant="outline"
-                  onClick={() => window.open(`https://solscan.io/account/${showTradeHistoryModal}`, '_blank')}
+                  onClick={() => window.open(getExplorerUrl(showTradeHistoryModal, tradeHistoryWalletData?.chain || 'solana'), '_blank')}
                   className="border-blue-steel/50 text-blue-steel hover:bg-blue-steel/20"
                 >
                   <ExternalLink className="w-4 h-4 mr-2" />
-                  View on Solscan
+                  View on Explorer
                 </Button>
                 <Button 
                   variant="outline"
                   onClick={() => window.open(`https://gmgn.ai/sol/address/${showTradeHistoryModal}`, '_blank')}
                   className="border-green-success/50 text-green-success hover:bg-green-success/20"
                 >
-                  <ExternalLink className="w-4 h-4 mr-2" />
+                  <BarChart3 className="w-4 h-4 mr-2" />
                   View on GMGN
                 </Button>
                 <Button 
                   variant="outline"
                   onClick={() => copyToClipboard(showTradeHistoryModal)}
-                  className="border-cyan-bright/50 text-cyan-bright hover:bg-cyan-bright/20"
+                  className="border-orange-warning/50 text-orange-warning hover:bg-orange-warning/20"
                 >
                   <Copy className="w-4 h-4 mr-2" />
                   Copy Address

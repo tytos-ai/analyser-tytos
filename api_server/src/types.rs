@@ -67,6 +67,7 @@ pub struct ConfigSummary {
 #[derive(Debug, Deserialize)]
 pub struct BatchJobRequest {
     pub wallet_addresses: Vec<String>,
+    pub chain: String,
     pub max_transactions: Option<u32>,
 }
 
@@ -135,6 +136,7 @@ pub struct WalletResult {
 pub struct DiscoveredWalletsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    pub chain: Option<String>,
 }
 
 /// Response for discovered wallets endpoint
@@ -149,11 +151,13 @@ pub struct DiscoveredWalletsResponse {
 #[derive(Debug, Serialize)]
 pub struct DiscoveredWalletSummary {
     pub wallet_address: String,
+    pub chain: String,
     pub discovered_at: DateTime<Utc>,
     pub analyzed_at: Option<DateTime<Utc>>,
     pub pnl_usd: Option<Decimal>,
     pub win_rate: Option<Decimal>,
     pub trade_count: Option<u32>,
+    pub avg_hold_time_minutes: Option<Decimal>,
     pub status: String,
 }
 
@@ -350,6 +354,7 @@ pub struct DiscoveryCycleResponse {
 pub struct AllResultsQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
+    pub chain: Option<String>,
 }
 
 /// Response for all P&L results
@@ -364,6 +369,7 @@ pub struct AllResultsResponse {
 #[derive(Debug, Serialize)]
 pub struct StoredPnLResultSummary {
     pub wallet_address: String,
+    pub chain: String,
     pub token_address: String,
     pub token_symbol: String,
     pub total_pnl_usd: Decimal,
@@ -372,6 +378,7 @@ pub struct StoredPnLResultSummary {
     pub roi_percentage: Decimal,
     pub total_trades: u32,
     pub win_rate: Decimal,
+    pub avg_hold_time_minutes: Decimal,
     pub analyzed_at: DateTime<Utc>,
 }
 
@@ -391,6 +398,7 @@ pub struct AllResultsSummary {
 #[derive(Debug, Serialize)]
 pub struct DetailedPnLResultResponse {
     pub wallet_address: String,
+    pub chain: String,
     pub portfolio_result: pnl_core::PortfolioPnLResult,
     pub analyzed_at: DateTime<Utc>,
 }
@@ -451,6 +459,7 @@ pub struct BatchJobHistoryQuery {
 pub struct BatchJobSummary {
     pub id: Uuid,
     pub wallet_count: usize,
+    pub chain: String,
     pub status: JobStatus,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -475,4 +484,31 @@ pub struct BatchJobHistorySummary {
     pub running_jobs: u64,
     pub completed_jobs: u64,
     pub failed_jobs: u64,
+}
+
+// =====================================
+// Multichain Validation Helpers
+// =====================================
+
+/// Validate that a chain is supported and enabled
+pub fn validate_chain(chain: &str, enabled_chains: &[String]) -> Result<(), String> {
+    if !enabled_chains.contains(&chain.to_string()) {
+        return Err(format!(
+            "Unsupported chain: {}. Supported chains: {:?}", 
+            chain, enabled_chains
+        ));
+    }
+    Ok(())
+}
+
+/// Get chain from optional parameter or use default
+#[allow(dead_code)]
+pub fn get_chain_or_default<'a>(
+    chain_param: Option<&'a str>, 
+    default_chain: &'a str,
+    enabled_chains: &[String]
+) -> Result<&'a str, String> {
+    let chain = chain_param.unwrap_or(default_chain);
+    validate_chain(chain, enabled_chains)?;
+    Ok(chain)
 }

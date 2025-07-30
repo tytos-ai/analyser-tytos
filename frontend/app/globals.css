@@ -50,11 +50,26 @@
   }
   
   .glass-card {
-    @apply bg-charcoal/90 backdrop-blur-md border border-blue-ice/20 shadow-xl;
+    @apply bg-charcoal/90 backdrop-blur-md border border-blue-ice/20 shadow-xl rounded-lg;
   }
   
   .glass-card-hover {
     @apply hover:bg-charcoal/95 hover:border-cyan-bright/30 hover:shadow-2xl hover:shadow-cyan-bright/10;
+  }
+  
+  /* Responsive table wrapper */
+  .table-wrapper {
+    @apply overflow-x-auto -mx-4 px-4 md:-mx-6 md:px-6;
+  }
+  
+  /* Fixed dialog styling */
+  .dialog-content {
+    @apply glass-card max-h-[90vh] overflow-y-auto;
+  }
+  
+  /* Responsive grid utilities */
+  .grid-responsive {
+    @apply grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6;
   }
 }
 
@@ -68,6 +83,25 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  @apply bg-navy-deep;
+}
+
+/* Ensure proper scrolling for modals */
+.dialog-scroll {
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+}
+
+/* Fix table responsive behavior */
+@media (max-width: 768px) {
+  .table-mobile {
+    font-size: 0.875rem;
+  }
+  
+  .table-mobile th,
+  .table-mobile td {
+    padding: 0.5rem;
+  }
 }
 
 .video-overlay {

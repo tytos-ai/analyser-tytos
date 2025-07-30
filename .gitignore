@@ -2,7 +2,7 @@ node_modules
 node_modules
 ts_system_to_rewrite_to_rust
 
-
+frontend
 # === Rust build output ===
 /target/
 **/target/

@@ -487,7 +487,7 @@ impl BirdEyeClient {
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
+            .header("x-chain", chain)
             .header("accept", "application/json")
             .query(&[
                 ("chain", chain),
@@ -517,7 +517,7 @@ impl BirdEyeClient {
     }
 
     /// Get top traders for a specific token
-    pub async fn get_top_traders(&self, token_address: &str, limit: Option<u32>) -> Result<Vec<TopTrader>, BirdEyeError> {
+    pub async fn get_top_traders(&self, token_address: &str, chain: &str, limit: Option<u32>) -> Result<Vec<TopTrader>, BirdEyeError> {
         let url = format!("{}/defi/v2/tokens/top_traders", self.config.api_base_url);
         
         debug!("Fetching top traders from BirdEye for token: {}", token_address);
@@ -536,7 +536,7 @@ impl BirdEyeClient {
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
+            .header("x-chain", chain)
             .header("accept", "application/json")
             .query(&query_params)
             .send()
@@ -565,7 +565,7 @@ impl BirdEyeClient {
     }
 
     /// Get top traders for a specific token with pagination (offset 0-400, limit 10) for comprehensive discovery
-    pub async fn get_top_traders_paginated(&self, token_address: &str) -> Result<Vec<TopTrader>, BirdEyeError> {
+    pub async fn get_top_traders_paginated(&self, token_address: &str, chain: &str) -> Result<Vec<TopTrader>, BirdEyeError> {
         debug!("🔄 Starting paginated top traders discovery for token: {}", token_address);
         
         let mut all_traders = Vec::new();
@@ -577,7 +577,7 @@ impl BirdEyeClient {
         for (i, offset) in offsets.iter().enumerate() {
             debug!("📊 Fetching top traders page {}/{} (offset: {})", i + 1, offsets.len(), offset);
             
-            match self.fetch_top_traders_paginated(token_address, *offset).await {
+            match self.fetch_top_traders_paginated(token_address, chain, *offset).await {
                 Ok(traders) => {
                     info!("✅ Retrieved {} top traders from page {} (offset: {})", traders.len(), i + 1, offset);
                     
@@ -619,13 +619,13 @@ impl BirdEyeClient {
     }
 
     /// Helper method to fetch top traders by offset for pagination
-    async fn fetch_top_traders_paginated(&self, token_address: &str, offset: u32) -> Result<Vec<TopTrader>, BirdEyeError> {
+    async fn fetch_top_traders_paginated(&self, token_address: &str, chain: &str, offset: u32) -> Result<Vec<TopTrader>, BirdEyeError> {
         let url = format!("{}/defi/v2/tokens/top_traders", self.config.api_base_url);
         
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
+            .header("x-chain", chain)
             .header("accept", "application/json")
             .query(&[
                 ("address", token_address),
@@ -659,7 +659,7 @@ impl BirdEyeClient {
     }
 
     /// Get top gainers/losers from BirdEye (filtered to only return gainers)
-    pub async fn get_gainers_losers(&self, timeframe: &str) -> Result<Vec<GainerLoser>, BirdEyeError> {
+    pub async fn get_gainers_losers(&self, timeframe: &str, chain: &str) -> Result<Vec<GainerLoser>, BirdEyeError> {
         let url = format!("{}/trader/gainers-losers", self.config.api_base_url);
         
         debug!("Fetching gainers/losers from BirdEye for timeframe: {}", timeframe);
@@ -675,7 +675,7 @@ impl BirdEyeClient {
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
+            .header("x-chain", chain)
             .header("accept", "application/json")
             .query(&query_params)
             .send()
@@ -711,7 +711,7 @@ impl BirdEyeClient {
     }
 
     /// Get gainers/losers with multi-timeframe + pagination (3 timeframes × 5 offsets = 15 calls) for comprehensive discovery
-    pub async fn get_gainers_losers_paginated(&self) -> Result<Vec<GainerLoser>, BirdEyeError> {
+    pub async fn get_gainers_losers_paginated(&self, chain: &str) -> Result<Vec<GainerLoser>, BirdEyeError> {
         debug!("🔄 Starting paginated multi-timeframe gainers/losers discovery");
         
         // Define the three timeframes (preserve existing multi-timeframe functionality)
@@ -730,7 +730,7 @@ impl BirdEyeClient {
             for (i, offset) in offsets.iter().enumerate() {
                 debug!("📊 Fetching {} gainers page {}/{} (offset: {})", timeframe, i + 1, offsets.len(), offset);
                 
-                match self.fetch_gainers_losers_paginated(timeframe, *offset).await {
+                match self.fetch_gainers_losers_paginated(timeframe, chain, *offset).await {
                     Ok(gainers) => {
                         info!("✅ Retrieved {} gainers from {} timeframe page {} (offset: {})", 
                               gainers.len(), timeframe, i + 1, offset);
@@ -772,13 +772,13 @@ impl BirdEyeClient {
     }
 
     /// Helper method to fetch gainers/losers by offset for pagination
-    async fn fetch_gainers_losers_paginated(&self, timeframe: &str, offset: u32) -> Result<Vec<GainerLoser>, BirdEyeError> {
+    async fn fetch_gainers_losers_paginated(&self, timeframe: &str, chain: &str, offset: u32) -> Result<Vec<GainerLoser>, BirdEyeError> {
         let url = format!("{}/trader/gainers-losers", self.config.api_base_url);
         
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
+            .header("x-chain", chain)
             .header("accept", "application/json")
             .query(&[
                 ("type", timeframe),
@@ -960,6 +960,7 @@ impl BirdEyeClient {
     pub async fn get_all_trader_transactions(
         &self,
         wallet_address: &str,
+        chain: &str,
         from_time: Option<i64>,
         to_time: Option<i64>,
         limit: Option<u32>,
@@ -992,7 +993,7 @@ impl BirdEyeClient {
         let request = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
+            .header("x-chain", chain)
             .query(&query_params);
             
         debug!("Making BirdEye API request to: {} with params: {:?}", url, query_params);
@@ -1031,6 +1032,7 @@ impl BirdEyeClient {
     pub async fn get_all_trader_transactions_paginated(
         &self,
         wallet_address: &str,
+        chain: &str,
         from_time: Option<i64>,
         to_time: Option<i64>,
         max_total_transactions: u32,
@@ -1080,6 +1082,7 @@ impl BirdEyeClient {
             // Make the API call with offset and retry logic
             let (batch_transactions, has_next) = match self.get_all_trader_transactions_with_offset_retry(
                 wallet_address,
+                chain,
                 from_time,
                 to_time,
                 Some(adjusted_limit),
@@ -1133,6 +1136,7 @@ impl BirdEyeClient {
     async fn get_all_trader_transactions_with_offset(
         &self,
         wallet_address: &str,
+        chain: &str,
         from_time: Option<i64>,
         to_time: Option<i64>,
         limit: Option<u32>,
@@ -1169,7 +1173,7 @@ impl BirdEyeClient {
         let request = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
-            .header("x-chain", "solana")
+            .header("x-chain", chain)
             .query(&query_params);
             
         info!("🔄 Making BirdEye API request to: {} with params: {:?}", url, query_params);
@@ -1237,6 +1241,7 @@ impl BirdEyeClient {
     async fn get_all_trader_transactions_with_offset_retry(
         &self,
         wallet_address: &str,
+        chain: &str,
         from_time: Option<i64>,
         to_time: Option<i64>,
         limit: Option<u32>,
@@ -1249,7 +1254,7 @@ impl BirdEyeClient {
             attempt += 1;
             
             match self.get_all_trader_transactions_with_offset(
-                wallet_address, from_time, to_time, limit, offset
+                wallet_address, chain, from_time, to_time, limit, offset
             ).await {
                 Ok(result) => return Ok(result),
                 Err(BirdEyeError::RateLimit) if attempt <= max_retries => {
@@ -1318,7 +1323,7 @@ impl BirdEyeClient {
     }
 
     /// Get current price for a token
-    pub async fn get_current_price(&self, token_address: &str) -> Result<f64, BirdEyeError> {
+    pub async fn get_current_price(&self, token_address: &str, chain: &str) -> Result<f64, BirdEyeError> {
         let url = format!("{}/defi/price", self.config.api_base_url);
         
         debug!("Fetching current price from BirdEye for token: {}", token_address);
@@ -1326,6 +1331,7 @@ impl BirdEyeClient {
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", chain)
             .query(&[("address", token_address)])
             .send()
             .await?;
@@ -1350,7 +1356,7 @@ impl BirdEyeClient {
     }
 
     /// Get current prices for multiple tokens
-    pub async fn get_current_prices(&self, token_addresses: &[String]) -> Result<HashMap<String, f64>, BirdEyeError> {
+    pub async fn get_current_prices(&self, token_addresses: &[String], chain: &str) -> Result<HashMap<String, f64>, BirdEyeError> {
         let url = format!("{}/defi/multi_price", self.config.api_base_url);
         
         debug!("Fetching current prices from BirdEye for {} tokens", token_addresses.len());
@@ -1360,6 +1366,7 @@ impl BirdEyeClient {
         let response = self.http_client
             .get(&url)
             .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", chain)
             .query(&[("list_address", &address_list)])
             .send()
             .await?;

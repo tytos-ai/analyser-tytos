@@ -107,7 +107,7 @@ pub async fn submit_batch_job(
     // Submit the job
     let job_id = state
         .orchestrator
-        .submit_batch_job(request.wallet_addresses.clone(), request.max_transactions)
+        .submit_batch_job(request.wallet_addresses.clone(), request.chain.clone(), request.max_transactions)
         .await?;
 
     let response = BatchJobResponse {
@@ -154,11 +154,7 @@ pub async fn get_batch_job_results(
     }
 
     // Load the results separately from PostgreSQL for each wallet
-    let persistence_client = persistence_layer::PersistenceClient::new(
-        &state.config.redis.url,
-        &state.config.database.postgres_url
-    ).await
-        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    let persistence_client = &state.persistence_client;
     
     
     // Fetch P&L results for all wallets in the batch
@@ -167,7 +163,8 @@ pub async fn get_batch_job_results(
     let mut successful_count = 0;
     
     for wallet_address in &job.wallet_addresses {
-        match persistence_client.get_portfolio_pnl_result(wallet_address).await {
+        // Use the chain from the batch job
+        match persistence_client.get_portfolio_pnl_result(wallet_address, &job.chain).await {
             Ok(Some(stored_result)) => {
                 total_pnl += stored_result.portfolio_result.total_pnl_usd;
                 successful_count += 1;
@@ -267,6 +264,7 @@ pub async fn get_batch_job_history(
         let job_summary = BatchJobSummary {
             id: job.id,
             wallet_count: job.wallet_addresses.len(),
+            chain: job.chain.clone(),
             status: job.status,
             created_at: job.created_at,
             started_at: job.started_at,
@@ -321,18 +319,15 @@ pub async fn export_batch_results_csv(
     }
 
     // Load the results from PostgreSQL for each wallet
-    let persistence_client = persistence_layer::PersistenceClient::new(
-        &state.config.redis.url,
-        &state.config.database.postgres_url
-    ).await
-        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    let persistence_client = &state.persistence_client;
     
     
     // Fetch P&L results for all wallets in the batch
     let mut wallet_results = HashMap::new();
     
     for wallet_address in &job.wallet_addresses {
-        match persistence_client.get_portfolio_pnl_result(wallet_address).await {
+        // Use the chain from the batch job
+        match persistence_client.get_portfolio_pnl_result(wallet_address, &job.chain).await {
             Ok(Some(stored_result)) => {
                 wallet_results.insert(
                     wallet_address.clone(),
@@ -380,24 +375,23 @@ pub async fn get_discovered_wallets(
     let offset = query.offset.unwrap_or(0) as usize;
     
     // Get P&L results (which are the discovered wallets with analysis)
-    let persistence_client = persistence_layer::PersistenceClient::new(
-        &state.config.redis.url,
-        &state.config.database.postgres_url
-    ).await
-        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    let persistence_client = &state.persistence_client;
     
-    let (results, total_count) = persistence_client.get_all_pnl_results(offset, limit).await
+    // Use chain from query parameter if provided
+    let (results, total_count) = persistence_client.get_all_pnl_results(offset, limit, query.chain.as_deref()).await
         .map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
 
     // Convert P&L results to discovered wallets format
     let wallets: Vec<DiscoveredWalletSummary> = results.into_iter().map(|result| {
         DiscoveredWalletSummary {
             wallet_address: result.wallet_address,
+            chain: result.chain,
             discovered_at: result.analyzed_at,
             analyzed_at: Some(result.analyzed_at),
             pnl_usd: Some(result.portfolio_result.total_pnl_usd),
             win_rate: Some(result.portfolio_result.overall_win_rate_percentage),
             trade_count: Some(result.portfolio_result.total_trades as u32),
+            avg_hold_time_minutes: Some(result.portfolio_result.avg_hold_time_minutes),
             status: "analyzed".to_string(),
         }
     }).collect();
@@ -547,17 +541,14 @@ pub async fn filter_copy_traders(
     info!("🔍 Filtering traders for copy trading from job {}", job_id);
 
     // Load the results from PostgreSQL for each wallet
-    let persistence_client = persistence_layer::PersistenceClient::new(
-        &state.config.redis.url,
-        &state.config.database.postgres_url
-    ).await
-        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    let persistence_client = &state.persistence_client;
     
     
     // Extract successful P&L reports
     let mut pnl_reports = Vec::new();
     for wallet_address in &job.wallet_addresses {
-        match persistence_client.get_portfolio_pnl_result(wallet_address).await {
+        // Use the chain from the batch job
+        match persistence_client.get_portfolio_pnl_result(wallet_address, &job.chain).await {
             Ok(Some(stored_result)) => {
                 pnl_reports.push(stored_result.portfolio_result);
             }
@@ -732,13 +723,10 @@ pub async fn get_all_results(
     let limit = query.limit.unwrap_or(50).min(200); // Max 200 per request
     
     // Get results from persistence layer (PostgreSQL)
-    let persistence_client = persistence_layer::PersistenceClient::new(
-        &state.config.redis.url,
-        &state.config.database.postgres_url
-    ).await
-        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    let persistence_client = &state.persistence_client;
     
-    let (stored_results, total_count) = persistence_client.get_all_pnl_results(offset, limit).await
+    // Use chain from query parameter if provided
+    let (stored_results, total_count) = persistence_client.get_all_pnl_results(offset, limit, query.chain.as_deref()).await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch results: {}", e)))?;
     
     // Get summary statistics
@@ -750,6 +738,7 @@ pub async fn get_all_results(
         .into_iter()
         .map(|stored_result| StoredPnLResultSummary {
             wallet_address: stored_result.wallet_address,
+            chain: stored_result.chain,
             token_address: "portfolio".to_string(), // Portfolio-level result
             token_symbol: "PORTFOLIO".to_string(),
             total_pnl_usd: stored_result.portfolio_result.total_pnl_usd,
@@ -758,6 +747,7 @@ pub async fn get_all_results(
             roi_percentage: Decimal::ZERO, // Not available in new format
             total_trades: stored_result.portfolio_result.total_trades,
             win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
+            avg_hold_time_minutes: stored_result.portfolio_result.avg_hold_time_minutes,
             analyzed_at: stored_result.analyzed_at,
         })
         .collect();
@@ -814,23 +804,25 @@ pub async fn get_all_results(
 pub async fn get_detailed_result(
     State(state): State<AppState>,
     Path((wallet_address, token_address)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Token address is ignored in the new portfolio-based system
     let _ = token_address;
     
-    let persistence_client = persistence_layer::PersistenceClient::new(
-        &state.config.redis.url,
-        &state.config.database.postgres_url
-    ).await
-        .map_err(|e| ApiError::Internal(format!("Persistence connection error: {}", e)))?;
+    let persistence_client = &state.persistence_client;
     
-    let stored_result = persistence_client.get_portfolio_pnl_result(&wallet_address).await
+    // Use chain from query parameter or default
+    let chain = query.get("chain")
+        .map(|s| s.as_str())
+        .unwrap_or(&state.config.multichain.default_chain);
+    let stored_result = persistence_client.get_portfolio_pnl_result(&wallet_address, chain).await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch result: {}", e)))?;
     
     match stored_result {
         Some(result) => {
             let response = DetailedPnLResultResponse {
                 wallet_address: result.wallet_address,
+                chain: result.chain,
                 portfolio_result: result.portfolio_result,
                 analyzed_at: result.analyzed_at,
             };

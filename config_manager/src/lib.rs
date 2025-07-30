@@ -25,6 +25,9 @@ pub struct SystemConfig {
     /// Data source for transaction data (currently only "BirdEye" is supported)
     pub data_source: String,
     
+    /// Multichain configuration
+    pub multichain: MultichainConfig,
+    
     /// Redis configuration
     pub redis: RedisConfig,
     
@@ -34,7 +37,6 @@ pub struct SystemConfig {
     /// DexScreener API configuration
     pub dexscreener: DexScreenerConfig,
     
-    
     /// Advanced trader filtering for copy trading
     pub trader_filter: TraderFilterConfig,
     
@@ -43,6 +45,15 @@ pub struct SystemConfig {
     
     /// Database configuration
     pub database: DatabaseConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultichainConfig {
+    /// List of enabled blockchain networks
+    pub enabled_chains: Vec<String>,
+    
+    /// Default chain for operations when not specified
+    pub default_chain: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +182,10 @@ impl Default for SystemConfig {
                 pnl_parallel_batch_size: Some(10),
             },
             data_source: "BirdEye".to_string(),
+            multichain: MultichainConfig {
+                enabled_chains: vec!["solana".to_string()], // Default to Solana only
+                default_chain: "solana".to_string(),
+            },
             redis: RedisConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 default_lock_ttl_seconds: 600,

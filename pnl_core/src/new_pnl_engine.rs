@@ -90,6 +90,22 @@ pub struct TokenPnLResult {
     pub avg_hold_time_minutes: Decimal,
     pub min_hold_time_minutes: Decimal,
     pub max_hold_time_minutes: Decimal,
+    
+    /// Investment metrics
+    #[serde(default)]
+    pub total_invested_usd: Decimal,
+    #[serde(default)]
+    pub total_returned_usd: Decimal,
+    
+    /// Streak analytics
+    #[serde(default)]
+    pub current_winning_streak: u32,
+    #[serde(default)]
+    pub longest_winning_streak: u32,
+    #[serde(default)]
+    pub current_losing_streak: u32,
+    #[serde(default)]
+    pub longest_losing_streak: u32,
 }
 
 /// Portfolio-level P&L results
@@ -108,6 +124,10 @@ pub struct PortfolioPnLResult {
     
     /// Portfolio trade statistics
     pub total_trades: u32,
+    #[serde(default)]
+    pub winning_trades: u32,
+    #[serde(default)]
+    pub losing_trades: u32,
     pub overall_win_rate_percentage: Decimal,
     pub avg_hold_time_minutes: Decimal,
     
@@ -117,6 +137,26 @@ pub struct PortfolioPnLResult {
     /// Analysis metadata
     pub events_processed: u32,
     pub analysis_timestamp: DateTime<Utc>,
+    
+    /// Portfolio investment metrics
+    #[serde(default)]
+    pub total_invested_usd: Decimal,
+    #[serde(default)]
+    pub total_returned_usd: Decimal,
+    
+    /// Portfolio streak analytics
+    #[serde(default)]
+    pub current_winning_streak: u32,
+    #[serde(default)]
+    pub longest_winning_streak: u32,
+    #[serde(default)]
+    pub current_losing_streak: u32,
+    #[serde(default)]
+    pub longest_losing_streak: u32,
+    
+    /// Calculated profit percentage
+    #[serde(default)]
+    pub profit_percentage: Decimal,
 }
 
 /// P&L Engine Module
@@ -154,6 +194,9 @@ impl NewPnLEngine {
         // Store the original count before we consume the HashMap
         let tokens_analyzed = events_by_token.len() as u32;
         
+        let mut total_winning_trades = 0u32;
+        let mut total_losing_trades = 0u32;
+        
         // Process each token separately (supports parallel processing)
         for (token_address, events) in events_by_token {
             debug!(
@@ -174,6 +217,8 @@ impl NewPnLEngine {
                     total_realized_pnl += token_result.total_realized_pnl_usd;
                     total_unrealized_pnl += token_result.total_unrealized_pnl_usd;
                     total_trades += token_result.total_trades;
+                    total_winning_trades += token_result.winning_trades;
+                    total_losing_trades += token_result.losing_trades;
                     
                     token_results.push(token_result);
                 }
@@ -191,12 +236,7 @@ impl NewPnLEngine {
         let total_pnl = total_realized_pnl + total_unrealized_pnl;
         
         let overall_win_rate = if total_trades > 0 {
-            let winning_trades: u32 = token_results
-                .iter()
-                .map(|t| t.winning_trades)
-                .sum();
-            
-            Decimal::from(winning_trades * 100) / Decimal::from(total_trades)
+            Decimal::from(total_winning_trades * 100) / Decimal::from(total_trades)
         } else {
             Decimal::ZERO
         };
@@ -210,6 +250,28 @@ impl NewPnLEngine {
             Decimal::ZERO
         };
         
+        // Calculate portfolio investment metrics
+        let total_invested_usd: Decimal = token_results
+            .iter()
+            .map(|t| t.total_invested_usd)
+            .sum();
+            
+        let total_returned_usd: Decimal = token_results
+            .iter()
+            .map(|t| t.total_returned_usd)
+            .sum();
+        
+        // Calculate portfolio-level streaks (continue across all tokens chronologically)
+        let (current_winning_streak, longest_winning_streak, current_losing_streak, longest_losing_streak) = 
+            self.calculate_portfolio_streaks(&token_results);
+        
+        // Calculate profit percentage
+        let profit_percentage = if total_invested_usd > Decimal::ZERO {
+            ((total_pnl / total_invested_usd) * Decimal::from(100)).round_dp(2)
+        } else {
+            Decimal::ZERO
+        };
+        
         let result = PortfolioPnLResult {
             wallet_address: self.wallet_address.clone(),
             token_results,
@@ -217,11 +279,20 @@ impl NewPnLEngine {
             total_unrealized_pnl_usd: total_unrealized_pnl,
             total_pnl_usd: total_pnl,
             total_trades,
+            winning_trades: total_winning_trades,
+            losing_trades: total_losing_trades,
             overall_win_rate_percentage: overall_win_rate,
             avg_hold_time_minutes: avg_hold_time,
             tokens_analyzed,
             events_processed: total_events_processed,
             analysis_timestamp: Utc::now(),
+            total_invested_usd,
+            total_returned_usd,
+            current_winning_streak,
+            longest_winning_streak,
+            current_losing_streak,
+            longest_losing_streak,
+            profit_percentage,
         };
         
         info!(
@@ -282,6 +353,18 @@ impl NewPnLEngine {
             sell_events.len()
         );
         
+        // Calculate investment metrics (simple - just 6 lines!)
+        let total_invested_usd: Decimal = events
+            .iter()
+            .filter(|e| e.event_type == NewEventType::Buy)
+            .map(|e| e.usd_value)
+            .sum();
+            
+        let total_returned_usd: Decimal = sell_events
+            .iter()
+            .map(|e| e.usd_value)
+            .sum();
+        
         // Perform FIFO matching (includes phantom buy creation for unmatched sells)
         let matched_trades = self.perform_fifo_matching(&mut buy_events, &sell_events)?;
         
@@ -312,6 +395,10 @@ impl NewPnLEngine {
         // Calculate hold time statistics
         let (avg_hold_time, min_hold_time, max_hold_time) = self.calculate_hold_time_stats(&matched_trades);
         
+        // Calculate streak analytics
+        let (current_winning_streak, longest_winning_streak, current_losing_streak, longest_losing_streak) = 
+            self.calculate_streak_analytics(&matched_trades);
+        
         let result = TokenPnLResult {
             token_address,
             token_symbol,
@@ -327,6 +414,12 @@ impl NewPnLEngine {
             avg_hold_time_minutes: avg_hold_time,
             min_hold_time_minutes: min_hold_time,
             max_hold_time_minutes: max_hold_time,
+            total_invested_usd,
+            total_returned_usd,
+            current_winning_streak,
+            longest_winning_streak,
+            current_losing_streak,
+            longest_losing_streak,
         };
         
         debug!(
@@ -561,6 +654,97 @@ impl NewPnLEngine {
         
         (avg_hold_time, min_hold_time, max_hold_time)
     }
+    
+    /// Calculate winning and losing streak analytics from matched trades
+    /// Returns (current_winning_streak, longest_winning_streak, current_losing_streak, longest_losing_streak)
+    fn calculate_streak_analytics(&self, matched_trades: &[MatchedTrade]) -> (u32, u32, u32, u32) {
+        if matched_trades.is_empty() {
+            return (0, 0, 0, 0);
+        }
+        
+        let mut current_winning_streak = 0u32;
+        let mut longest_winning_streak = 0u32;
+        let mut current_losing_streak = 0u32;
+        let mut longest_losing_streak = 0u32;
+        
+        // Sort trades by sell timestamp to get chronological order
+        let mut sorted_trades = matched_trades.to_vec();
+        sorted_trades.sort_by(|a, b| a.sell_event.timestamp.cmp(&b.sell_event.timestamp));
+        
+        for trade in sorted_trades.iter() {
+            if trade.realized_pnl_usd > Decimal::ZERO {
+                // Winning trade
+                current_winning_streak += 1;
+                current_losing_streak = 0; // Reset losing streak
+                
+                if current_winning_streak > longest_winning_streak {
+                    longest_winning_streak = current_winning_streak;
+                }
+            } else if trade.realized_pnl_usd < Decimal::ZERO {
+                // Losing trade
+                current_losing_streak += 1;
+                current_winning_streak = 0; // Reset winning streak
+                
+                if current_losing_streak > longest_losing_streak {
+                    longest_losing_streak = current_losing_streak;
+                }
+            }
+            // If P&L is exactly zero (e.g., phantom buys), don't affect streaks
+        }
+        
+        debug!(
+            "Streak analytics: Current Win: {}, Longest Win: {}, Current Loss: {}, Longest Loss: {}",
+            current_winning_streak, longest_winning_streak, current_losing_streak, longest_losing_streak
+        );
+        
+        (current_winning_streak, longest_winning_streak, current_losing_streak, longest_losing_streak)
+    }
+    
+    /// Calculate portfolio-level streaks across all tokens chronologically
+    fn calculate_portfolio_streaks(&self, token_results: &[TokenPnLResult]) -> (u32, u32, u32, u32) {
+        // Collect all matched trades from all tokens
+        let mut all_trades: Vec<&MatchedTrade> = Vec::new();
+        for token_result in token_results {
+            for trade in &token_result.matched_trades {
+                all_trades.push(trade);
+            }
+        }
+        
+        if all_trades.is_empty() {
+            return (0, 0, 0, 0);
+        }
+        
+        // Sort all trades by sell timestamp to get chronological order across all tokens
+        all_trades.sort_by(|a, b| a.sell_event.timestamp.cmp(&b.sell_event.timestamp));
+        
+        let mut current_winning_streak = 0u32;
+        let mut longest_winning_streak = 0u32;
+        let mut current_losing_streak = 0u32;
+        let mut longest_losing_streak = 0u32;
+        
+        for trade in all_trades {
+            if trade.realized_pnl_usd > Decimal::ZERO {
+                // Winning trade
+                current_winning_streak += 1;
+                current_losing_streak = 0; // Reset losing streak
+                
+                if current_winning_streak > longest_winning_streak {
+                    longest_winning_streak = current_winning_streak;
+                }
+            } else if trade.realized_pnl_usd < Decimal::ZERO {
+                // Losing trade
+                current_losing_streak += 1;
+                current_winning_streak = 0; // Reset winning streak
+                
+                if current_losing_streak > longest_losing_streak {
+                    longest_losing_streak = current_losing_streak;
+                }
+            }
+            // If P&L is exactly zero (e.g., phantom buys), don't affect streaks
+        }
+        
+        (current_winning_streak, longest_winning_streak, current_losing_streak, longest_losing_streak)
+    }
 }
 
 #[cfg(test)]
@@ -640,14 +824,12 @@ mod tests {
         
         let result = engine.calculate_token_pnl(events, None).await.unwrap();
         
-        // Should have 1 unmatched sell
-        assert_eq!(result.unmatched_sells.len(), 1);
-        assert_eq!(result.unmatched_sells[0].unmatched_quantity, Decimal::from(100));
-        assert_eq!(result.unmatched_sells[0].phantom_buy_price, Decimal::from(5));
-        assert_eq!(result.unmatched_sells[0].phantom_pnl_usd, Decimal::ZERO);
+        // Should have 1 matched trade (with phantom buy)
+        assert_eq!(result.matched_trades.len(), 1);
+        assert_eq!(result.matched_trades[0].matched_quantity, Decimal::from(100));
+        assert_eq!(result.matched_trades[0].realized_pnl_usd, Decimal::ZERO); // Zero P&L for phantom buy
         
-        // No matched trades or remaining position
-        assert_eq!(result.matched_trades.len(), 0);
+        // No remaining position
         assert!(result.remaining_position.is_none());
         
         // Total P&L should be zero

@@ -9,7 +9,8 @@ import type {
   DashboardMetrics,
   ChartDataPoint,
   SystemMetrics,
-  ActivityItem
+  ActivityItem,
+  WalletDetailResponse
 } from '@/types/api'
 
 export const queryClient = new QueryClient({
@@ -352,8 +353,12 @@ export const api = {
       return apiClient.get(endpoint)
     },
     
-    getWalletDetail: async (walletAddress: string, tokenAddress: string) => {
-      return apiClient.get(`/api/results/${walletAddress}/${tokenAddress}`)
+    getWalletDetail: async (walletAddress: string, tokenAddress: string, chain?: string): Promise<WalletDetailResponse> => {
+      const queryParams = new URLSearchParams()
+      if (chain) queryParams.append('chain', chain)
+      
+      const endpoint = `/api/results/${walletAddress}/${tokenAddress}${queryParams.toString() ? `?${queryParams.toString()}` : ''}`
+      return apiClient.get<WalletDetailResponse>(endpoint)
     }
   },
   

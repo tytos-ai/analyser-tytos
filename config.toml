@@ -6,6 +6,10 @@ pnl_parallel_batch_size = 20
 # Data source for transaction data (currently only "BirdEye" is supported)
 data_source = "BirdEye"
 
+[multichain]
+enabled_chains = ["solana", "ethereum", "base", "bsc"]
+default_chain = "solana"
+
 [redis]
 url = "redis://localhost:6379"
 default_lock_ttl_seconds = 600

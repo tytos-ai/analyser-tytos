@@ -9,11 +9,22 @@ use uuid::Uuid;
 pub mod postgres_client;
 pub use postgres_client::PostgresClient;
 
+/// Wallet-chain pair for multichain batch processing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletChainPair {
+    /// Wallet address
+    pub wallet_address: String,
+    /// Blockchain network (solana, ethereum, base, bsc)
+    pub chain: String,
+}
+
 /// Discovered wallet-token pair for targeted P&L analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredWalletToken {
     /// Wallet address of the trader
     pub wallet_address: String,
+    /// Blockchain network (solana, ethereum, base, bsc)
+    pub chain: String,
     /// Token address that this wallet was discovered trading
     pub token_address: String,
     /// Token symbol (for logging/display)
@@ -40,6 +51,7 @@ pub struct StoredPnLResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredPortfolioPnLResult {
     pub wallet_address: String,
+    pub chain: String,
     pub portfolio_result: pnl_core::PortfolioPnLResult,
     pub analyzed_at: chrono::DateTime<chrono::Utc>,
 }
@@ -95,6 +107,7 @@ pub enum JobStatus {
 pub struct BatchJob {
     pub id: Uuid,
     pub wallet_addresses: Vec<String>,
+    pub chain: String,
     pub status: JobStatus,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -180,8 +193,16 @@ impl PersistenceClient {
         self.redis_client.mark_wallet_as_processed(wallet_address).await
     }
     
+    pub async fn mark_wallet_as_processed_for_chain(&self, wallet_address: &str, chain: &str) -> Result<()> {
+        self.redis_client.mark_wallet_as_processed_for_chain(wallet_address, chain).await
+    }
+    
     pub async fn mark_wallet_as_failed(&self, wallet_address: &str) -> Result<()> {
         self.redis_client.mark_wallet_as_failed(wallet_address).await
+    }
+    
+    pub async fn mark_wallet_as_failed_for_chain(&self, wallet_address: &str, chain: &str) -> Result<()> {
+        self.redis_client.mark_wallet_as_failed_for_chain(wallet_address, chain).await
     }
     
     pub async fn get_wallet_token_pairs_queue_size(&self) -> Result<usize> {
@@ -213,18 +234,18 @@ impl PersistenceClient {
     }
     
     // Delegate PostgreSQL operations to PostgresClient
-    pub async fn store_pnl_result(&self, wallet_address: &str, portfolio_result: &pnl_core::PortfolioPnLResult) -> Result<()> {
-        self.postgres_client.store_pnl_result(wallet_address, portfolio_result).await
+    pub async fn store_pnl_result(&self, wallet_address: &str, chain: &str, portfolio_result: &pnl_core::PortfolioPnLResult) -> Result<()> {
+        self.postgres_client.store_pnl_result(wallet_address, chain, portfolio_result).await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
     
-    pub async fn get_portfolio_pnl_result(&self, wallet_address: &str) -> Result<Option<StoredPortfolioPnLResult>> {
-        self.postgres_client.get_portfolio_pnl_result(wallet_address).await
+    pub async fn get_portfolio_pnl_result(&self, wallet_address: &str, chain: &str) -> Result<Option<StoredPortfolioPnLResult>> {
+        self.postgres_client.get_portfolio_pnl_result(wallet_address, chain).await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
     
-    pub async fn get_all_pnl_results(&self, offset: usize, limit: usize) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
-        self.postgres_client.get_all_pnl_results(offset, limit).await
+    pub async fn get_all_pnl_results(&self, offset: usize, limit: usize, chain_filter: Option<&str>) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
+        self.postgres_client.get_all_pnl_results(offset, limit, chain_filter).await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
     
@@ -404,77 +425,101 @@ impl RedisClient {
             return Ok(0);
         }
         
-        let queue_key = "discovered_wallet_token_pairs_queue";
-        let processed_wallets_key = "processed_wallets";
-        let pending_wallets_key = "pending_wallets";
+        // Group wallet tokens by chain
+        let mut chain_groups: std::collections::HashMap<String, Vec<&DiscoveredWalletToken>> = std::collections::HashMap::new();
+        for wallet_token in wallet_tokens {
+            chain_groups.entry(wallet_token.chain.clone()).or_default().push(wallet_token);
+        }
+        
+        let mut total_pushed = 0;
         let mut conn = self.get_connection().await?;
         
-        let mut new_wallet_tokens = Vec::new();
-        let mut duplicate_count = 0;
+        // Process each chain group separately
+        for (chain, chain_wallet_tokens) in chain_groups {
+            let queue_key = format!("discovered_wallet_token_pairs_queue:{}", chain);
+            let processed_wallets_key = format!("processed_wallets:{}", chain);
+            let pending_wallets_key = format!("pending_wallets:{}", chain);
         
-        // Check each wallet for duplicates
-        for wallet_token in wallet_tokens {
-            let wallet_address = &wallet_token.wallet_address;
+            let mut new_wallet_tokens = Vec::new();
+            let mut duplicate_count = 0;
             
-            // Check if wallet is already processed or pending
-            let is_processed: bool = conn.sismember(processed_wallets_key, wallet_address).await?;
-            let is_pending: bool = conn.sismember(pending_wallets_key, wallet_address).await?;
-            
-            if is_processed || is_pending {
-                duplicate_count += 1;
-                debug!("⭕ Skipping duplicate wallet: {} (already processed or pending)", wallet_address);
-                continue;
+            // Check each wallet for duplicates within this chain
+            for wallet_token in chain_wallet_tokens {
+                let wallet_address = &wallet_token.wallet_address;
+                
+                // Check if wallet is already processed or pending for this chain
+                let is_processed: bool = conn.sismember(&processed_wallets_key, wallet_address).await?;
+                let is_pending: bool = conn.sismember(&pending_wallets_key, wallet_address).await?;
+                
+                if is_processed || is_pending {
+                    duplicate_count += 1;
+                    debug!("⭕ Skipping duplicate wallet: {} for chain {} (already processed or pending)", wallet_address, chain);
+                    continue;
+                }
+                
+                // Add to pending set and queue for processing
+                let _: () = conn.sadd(&pending_wallets_key, wallet_address).await?;
+                new_wallet_tokens.push((*wallet_token).clone());
             }
             
-            // Add to pending set and queue for processing
-            let _: () = conn.sadd(pending_wallets_key, wallet_address).await?;
-            new_wallet_tokens.push(wallet_token.clone());
+            if !new_wallet_tokens.is_empty() {
+                // Serialize and push new wallets to chain-specific queue
+                let json_pairs: Result<Vec<String>> = new_wallet_tokens
+                    .iter()
+                    .map(|wt| serde_json::to_string(wt).map_err(PersistenceError::from))
+                    .collect();
+                
+                let json_pairs = json_pairs?;
+                let _: () = conn.lpush(&queue_key, json_pairs).await?;
+                
+                info!("✅ Pushed {} new wallets to discovery queue for chain {}, skipped {} duplicates", 
+                      new_wallet_tokens.len(), chain, duplicate_count);
+                
+                total_pushed += new_wallet_tokens.len();
+            } else if duplicate_count > 0 {
+                info!("⭕ All {} wallets for chain {} were duplicates, skipped", duplicate_count, chain);
+            }
         }
         
-        if new_wallet_tokens.is_empty() {
-            info!("⭕ All {} wallets were duplicates, skipped", duplicate_count);
-            return Ok(0);
-        }
-        
-        // Serialize and push new wallets only
-        let json_pairs: Result<Vec<String>> = new_wallet_tokens
-            .iter()
-            .map(|wt| serde_json::to_string(wt).map_err(PersistenceError::from))
-            .collect();
-        
-        let json_pairs = json_pairs?;
-        let _: () = conn.lpush(queue_key, json_pairs).await?;
-        
-        info!("✅ Pushed {} new wallets to discovery queue, skipped {} duplicates", 
-              new_wallet_tokens.len(), duplicate_count);
-        
-        Ok(new_wallet_tokens.len())
+        Ok(total_pushed)
     }
 
-    /// Mark a wallet as processed (move from pending to processed)
+    /// Mark a wallet as processed for a specific chain (move from pending to processed)
+    pub async fn mark_wallet_as_processed_for_chain(&self, wallet_address: &str, chain: &str) -> Result<()> {
+        let processed_wallets_key = format!("processed_wallets:{}", chain);
+        let pending_wallets_key = format!("pending_wallets:{}", chain);
+        let mut conn = self.get_connection().await?;
+        
+        // Move from pending to processed for this chain
+        let _: () = conn.srem(&pending_wallets_key, wallet_address).await?;
+        let _: () = conn.sadd(&processed_wallets_key, wallet_address).await?;
+        
+        debug!("✅ Marked wallet {} as processed for chain {}", wallet_address, chain);
+        Ok(())
+    }
+
+    /// Mark a wallet as processed (backward compatibility - uses default chain)
     pub async fn mark_wallet_as_processed(&self, wallet_address: &str) -> Result<()> {
-        let processed_wallets_key = "processed_wallets";
-        let pending_wallets_key = "pending_wallets";
+        // For backward compatibility, use 'solana' as default chain
+        self.mark_wallet_as_processed_for_chain(wallet_address, "solana").await
+    }
+
+    /// Mark a wallet as failed processing for a specific chain (remove from pending, don't add to processed)
+    pub async fn mark_wallet_as_failed_for_chain(&self, wallet_address: &str, chain: &str) -> Result<()> {
+        let pending_wallets_key = format!("pending_wallets:{}", chain);
         let mut conn = self.get_connection().await?;
         
-        // Move from pending to processed
-        let _: () = conn.srem(pending_wallets_key, wallet_address).await?;
-        let _: () = conn.sadd(processed_wallets_key, wallet_address).await?;
+        // Remove from pending for this chain (can be retried later)
+        let _: () = conn.srem(&pending_wallets_key, wallet_address).await?;
         
-        debug!("✅ Marked wallet {} as processed", wallet_address);
+        debug!("❌ Marked wallet {} as failed for chain {} (removed from pending)", wallet_address, chain);
         Ok(())
     }
 
-    /// Mark a wallet as failed processing (remove from pending, don't add to processed)
+    /// Mark a wallet as failed processing (backward compatibility - uses default chain)
     pub async fn mark_wallet_as_failed(&self, wallet_address: &str) -> Result<()> {
-        let pending_wallets_key = "pending_wallets";
-        let mut conn = self.get_connection().await?;
-        
-        // Remove from pending (can be retried later)
-        let _: () = conn.srem(pending_wallets_key, wallet_address).await?;
-        
-        debug!("❌ Marked wallet {} as failed (removed from pending)", wallet_address);
-        Ok(())
+        // For backward compatibility, use 'solana' as default chain
+        self.mark_wallet_as_failed_for_chain(wallet_address, "solana").await
     }
 
     /// Get deduplication statistics
@@ -1578,42 +1623,69 @@ impl RedisClient {
     // Work-Stealing for Multi-Instance Processing
     // =====================================
     
-    /// Atomically claim a batch of wallet-token pairs for processing by a specific instance
+    /// Atomically claim a batch of wallet-token pairs for processing by a specific instance from all enabled chains
     /// Returns the claimed batch and a unique batch ID for tracking
     pub async fn claim_wallet_batch(&self, instance_id: &str, batch_size: usize) -> Result<(Vec<DiscoveredWalletToken>, String)> {
-        let queue_key = "discovered_wallet_token_pairs_queue";
+        // For backward compatibility, try to claim from all chains
+        self.claim_wallet_batch_multichain(instance_id, batch_size, None).await
+    }
+    
+    /// Atomically claim a batch of wallet-token pairs for processing from specific chains or all chains
+    /// Returns the claimed batch and a unique batch ID for tracking
+    pub async fn claim_wallet_batch_multichain(&self, instance_id: &str, batch_size: usize, chains: Option<Vec<String>>) -> Result<(Vec<DiscoveredWalletToken>, String)> {
         let batch_id = format!("{}:{}", instance_id, Uuid::new_v4().to_string()[..8].to_string());
         let processing_key = format!("processing:{}", batch_id);
         
-        // Use Lua script for atomic batch claiming
+        // If no specific chains provided, use common chains or discover from available queues
+        let target_chains = if let Some(chains) = chains {
+            chains
+        } else {
+            // Default chains for backward compatibility and multichain support
+            vec!["solana".to_string(), "ethereum".to_string(), "base".to_string(), "bsc".to_string()]
+        };
+        
+        // Use Lua script for atomic multichain batch claiming
         let script = r#"
-            local queue_key = KEYS[1]
-            local processing_key = KEYS[2]
+            local processing_key = KEYS[1]
             local batch_size = tonumber(ARGV[1])
             local ttl_seconds = tonumber(ARGV[2])
             local timestamp = ARGV[3]
+            local instance_id = ARGV[4]
+            local chain_count = tonumber(ARGV[5])
             
-            -- Pop batch_size items from the queue
+            -- Build queue keys from chain arguments
+            local queue_keys = {}
+            for i = 1, chain_count do
+                local chain = ARGV[5 + i]
+                table.insert(queue_keys, "discovered_wallet_token_pairs_queue:" .. chain)
+            end
+            
+            -- Pop items from all chain queues in round-robin fashion
             local items = {}
-            for i = 1, batch_size do
-                local item = redis.call("RPOP", queue_key)
-                if not item then
-                    break
+            local items_per_chain = math.ceil(batch_size / chain_count)
+            
+            for _, queue_key in ipairs(queue_keys) do
+                local chain_items = 0
+                for i = 1, items_per_chain do
+                    if #items >= batch_size then
+                        break
+                    end
+                    local item = redis.call("RPOP", queue_key)
+                    if item then
+                        table.insert(items, item)
+                        chain_items = chain_items + 1
+                    else
+                        break  -- No more items in this chain queue
+                    end
                 end
-                table.insert(items, item)
             end
             
             -- If we got items, set processing lock with metadata
             if #items > 0 then
-                local metadata = {
-                    timestamp = timestamp,
-                    count = #items,
-                    instance = ARGV[4]
-                }
                 redis.call("HMSET", processing_key, 
                     "timestamp", timestamp,
                     "count", #items,
-                    "instance", ARGV[4])
+                    "instance", instance_id)
                 redis.call("EXPIRE", processing_key, ttl_seconds)
                 
                 -- Store the actual items for potential cleanup
@@ -1630,15 +1702,23 @@ impl RedisClient {
         let timestamp = chrono::Utc::now().timestamp();
         let ttl_seconds = 300; // 5 minutes TTL for processing locks
         
-        let items: Vec<String> = redis::Script::new(script)
-            .key(queue_key)
-            .key(&processing_key)
-            .arg(batch_size)
-            .arg(ttl_seconds)
-            .arg(timestamp)
-            .arg(instance_id)
-            .invoke_async(&mut conn)
-            .await?;
+        // Use EVAL command directly with individual arguments
+        let mut cmd = redis::cmd("EVAL");
+        cmd.arg(script)
+           .arg(1) // number of keys
+           .arg(&processing_key)
+           .arg(batch_size)
+           .arg(ttl_seconds)
+           .arg(timestamp)
+           .arg(instance_id)
+           .arg(target_chains.len());
+        
+        // Add each chain as an argument
+        for chain in &target_chains {
+            cmd.arg(chain);
+        }
+        
+        let items: Vec<String> = cmd.query_async(&mut conn).await?;
         
         // Deserialize the items
         let mut wallet_tokens = Vec::new();
@@ -1650,8 +1730,19 @@ impl RedisClient {
         }
         
         if !wallet_tokens.is_empty() {
-            info!("Claimed batch {} with {} wallet-token pairs for instance {}", 
-                  batch_id, wallet_tokens.len(), instance_id);
+            // Group by chain for logging
+            let mut chain_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for wallet_token in &wallet_tokens {
+                *chain_counts.entry(wallet_token.chain.clone()).or_insert(0) += 1;
+            }
+            
+            let chain_summary = chain_counts.iter()
+                .map(|(chain, count)| format!("{}:{}", chain, count))
+                .collect::<Vec<_>>()
+                .join(", ");
+            
+            info!("Claimed multichain batch {} with {} wallet-token pairs for instance {} ({})", 
+                  batch_id, wallet_tokens.len(), instance_id, chain_summary);
         }
         
         Ok((wallet_tokens, batch_id))
@@ -1671,25 +1762,34 @@ impl RedisClient {
         Ok(())
     }
     
-    /// Return failed items back to the queue for retry
+    /// Return failed items back to their respective chain queues for retry
     pub async fn return_failed_batch(&self, batch_id: &str, failed_items: &[DiscoveredWalletToken]) -> Result<()> {
-        let queue_key = "discovered_wallet_token_pairs_queue";
         let processing_key = format!("processing:{}", batch_id);
         let items_key = format!("{}:items", processing_key);
         
         let mut conn = self.get_connection().await?;
         
-        // Push failed items back to the front of the queue for priority retry
+        // Group failed items by chain
+        let mut chain_groups: std::collections::HashMap<String, Vec<&DiscoveredWalletToken>> = std::collections::HashMap::new();
         for item in failed_items {
-            let json_data = serde_json::to_string(item)?;
-            let _: () = conn.lpush(queue_key, json_data).await?;
+            chain_groups.entry(item.chain.clone()).or_default().push(item);
+        }
+        
+        // Push failed items back to their respective chain queues for priority retry
+        for (chain, chain_items) in chain_groups {
+            let queue_key = format!("discovered_wallet_token_pairs_queue:{}", chain);
+            
+            for item in chain_items {
+                let json_data = serde_json::to_string(item)?;
+                let _: () = conn.lpush(&queue_key, json_data).await?;
+            }
         }
         
         // Clean up the processing keys
         let _: () = conn.del(&[&processing_key, &items_key]).await?;
         
         if !failed_items.is_empty() {
-            info!("Returned {} failed items from batch {} back to queue", 
+            info!("Returned {} failed items from batch {} back to chain-specific queues", 
                   failed_items.len(), batch_id);
         }
         

@@ -128,11 +128,51 @@ impl BirdEyeTrendingOrchestrator {
 
     /// Execute one complete discovery cycle with enhanced multi-source strategy
     pub async fn execute_discovery_cycle(&self) -> Result<usize> {
-        info!("🔄 Starting Enhanced Multi-Source Discovery Cycle");
+        // Set is_running to true for this cycle
+        {
+            let mut is_running = self.is_running.lock().await;
+            *is_running = true;
+        }
+        
+        info!("🔄 Starting Enhanced Multichain Discovery Cycle");
         debug!("📊 Discovery sources: 1) Paginated trending tokens (unlimited), 2) Paginated gainers (3 timeframes), 3) DexScreener boosted");
-
-        // Step 1: Get trending tokens using enhanced multi-sort discovery
-        let trending_tokens = self.get_trending_tokens().await?;
+        
+        let mut total_discovered_wallets = 0;
+        
+        // Iterate through all enabled chains
+        for chain in &self.config.multichain.enabled_chains {
+            info!("🔗 Processing chain: {}", chain);
+            
+            total_discovered_wallets += self.execute_discovery_cycle_for_chain(chain).await?;
+            
+            // Check if we should stop between chains
+            {
+                let is_running = self.is_running.lock().await;
+                if !*is_running {
+                    info!("🛑 Stop requested between chains, breaking out");
+                    break;
+                }
+            }
+        }
+        
+        info!("✅ Multichain discovery cycle completed: {} total wallets discovered across {} chains", 
+              total_discovered_wallets, self.config.multichain.enabled_chains.len());
+        
+        // Reset is_running flag after cycle completes
+        {
+            let mut is_running = self.is_running.lock().await;
+            *is_running = false;
+        }
+        
+        Ok(total_discovered_wallets)
+    }
+    
+    /// Execute discovery cycle for a specific chain
+    async fn execute_discovery_cycle_for_chain(&self, chain: &str) -> Result<usize> {
+        info!("🔄 Starting discovery cycle for chain: {}", chain);
+        
+        // Step 1: Get trending tokens using enhanced multi-sort discovery for this chain
+        let trending_tokens = self.get_trending_tokens_for_chain(chain).await?;
         if trending_tokens.is_empty() {
             debug!("📊 No trending tokens found from multi-sort discovery");
             return Ok(0);
@@ -162,14 +202,14 @@ impl BirdEyeTrendingOrchestrator {
             debug!("🎯 Processing token {}/{}: {} ({})", 
                    i + 1, trending_tokens.len(), token.symbol, token.address);
 
-            match self.get_top_traders_for_token(&token.address).await {
+            match self.get_top_traders_for_token(&token.address, chain).await {
                 Ok(top_traders) => {
                     if !top_traders.is_empty() {
                         info!("👤 Found {} quality traders for {} ({})", 
                               top_traders.len(), token.symbol, token.address);
 
                         // Step 3: Push quality wallet-token pairs to Redis for P&L analysis
-                        match self.push_wallet_token_pairs_to_queue(&top_traders, token).await {
+                        match self.push_wallet_token_pairs_to_queue(&top_traders, token, chain).await {
                             Ok(pushed_count) => {
                                 total_discovered_wallets += pushed_count;
                                 debug!("📤 Pushed {} wallets to analysis queue for {}", 
@@ -210,30 +250,30 @@ impl BirdEyeTrendingOrchestrator {
             }
         }
 
-        // Step 3: Get top gainers across different timeframes with pagination (15 API calls total)
-        info!("🏆 Starting paginated multi-timeframe gainers discovery");
+        // Step 3: Get top gainers across different timeframes with pagination for this chain
+        info!("🏆 Starting paginated multi-timeframe gainers discovery for chain: {}", chain);
         
-        match self.get_top_gainers().await {
+        match self.get_top_gainers_for_chain(chain).await {
             Ok(gainers) => {
                 if !gainers.is_empty() {
-                    info!("💰 Found {} top gainers across all timeframes and pages", gainers.len());
+                    info!("💰 Found {} top gainers across all timeframes for chain {}", gainers.len(), chain);
                     
                     // Convert gainers to wallet-token pairs and push to queue
-                    match self.push_gainers_to_queue(&gainers, "ALL_TIMEFRAMES").await {
+                    match self.push_gainers_to_queue(&gainers, "ALL_TIMEFRAMES", chain).await {
                         Ok(pushed_count) => {
                             total_discovered_wallets += pushed_count;
-                            debug!("📤 Pushed {} gainer wallets to analysis queue", pushed_count);
+                            debug!("📤 Pushed {} gainer wallets to analysis queue for chain {}", pushed_count, chain);
                         }
                         Err(e) => {
-                            warn!("❌ Failed to push gainers: {}", e);
+                            warn!("❌ Failed to push gainers for chain {}: {}", chain, e);
                         }
                     }
                 } else {
-                    debug!("⭕ No gainers found across all timeframes");
+                    debug!("⭕ No gainers found across all timeframes for chain {}", chain);
                 }
             }
             Err(e) => {
-                warn!("❌ Failed to get gainers: {}", e);
+                warn!("❌ Failed to get gainers for chain {}: {}", chain, e);
             }
         }
 
@@ -280,59 +320,59 @@ impl BirdEyeTrendingOrchestrator {
             debug!("⭕ DexScreener client disabled, skipping boosted token discovery");
         }
 
-        // Step 5: Get newly listed tokens (NEW DISCOVERY SOURCE)
+        // Step 5: Get newly listed tokens (NEW DISCOVERY SOURCE) for this chain
         if self.config.birdeye.new_listing_enabled {
-            info!("🆕 Starting new listing token discovery");
+            info!("🆕 Starting new listing token discovery for chain: {}", chain);
             
-            match self.get_new_listing_tokens().await {
+            match self.get_new_listing_tokens_for_chain(chain).await {
                 Ok(new_listing_tokens) => {
                     if !new_listing_tokens.is_empty() {
-                        info!("📈 Found {} new listing tokens", new_listing_tokens.len());
+                        info!("📈 Found {} new listing tokens for chain {}", new_listing_tokens.len(), chain);
                         
                         match self.process_new_listing_tokens(&new_listing_tokens).await {
                             Ok(pushed_count) => {
                                 total_discovered_wallets += pushed_count;
-                                debug!("📤 Pushed {} wallets from new listing tokens", pushed_count);
+                                debug!("📤 Pushed {} wallets from new listing tokens for chain {}", pushed_count, chain);
                             }
                             Err(e) => {
-                                warn!("❌ Failed to process new listing tokens: {}", e);
+                                warn!("❌ Failed to process new listing tokens for chain {}: {}", chain, e);
                             }
                         }
                     } else {
-                        debug!("⭕ No new listing tokens found");
+                        debug!("⭕ No new listing tokens found for chain {}", chain);
                     }
                 }
                 Err(e) => {
-                    warn!("❌ Failed to fetch new listing tokens: {}", e);
+                    warn!("❌ Failed to fetch new listing tokens for chain {}: {}", chain, e);
                 }
             }
         } else {
-            debug!("⭕ New listing token discovery disabled");
+            debug!("⭕ New listing token discovery disabled for chain {}", chain);
         }
 
-        info!("✅ Enhanced Multi-Source Discovery Cycle Completed: {} total quality wallets discovered", total_discovered_wallets);
-        debug!("📊 Discovery breakdown: Paginated trending (unlimited tokens, 3 sorts × 5 pages = 15 calls) → paginated top traders (5x) | Paginated gainers (3 timeframes × 5 pages = 15 calls) → direct wallets | DexScreener boosted → paginated top traders (5x) | New listing tokens → paginated top traders (5x)");
+        info!("✅ Enhanced Multi-Source Discovery Cycle Completed for chain {}: {} total quality wallets discovered", chain, total_discovered_wallets);
+        debug!("📊 Discovery breakdown for chain {}: Paginated trending (unlimited tokens, 3 sorts × 5 pages = 15 calls) → paginated top traders (5x) | Paginated gainers (3 timeframes × 5 pages = 15 calls) → direct wallets | DexScreener boosted → paginated top traders (5x) | New listing tokens → paginated top traders (5x)", chain);
         Ok(total_discovered_wallets)
     }
 
-    /// Get top gainers across all timeframes with pagination
-    async fn get_top_gainers(&self) -> Result<Vec<GainerLoser>> {
-        debug!("💰 Fetching top gainers across all timeframes with pagination");
+    /// Get top gainers across all timeframes with pagination for a specific chain
+    async fn get_top_gainers_for_chain(&self, chain: &str) -> Result<Vec<GainerLoser>> {
+        debug!("💰 Fetching top gainers across all timeframes with pagination for chain: {}", chain);
 
-        match self.birdeye_client.get_gainers_losers_paginated().await {
+        match self.birdeye_client.get_gainers_losers_paginated(chain).await {
             Ok(gainers) => {
-                debug!("📊 Retrieved {} gainers across all timeframes and pages", gainers.len());
+                debug!("📊 Retrieved {} gainers across all timeframes and pages for chain {}", gainers.len(), chain);
                 Ok(gainers)
             }
             Err(e) => {
-                error!("❌ Failed to fetch gainers: {}", e);
+                error!("❌ Failed to fetch gainers for chain {}: {}", chain, e);
                 Err(e.into())
             }
         }
     }
 
     /// Push gainer wallets to Redis queue for P&L analysis
-    async fn push_gainers_to_queue(&self, gainers: &[GainerLoser], timeframe: &str) -> Result<usize> {
+    async fn push_gainers_to_queue(&self, gainers: &[GainerLoser], timeframe: &str, chain: &str) -> Result<usize> {
         if gainers.is_empty() {
             return Ok(0);
         }
@@ -342,6 +382,7 @@ impl BirdEyeTrendingOrchestrator {
         let wallet_token_pairs: Vec<DiscoveredWalletToken> = gainers.iter()
             .map(|gainer| DiscoveredWalletToken {
                 wallet_address: gainer.address.clone(),
+                chain: chain.to_string(),
                 token_address: "ALL_TOKENS".to_string(), // Generic for gainers
                 token_symbol: format!("GAINER_{}", timeframe.to_uppercase()),
                 trader_volume_usd: gainer.volume,
@@ -350,8 +391,8 @@ impl BirdEyeTrendingOrchestrator {
             })
             .collect();
 
-        debug!("📤 Pushing {} gainer wallet-token pairs to Redis queue for timeframe {}", 
-               wallet_token_pairs.len(), timeframe);
+        debug!("📤 Pushing {} gainer wallet-token pairs to Redis queue for timeframe {} on chain {}", 
+               wallet_token_pairs.len(), timeframe, chain);
 
         let redis = self.redis_client.lock().await;
         if let Some(ref redis_client) = *redis {
@@ -359,11 +400,11 @@ impl BirdEyeTrendingOrchestrator {
                 Ok(pushed_count) => {
                     let skipped_count = wallet_token_pairs.len() - pushed_count;
                     if skipped_count > 0 {
-                        info!("✅ Pushed {} new gainer wallet-token pairs for {} (skipped {} duplicates)", 
-                              pushed_count, timeframe, skipped_count);
+                        info!("✅ Pushed {} new gainer wallet-token pairs for {} on chain {} (skipped {} duplicates)", 
+                              pushed_count, timeframe, chain, skipped_count);
                     } else {
-                        info!("✅ Successfully pushed {} gainer wallet-token pairs for {}", 
-                              pushed_count, timeframe);
+                        info!("✅ Successfully pushed {} gainer wallet-token pairs for {} on chain {}", 
+                              pushed_count, timeframe, chain);
                     }
                     Ok(pushed_count)
                 }
@@ -386,8 +427,14 @@ impl BirdEyeTrendingOrchestrator {
 
         debug!("🔄 Processing {} boosted tokens from {}", boosted_tokens.len(), source);
         
+        // Filter for enabled chains only
+        let mut processed_tokens: Vec<DexScreenerBoostedToken> = boosted_tokens
+            .iter()
+            .filter(|token| self.config.multichain.enabled_chains.contains(&token.chain_id))
+            .cloned()
+            .collect();
+            
         // Limit to max boosted tokens (no filtering by boost amount needed)
-        let mut processed_tokens = boosted_tokens.to_vec();
         if processed_tokens.len() > self.config.dexscreener.max_boosted_tokens as usize {
             processed_tokens.truncate(self.config.dexscreener.max_boosted_tokens as usize);
         }
@@ -411,7 +458,9 @@ impl BirdEyeTrendingOrchestrator {
             debug!("🎯 Processing boosted token {}/{}: {}", 
                    i + 1, processed_tokens.len(), boosted_token.token_address);
 
-            match self.get_top_traders_for_token(&boosted_token.token_address).await {
+            // Use the chain from the boosted token
+            let boosted_chain = &boosted_token.chain_id;
+            match self.get_top_traders_for_token(&boosted_token.token_address, boosted_chain).await {
                 Ok(top_traders) => {
                     if !top_traders.is_empty() {
                         info!("👤 Found {} quality traders for boosted token {} ({})", 
@@ -437,7 +486,7 @@ impl BirdEyeTrendingOrchestrator {
                         };
 
                         // Push quality wallet-token pairs to Redis for P&L analysis
-                        match self.push_wallet_token_pairs_to_queue(&top_traders, &synthetic_token).await {
+                        match self.push_wallet_token_pairs_to_queue(&top_traders, &synthetic_token, boosted_chain).await {
                             Ok(pushed_count) => {
                                 total_discovered_wallets += pushed_count;
                                 debug!("📤 Pushed {} wallets to analysis queue for boosted token {}", 
@@ -485,13 +534,13 @@ impl BirdEyeTrendingOrchestrator {
         Ok(total_discovered_wallets)
     }
 
-    /// Get trending tokens from BirdEye using enhanced multi-sort discovery
-    async fn get_trending_tokens(&self) -> Result<Vec<BirdEyeTrendingToken>> {
-        debug!("📊 Starting paginated trending token discovery from BirdEye");
+    /// Get trending tokens for a specific chain using enhanced multi-sort discovery
+    async fn get_trending_tokens_for_chain(&self, chain: &str) -> Result<Vec<BirdEyeTrendingToken>> {
+        debug!("📊 Starting paginated trending token discovery from BirdEye for chain: {}", chain);
 
-        match self.birdeye_client.get_trending_tokens_paginated("solana").await {
+        match self.birdeye_client.get_trending_tokens_paginated(chain).await {
             Ok(mut tokens) => {
-                info!("🎯 Paginated discovery completed: {} unique tokens found across all pages", tokens.len());
+                info!("🎯 Paginated discovery completed: {} unique tokens found across all pages for chain {}", tokens.len(), chain);
                 
                 // Apply volume-based sorting (already done in multi-sort method but ensure consistency)
                 tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
@@ -499,13 +548,13 @@ impl BirdEyeTrendingOrchestrator {
                 // Apply max trending tokens limit (0 = unlimited)
                 if self.config.birdeye.max_trending_tokens > 0 && tokens.len() > self.config.birdeye.max_trending_tokens {
                     tokens.truncate(self.config.birdeye.max_trending_tokens);
-                    info!("📈 Processing trending tokens: {} tokens (limited to {})", tokens.len(), self.config.birdeye.max_trending_tokens);
+                    info!("📈 Processing trending tokens: {} tokens (limited to {}) for chain {}", tokens.len(), self.config.birdeye.max_trending_tokens, chain);
                 } else {
-                    info!("📈 Processing all discovered trending tokens: {} tokens", tokens.len());
+                    info!("📈 Processing all discovered trending tokens: {} tokens for chain {}", tokens.len(), chain);
                 }
 
                 if self.config.system.debug_mode && !tokens.is_empty() {
-                    debug!("🎯 Top trending tokens by multi-sort discovery:");
+                    debug!("🎯 Top trending tokens by multi-sort discovery for chain {}:", chain);
                     for (i, token) in tokens.iter().enumerate().take(8) {
                         debug!("  {}. {} ({}) - Vol: ${:.0}, Liq: ${:.0}, Change: {:.1}%", 
                                i + 1, token.symbol, token.address, 
@@ -518,18 +567,18 @@ impl BirdEyeTrendingOrchestrator {
                 Ok(tokens)
             }
             Err(e) => {
-                error!("❌ Multi-sort trending token discovery failed: {}", e);
-                warn!("🔄 Falling back to single-sort discovery method");
+                error!("❌ Multi-sort trending token discovery failed for chain {}: {}", chain, e);
+                warn!("🔄 Falling back to single-sort discovery method for chain {}", chain);
                 
                 // Fallback to original method
-                match self.birdeye_client.get_trending_tokens_paginated("solana").await {
+                match self.birdeye_client.get_trending_tokens_paginated(chain).await {
                     Ok(mut fallback_tokens) => {
                         fallback_tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
-                        warn!("⚠️ Using fallback discovery: {} tokens retrieved", fallback_tokens.len());
+                        warn!("⚠️ Using fallback discovery: {} tokens retrieved for chain {}", fallback_tokens.len(), chain);
                         Ok(fallback_tokens)
                     }
                     Err(fallback_e) => {
-                        error!("❌ Both multi-sort and fallback discovery failed: {}", fallback_e);
+                        error!("❌ Both multi-sort and fallback discovery failed for chain {}: {}", chain, fallback_e);
                         Err(e.into())
                     }
                 }
@@ -537,13 +586,13 @@ impl BirdEyeTrendingOrchestrator {
         }
     }
 
-    /// Get top traders for a specific token
-    async fn get_top_traders_for_token(&self, token_address: &str) -> Result<Vec<TopTrader>> {
-        debug!("👥 Fetching top traders for token: {}", token_address);
+    /// Get top traders for a specific token on a specific chain
+    async fn get_top_traders_for_token(&self, token_address: &str, chain: &str) -> Result<Vec<TopTrader>> {
+        debug!("👥 Fetching top traders for token: {} on chain: {}", token_address, chain);
 
-        match self.birdeye_client.get_top_traders_paginated(token_address).await {
+        match self.birdeye_client.get_top_traders_paginated(token_address, chain).await {
             Ok(traders) => {
-                debug!("📊 Retrieved {} raw traders for token {}", traders.len(), token_address);
+                debug!("📊 Retrieved {} raw traders for token {} on chain {}", traders.len(), token_address, chain);
 
                 // Apply quality filtering using trader filter config
                 let quality_traders = self.birdeye_client.filter_top_traders(
@@ -560,8 +609,8 @@ impl BirdEyeTrendingOrchestrator {
                     filtered_traders.truncate(self.config.birdeye.max_traders_per_token as usize);
                 }
 
-                debug!("✅ Filtered to {} quality traders for token {}", 
-                       filtered_traders.len(), token_address);
+                debug!("✅ Filtered to {} quality traders for token {} on chain {}", 
+                       filtered_traders.len(), token_address, chain);
 
                 if self.config.system.debug_mode && !filtered_traders.is_empty() {
                     for (i, trader) in filtered_traders.iter().enumerate().take(3) {
@@ -573,14 +622,14 @@ impl BirdEyeTrendingOrchestrator {
                 Ok(filtered_traders)
             }
             Err(e) => {
-                warn!("❌ Failed to fetch top traders for token {}: {}", token_address, e);
+                warn!("❌ Failed to fetch top traders for token {} on chain {}: {}", token_address, chain, e);
                 Err(e.into())
             }
         }
     }
 
     /// Push quality wallet-token pairs to Redis queue for targeted P&L analysis
-    async fn push_wallet_token_pairs_to_queue(&self, traders: &[TopTrader], token: &BirdEyeTrendingToken) -> Result<usize> {
+    async fn push_wallet_token_pairs_to_queue(&self, traders: &[TopTrader], token: &BirdEyeTrendingToken, chain: &str) -> Result<usize> {
         if traders.is_empty() {
             return Ok(0);
         }
@@ -588,6 +637,7 @@ impl BirdEyeTrendingOrchestrator {
         let wallet_token_pairs: Vec<DiscoveredWalletToken> = traders.iter()
             .map(|trader| DiscoveredWalletToken {
                 wallet_address: trader.owner.clone(),
+                chain: chain.to_string(),
                 token_address: token.address.clone(),
                 token_symbol: token.symbol.clone(),
                 trader_volume_usd: trader.volume,
@@ -596,7 +646,7 @@ impl BirdEyeTrendingOrchestrator {
             })
             .collect();
 
-        debug!("📤 Pushing {} wallet-token pairs to Redis queue for token {}", wallet_token_pairs.len(), token.symbol);
+        debug!("📤 Pushing {} wallet-token pairs to Redis queue for token {} on chain {}", wallet_token_pairs.len(), token.symbol, chain);
 
         let redis = self.redis_client.lock().await;
         if let Some(ref redis_client) = *redis {
@@ -604,11 +654,11 @@ impl BirdEyeTrendingOrchestrator {
                 Ok(pushed_count) => {
                     let skipped_count = wallet_token_pairs.len() - pushed_count;
                     if skipped_count > 0 {
-                        info!("✅ Pushed {} new wallet-token pairs to analysis queue for {} (skipped {} duplicates)", 
-                              pushed_count, token.symbol, skipped_count);
+                        info!("✅ Pushed {} new wallet-token pairs to analysis queue for {} on chain {} (skipped {} duplicates)", 
+                              pushed_count, token.symbol, chain, skipped_count);
                     } else {
-                        info!("✅ Successfully pushed {} quality wallet-token pairs to analysis queue for {}", 
-                              pushed_count, token.symbol);
+                        info!("✅ Successfully pushed {} quality wallet-token pairs to analysis queue for {} on chain {}", 
+                              pushed_count, token.symbol, chain);
                     }
                     Ok(pushed_count)
                 }
@@ -625,11 +675,11 @@ impl BirdEyeTrendingOrchestrator {
 
     // get_wallet_transaction_history method removed - was unused and relied on removed get_trader_transactions
 
-    /// Get new listing tokens with comprehensive coverage
-    async fn get_new_listing_tokens(&self) -> Result<Vec<NewListingToken>> {
-        debug!("🆕 Fetching new listing tokens with comprehensive coverage");
+    /// Get new listing tokens with comprehensive coverage for a specific chain
+    async fn get_new_listing_tokens_for_chain(&self, chain: &str) -> Result<Vec<NewListingToken>> {
+        debug!("🆕 Fetching new listing tokens with comprehensive coverage for chain: {}", chain);
         
-        let all_tokens = self.birdeye_client.get_new_listing_tokens_comprehensive("solana").await?;
+        let all_tokens = self.birdeye_client.get_new_listing_tokens_comprehensive(chain).await?;
         
         // Apply quality filtering
         let filter = NewListingTokenFilter {
@@ -641,10 +691,10 @@ impl BirdEyeTrendingOrchestrator {
         
         let filtered_tokens = self.birdeye_client.filter_new_listing_tokens(all_tokens, &filter);
         
-        info!("🎯 New listing discovery completed: {} quality tokens after filtering", filtered_tokens.len());
+        info!("🎯 New listing discovery completed: {} quality tokens after filtering for chain {}", filtered_tokens.len(), chain);
         
         if self.config.system.debug_mode && !filtered_tokens.is_empty() {
-            debug!("🆕 Top new listing tokens:");
+            debug!("🆕 Top new listing tokens for chain {}:", chain);
             for (i, token) in filtered_tokens.iter().enumerate().take(8) {
                 debug!("  {}. {} ({}) - Liquidity: ${:.2}, Source: {}", 
                        i + 1, token.symbol, token.address, token.liquidity, token.source);
@@ -653,6 +703,7 @@ impl BirdEyeTrendingOrchestrator {
         
         Ok(filtered_tokens)
     }
+
 
     /// Process new listing tokens and get top traders for each
     async fn process_new_listing_tokens(&self, new_listing_tokens: &[NewListingToken]) -> Result<usize> {
@@ -678,7 +729,9 @@ impl BirdEyeTrendingOrchestrator {
             debug!("🎯 Processing new listing token {}/{}: {} ({})", 
                    i + 1, new_listing_tokens.len(), token.symbol, token.address);
             
-            match self.get_top_traders_for_token(&token.address).await {
+            // Use default chain for new listing tokens
+            let listing_chain = &self.config.multichain.default_chain;
+            match self.get_top_traders_for_token(&token.address, listing_chain).await {
                 Ok(top_traders) => {
                     if !top_traders.is_empty() {
                         info!("👤 Found {} quality traders for new listing token {} ({})", 
@@ -704,7 +757,7 @@ impl BirdEyeTrendingOrchestrator {
                         };
                         
                         // Use existing wallet-token pair pushing logic
-                        match self.push_wallet_token_pairs_to_queue(&top_traders, &synthetic_trending_token).await {
+                        match self.push_wallet_token_pairs_to_queue(&top_traders, &synthetic_trending_token, listing_chain).await {
                             Ok(pushed_count) => {
                                 total_discovered_wallets += pushed_count;
                                 debug!("📤 Pushed {} wallets for new listing token {}", pushed_count, token.symbol);

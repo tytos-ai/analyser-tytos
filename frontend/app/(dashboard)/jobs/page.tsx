@@ -1,13 +1,18 @@
+'use client'
+
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { ChainBadge } from '@/components/ui/chain-badge'
+import { ChainSelectItem } from '@/components/ui/chain-select-item'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import { formatCurrency, formatPercentage, truncateAddress } from '@/lib/utils'
@@ -32,12 +37,14 @@ import {
   ArrowRight,
   ExternalLink,
   Calendar,
-  Target
+  Target,
+  Check
 } from 'lucide-react'
 
 // Enhanced Types based on actual API structure
 interface BatchJobSubmission {
   wallet_addresses: string[]
+  chain?: string
   filters?: {
     min_capital_sol?: number
     min_hold_minutes?: number
@@ -57,6 +64,7 @@ interface BatchJob {
   id: string
   status: 'Pending' | 'Running' | 'Completed' | 'Failed'
   wallet_count: number
+  chain: string
   created_at: string
   started_at?: string
   completed_at?: string
@@ -106,8 +114,6 @@ interface WalletAnalysisDetail {
   }
 }
 
-'use client'
-
 export default function Jobs() {
   const [showSubmissionForm, setShowSubmissionForm] = useState(false)
   const [showResults, setShowResults] = useState<string | null>(null)
@@ -117,6 +123,7 @@ export default function Jobs() {
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [formData, setFormData] = useState<BatchJobSubmission>({
     wallet_addresses: [],
+    chain: 'solana',
     filters: {
       min_capital_sol: 0.0,
       min_hold_minutes: 0.0,
@@ -509,6 +516,7 @@ export default function Jobs() {
                               <Users className="w-3 h-3 mr-1" />
                               {job.wallet_count} wallets
                             </span>
+                            <ChainBadge chain={job.chain} />
                             <span className="flex items-center">
                               <Calendar className="w-3 h-3 mr-1" />
                               {new Date(job.created_at).toLocaleString()}
@@ -530,11 +538,11 @@ export default function Jobs() {
                             {progress.completed_wallets} of {progress.total_wallets} analyzed
                           </span>
                           <div className="flex items-center space-x-4 text-xs">
-                            <span className="text-green-success">
-                              ✓ {progress.successful_wallets}
+                            <span className="text-green-success flex items-center gap-1">
+                              <Check className="w-4 h-4" /> {progress.successful_wallets}
                             </span>
-                            <span className="text-red-400">
-                              ✗ {progress.failed_wallets}
+                            <span className="text-red-400 flex items-center gap-1">
+                              <X className="w-4 h-4" /> {progress.failed_wallets}
                             </span>
                           </div>
                         </div>
@@ -563,6 +571,7 @@ export default function Jobs() {
                 <tr className="border-b border-blue-ice/20">
                   <th className="text-left py-3 px-4 font-medium text-gray-400">Job ID</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-400">Status</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-400">Chain</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-400">Wallets</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-400">Success/Failed</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-400">Created</th>
@@ -575,6 +584,7 @@ export default function Jobs() {
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={i} className="border-b border-blue-ice/10">
                       <td className="py-3 px-4"><Skeleton className="h-4 w-32" /></td>
+                      <td className="py-3 px-4"><Skeleton className="h-6 w-20" /></td>
                       <td className="py-3 px-4"><Skeleton className="h-6 w-20" /></td>
                       <td className="py-3 px-4"><Skeleton className="h-4 w-16" /></td>
                       <td className="py-3 px-4"><Skeleton className="h-4 w-20" /></td>
@@ -599,13 +609,16 @@ export default function Jobs() {
                           {getStatusBadge(job.status)}
                         </td>
                         <td className="py-3 px-4">
+                          <ChainBadge chain={job.chain} />
+                        </td>
+                        <td className="py-3 px-4">
                           <div className="text-white">{job.wallet_count}</div>
                         </td>
                         <td className="py-3 px-4">
                           {job.status === 'Completed' && (
                             <div className="flex items-center space-x-2 text-sm">
-                              <span className="text-green-success">✓ {job.success_count || 0}</span>
-                              <span className="text-red-400">✗ {job.failure_count || 0}</span>
+                              <span className="text-green-success flex items-center gap-1"><Check className="w-3 h-3" /> {job.success_count || 0}</span>
+                              <span className="text-red-400 flex items-center gap-1"><X className="w-3 h-3" /> {job.failure_count || 0}</span>
                             </div>
                           )}
                         </td>
@@ -728,6 +741,7 @@ export default function Jobs() {
                           setFormData(prev => ({ 
                             ...prev, 
                             wallet_addresses: [],
+                            chain: 'solana',
                             filters: {
                               min_capital_sol: 0.0,
                               min_hold_minutes: 0.0,
@@ -757,6 +771,37 @@ export default function Jobs() {
                     Estimated analysis time: ~{Math.ceil(formData.wallet_addresses.length / 10)} minutes
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* Chain Selection */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-white">
+                Target Blockchain
+              </h3>
+              <div>
+                <Label htmlFor="chain-select" className="text-white mb-2">
+                  Select the blockchain for analysis
+                </Label>
+                <Select value={formData.chain} onValueChange={(value) => setFormData(prev => ({ ...prev, chain: value }))}>
+                  <SelectTrigger id="chain-select" className="w-full bg-navy-deep/50 border-blue-ice/20 text-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="solana">
+                      <ChainSelectItem chain="solana" label="Solana" />
+                    </SelectItem>
+                    <SelectItem value="ethereum">
+                      <ChainSelectItem chain="ethereum" label="Ethereum" />
+                    </SelectItem>
+                    <SelectItem value="bsc">
+                      <ChainSelectItem chain="bsc" label="BSC" />
+                    </SelectItem>
+                    <SelectItem value="base">
+                      <ChainSelectItem chain="base" label="Base" />
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 

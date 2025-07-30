@@ -1,7 +1,9 @@
 use sqlx::{PgPool, Row};
+use sqlx::postgres::PgPoolOptions;
 use serde_json;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::{PersistenceError, Result, BatchJob, JobStatus};
@@ -13,17 +15,31 @@ pub struct PostgresClient {
 }
 
 impl PostgresClient {
-    /// Create a new PostgreSQL client (without running migrations)
+    /// Create a new PostgreSQL client with production-grade connection pool settings
     pub async fn new(database_url: &str) -> Result<Self> {
-        // Connect to PostgreSQL database
-        let pool = PgPool::connect(database_url)
+        // Configure connection pool with production settings
+        let pool = PgPoolOptions::new()
+            .max_connections(20)              // Limit per app instance
+            .min_connections(5)               // Keep warm connections
+            .acquire_timeout(Duration::from_secs(30))  // How long to wait for a connection
+            .idle_timeout(Duration::from_secs(600))    // Close idle connections after 10 minutes
+            .max_lifetime(Duration::from_secs(1800))   // Force refresh connections after 30 minutes
+            .connect(database_url)
             .await
             .map_err(|e| PersistenceError::PoolCreation(format!("PostgreSQL connection error: {}", e)))?;
 
-        info!("PostgreSQL client initialized with database: {}", database_url);
+        info!("PostgreSQL pool initialized: max_connections=20, min_connections=5, acquire_timeout=30s");
         Ok(Self { pool })
     }
 
+    /// Get connection pool metrics for monitoring
+    pub fn get_pool_metrics(&self) -> (u32, u32, u32) {
+        let size = self.pool.size();
+        let idle = self.pool.num_idle();
+        // For SQLx 0.6, we'll use a hardcoded max (matching our configuration)
+        let max_size = 20u32; // This matches our max_connections setting
+        (size, idle as u32, max_size)
+    }
 
     // =====================================
     // P&L Results Storage
@@ -33,8 +49,10 @@ impl PostgresClient {
     pub async fn store_pnl_result(
         &self,
         wallet_address: &str,
+        chain: &str,
         portfolio_result: &pnl_core::PortfolioPnLResult,
     ) -> Result<()> {
+        // Store with chain field for multichain support
         let portfolio_json = serde_json::to_string(portfolio_result)
             .map_err(PersistenceError::Serialization)?;
 
@@ -47,9 +65,10 @@ impl PostgresClient {
         let tokens_analyzed = portfolio_result.tokens_analyzed as i32;
         let avg_hold_time = portfolio_result.avg_hold_time_minutes.to_string().parse::<f64>().unwrap_or(0.0);
 
-        // Clear existing data first (breaking change as requested)
-        sqlx::query("DELETE FROM pnl_results WHERE wallet_address = $1")
+        // Clear existing data for this wallet and chain
+        sqlx::query("DELETE FROM pnl_results WHERE wallet_address = $1 AND chain = $2")
             .bind(wallet_address)
+            .bind(chain)
             .execute(&self.pool)
             .await
             .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -61,12 +80,13 @@ impl PostgresClient {
         sqlx::query(
             r#"
             INSERT INTO pnl_results 
-            (wallet_address, total_pnl_usd, realized_pnl_usd, unrealized_pnl_usd, total_trades, win_rate, 
+            (wallet_address, chain, total_pnl_usd, realized_pnl_usd, unrealized_pnl_usd, total_trades, win_rate, 
              tokens_analyzed, avg_hold_time_minutes, portfolio_json, analyzed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             "#
         )
         .bind(wallet_address)
+        .bind(chain)
         .bind(total_pnl_usd)
         .bind(realized_pnl_usd) 
         .bind(unrealized_pnl_usd)
@@ -88,19 +108,21 @@ impl PostgresClient {
         Ok(())
     }
 
-    /// Get a rich P&L portfolio result for a specific wallet
+    /// Get a rich P&L portfolio result for a specific wallet and chain
     pub async fn get_portfolio_pnl_result(
         &self,
         wallet_address: &str,
+        chain: &str,
     ) -> Result<Option<crate::StoredPortfolioPnLResult>> {
         let row = sqlx::query(
             r#"
-            SELECT wallet_address, portfolio_json, analyzed_at
+            SELECT wallet_address, chain, portfolio_json, analyzed_at
             FROM pnl_results 
-            WHERE wallet_address = $1
+            WHERE wallet_address = $1 AND chain = $2
             "#
         )
         .bind(wallet_address)
+        .bind(chain)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -111,6 +133,7 @@ impl PostgresClient {
         match row {
             Some(row) => {
                 let wallet_address: String = row.get("wallet_address");
+                let chain: String = row.get("chain");
                 let portfolio_json: String = row.get("portfolio_json");
                 let analyzed_at: DateTime<Utc> = row.get("analyzed_at");
 
@@ -119,6 +142,7 @@ impl PostgresClient {
 
                 let stored_result = crate::StoredPortfolioPnLResult {
                     wallet_address,
+                    chain,
                     portfolio_result,
                     analyzed_at,
                 };
@@ -141,14 +165,21 @@ impl PostgresClient {
         Ok(None)
     }
 
-    /// Get all rich P&L portfolio results with pagination
+    /// Get all rich P&L portfolio results with pagination and optional chain filtering
     pub async fn get_all_pnl_results(
         &self,
         offset: usize,
         limit: usize,
+        chain_filter: Option<&str>,
     ) -> Result<(Vec<crate::StoredPortfolioPnLResult>, usize)> {
-        // Get total count
-        let count_row = sqlx::query("SELECT COUNT(*) as count FROM pnl_results")
+        // Get total count with optional chain filtering
+        let count_query = if let Some(chain) = chain_filter {
+            sqlx::query("SELECT COUNT(*) as count FROM pnl_results WHERE chain = $1")
+                .bind(chain)
+        } else {
+            sqlx::query("SELECT COUNT(*) as count FROM pnl_results")
+        };
+        let count_row = count_query
             .fetch_one(&self.pool)
             .await
             .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -162,17 +193,33 @@ impl PostgresClient {
             return Ok((Vec::new(), 0));
         }
 
-        // Get paginated results using new schema
-        let rows = sqlx::query(
-            r#"
-            SELECT wallet_address, portfolio_json, analyzed_at
-            FROM pnl_results 
-            ORDER BY analyzed_at DESC
-            LIMIT $1 OFFSET $2
-            "#
-        )
-        .bind(limit as i64)
-        .bind(offset as i64)
+        // Get paginated results using new schema with optional chain filtering
+        let rows = if let Some(chain) = chain_filter {
+            sqlx::query(
+                r#"
+                SELECT wallet_address, chain, portfolio_json, analyzed_at
+                FROM pnl_results 
+                WHERE chain = $1
+                ORDER BY analyzed_at DESC
+                LIMIT $2 OFFSET $3
+                "#
+            )
+            .bind(chain)
+            .bind(limit as i64)
+            .bind(offset as i64)
+        } else {
+            sqlx::query(
+                r#"
+                SELECT wallet_address, chain, portfolio_json, analyzed_at
+                FROM pnl_results 
+                ORDER BY analyzed_at DESC
+                LIMIT $1 OFFSET $2
+                "#
+            )
+            .bind(limit as i64)
+            .bind(offset as i64)
+        };
+        let rows = rows
         .fetch_all(&self.pool)
         .await
         .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -183,6 +230,7 @@ impl PostgresClient {
         let mut results = Vec::new();
         for row in rows {
             let wallet_address: String = row.get("wallet_address");
+            let chain: String = row.get("chain");
             let portfolio_json: String = row.get("portfolio_json");
             let analyzed_at: DateTime<Utc> = row.get("analyzed_at");
 
@@ -190,6 +238,7 @@ impl PostgresClient {
                 Ok(portfolio_result) => {
                     let stored_result = crate::StoredPortfolioPnLResult {
                         wallet_address,
+                        chain,
                         portfolio_result,
                         analyzed_at,
                     };
@@ -221,11 +270,12 @@ impl PostgresClient {
         sqlx::query(
             r#"
             INSERT INTO batch_jobs 
-            (id, wallet_addresses, status, created_at, started_at, completed_at, filters_json)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (id, wallet_addresses, chain, status, created_at, started_at, completed_at, filters_json)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (id) 
             DO UPDATE SET 
                 wallet_addresses = EXCLUDED.wallet_addresses,
+                chain = EXCLUDED.chain,
                 status = EXCLUDED.status,
                 created_at = EXCLUDED.created_at,
                 started_at = EXCLUDED.started_at,
@@ -235,6 +285,7 @@ impl PostgresClient {
         )
         .bind(job.id.to_string())
         .bind(wallet_addresses_json)
+        .bind(&job.chain)
         .bind(status_str)
         .bind(job.created_at)
         .bind(job.started_at)
@@ -255,7 +306,7 @@ impl PostgresClient {
     pub async fn get_batch_job(&self, job_id: &str) -> Result<Option<BatchJob>> {
         let row = sqlx::query(
             r#"
-            SELECT id, wallet_addresses, status, created_at, started_at, completed_at, filters_json
+            SELECT id, wallet_addresses, chain, status, created_at, started_at, completed_at, filters_json
             FROM batch_jobs 
             WHERE id = $1
             "#
@@ -272,6 +323,7 @@ impl PostgresClient {
             Some(row) => {
                 let id: String = row.get("id");
                 let wallet_addresses_json: String = row.get("wallet_addresses");
+                let chain: String = row.get("chain");
                 let status_str: String = row.get("status");
                 let created_at: DateTime<Utc> = row.get("created_at");
                 let started_at: Option<DateTime<Utc>> = row.get("started_at");
@@ -299,6 +351,7 @@ impl PostgresClient {
                             format!("UUID parsing error: {}", e)
                         ))))?,
                     wallet_addresses,
+                    chain,
                     status,
                     created_at,
                     started_at,

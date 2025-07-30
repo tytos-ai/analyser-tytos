@@ -1,8 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -10,9 +9,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
 import { api } from '@/lib/api'
-import { formatCurrency, formatNumber, truncateAddress } from '@/lib/utils'
+import { formatCurrency, formatNumber, truncateAddress, formatPercentage, getPnLColorClass, getWinRateColorClass } from '@/lib/utils'
+import { TokenTabs } from '@/components/ui/token-tabs'
+import { LoadingSpinner } from '@/components/ui/loading-spinner'
+import { ChainBadge } from '@/components/ui/chain-badge'
 import { 
   Play, 
   Square, 
@@ -28,27 +31,31 @@ import {
   RefreshCw,
   AlertCircle,
   CheckCircle,
-  Eye
+  Eye,
+  Wallet,
+  Copy,
+  ExternalLink,
+  TrendingDown,
+  DollarSign,
+  BarChart3,
+  PieChart,
+  Zap,
+  Target,
+  Coins,
+  AlertTriangle
 } from 'lucide-react'
-
-interface DiscoveredWallet {
-  wallet_address: string
-  token_symbol: string
-  trader_volume_usd: number
-  discovery_reason: string
-  discovered_at: string
-  analysis_status: 'pending' | 'processing' | 'completed' | 'failed'
-}
+import { DiscoveredWalletsResponse, WalletDetailResponse } from '@/types/api'
+import { motion, AnimatePresence } from 'framer-motion'
 
 export default function DEX() {
   const [sortBy, setSortBy] = useState('discovered_at')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
   const [minVolume, setMinVolume] = useState<number | undefined>()
   const [searchTerm, setSearchTerm] = useState('')
+  const [showDetailModal, setShowDetailModal] = useState<string | null>(null)
   
   const { toast } = useToast()
   const queryClient = useQueryClient()
-  const router = useRouter()
 
   // Fetch DEX service status with auto-refresh
   const { data: dexStatus, isLoading: statusLoading } = useQuery({
@@ -58,7 +65,7 @@ export default function DEX() {
   })
 
   // Fetch discovered wallets with auto-refresh
-  const { data: walletsData, isLoading: walletsLoading } = useQuery({
+  const { data: walletsData, isLoading: walletsLoading } = useQuery<DiscoveredWalletsResponse>({
     queryKey: ['discovered-wallets', sortBy, sortOrder, minVolume],
     queryFn: () => api.dex.getDiscoveredWallets({
       sort_by: sortBy,
@@ -67,6 +74,21 @@ export default function DEX() {
       limit: 50
     }),
     refetchInterval: 6000 // Poll every 6 seconds
+  })
+
+  // Get selected wallet data
+  const selectedWalletData = walletsData?.wallets.find(w => w.wallet_address === showDetailModal)
+
+  // Fetch detailed portfolio data when modal opens
+  const { data: portfolioDetailData, isLoading: isLoadingPortfolio } = useQuery<WalletDetailResponse>({
+    queryKey: ['walletDetail', showDetailModal, selectedWalletData?.chain],
+    queryFn: () => api.results.getWalletDetail(
+      showDetailModal!, 
+      'portfolio',
+      selectedWalletData?.chain
+    ),
+    enabled: !!showDetailModal && !!selectedWalletData,
+    staleTime: 5 * 60 * 1000, // 5 minutes
   })
 
   // Service control mutation
@@ -117,33 +139,50 @@ export default function DEX() {
     )
   }
 
-  const getAnalysisStatusBadge = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return <Badge className="bg-green-success/20 text-green-success border-green-success/30">Completed</Badge>
-      case 'processing':
-        return <Badge className="bg-cyan-bright/20 text-cyan-bright border-cyan-bright/30">Processing</Badge>
-      case 'pending':
-        return <Badge className="bg-orange-warning/20 text-orange-warning border-orange-warning/30">Pending</Badge>
-      case 'failed':
-        return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">Failed</Badge>
-      default:
-        return <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30">Unknown</Badge>
-    }
-  }
 
   const handleServiceControl = (action: 'start' | 'stop' | 'restart') => {
     controlMutation.mutate(action)
   }
 
   const handleWalletClick = (walletAddress: string) => {
-    router.push(`/wallet/${walletAddress}`)
+    setShowDetailModal(walletAddress)
   }
 
-  const filteredWallets = walletsData?.discovered_wallets.filter(wallet =>
+  const formatHoldTime = (minutes: number) => {
+    if (minutes < 60) return `${Math.round(minutes)}m`
+    const hours = Math.floor(minutes / 60)
+    const mins = Math.round(minutes % 60)
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
+  }
+
+  const getExplorerUrl = (address: string, chain: string = 'solana') => {
+    switch (chain) {
+      case 'ethereum':
+        return `https://etherscan.io/address/${address}`
+      case 'bsc':
+        return `https://bscscan.com/address/${address}`
+      case 'base':
+        return `https://basescan.org/address/${address}`
+      default:
+        return `https://solscan.io/account/${address}`
+    }
+  }
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast({
+        title: "Copied!",
+        description: "Address copied to clipboard",
+      })
+    } catch (err) {
+      console.error('Failed to copy text: ', err)
+    }
+  }
+
+  const filteredWallets = walletsData?.wallets.filter(wallet =>
     wallet.wallet_address.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    wallet.token_symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    wallet.discovery_reason.toLowerCase().includes(searchTerm.toLowerCase())
+    wallet.chain.toLowerCase().includes(searchTerm.toLowerCase())
   ) || []
 
   return (
@@ -323,7 +362,7 @@ export default function DEX() {
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                 <Input
-                  placeholder="Search wallets, tokens, or discovery reasons..."
+                  placeholder="Search by wallet address or chain..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="pl-10 bg-navy-deep/50 border-blue-ice/20 text-white"
@@ -378,11 +417,10 @@ export default function DEX() {
               <thead>
                 <tr className="border-b border-blue-ice/20">
                   <th className="text-left py-3 px-4 font-medium text-gray-400">Wallet Address</th>
-                  <th className="text-left py-3 px-4 font-medium text-gray-400">Token</th>
-                  <th className="text-left py-3 px-4 font-medium text-gray-400">Volume</th>
-                  <th className="text-left py-3 px-4 font-medium text-gray-400">Discovery Reason</th>
-                  <th className="text-left py-3 px-4 font-medium text-gray-400">Discovered</th>
-                  <th className="text-left py-3 px-4 font-medium text-gray-400">Analysis Status</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-400 w-32">Chain</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-400">P&L</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-400">Win Rate</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-400">Avg Hold Time</th>
                   <th className="text-left py-3 px-4 font-medium text-gray-400">Actions</th>
                 </tr>
               </thead>
@@ -393,9 +431,8 @@ export default function DEX() {
                       <td className="py-3 px-4"><Skeleton className="h-4 w-32" /></td>
                       <td className="py-3 px-4"><Skeleton className="h-4 w-16" /></td>
                       <td className="py-3 px-4"><Skeleton className="h-4 w-24" /></td>
-                      <td className="py-3 px-4"><Skeleton className="h-4 w-28" /></td>
                       <td className="py-3 px-4"><Skeleton className="h-4 w-20" /></td>
-                      <td className="py-3 px-4"><Skeleton className="h-6 w-20" /></td>
+                      <td className="py-3 px-4"><Skeleton className="h-4 w-24" /></td>
                       <td className="py-3 px-4"><Skeleton className="h-8 w-16" /></td>
                     </tr>
                   ))
@@ -410,28 +447,25 @@ export default function DEX() {
                           {truncateAddress(wallet.wallet_address)}
                         </button>
                       </td>
-                      <td className="py-3 px-4">
-                        <Badge className="bg-blue-steel/20 text-blue-steel border-blue-steel/30">
-                          {wallet.token_symbol}
-                        </Badge>
+                      <td className="py-3 px-4 w-32">
+                        <div className="inline-flex">
+                          <ChainBadge chain={wallet.chain} />
+                        </div>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="text-white font-medium">
-                          {formatCurrency(wallet.trader_volume_usd)}
+                        <div className={`text-white font-medium ${wallet.pnl_usd ? getPnLColorClass(wallet.pnl_usd) : 'text-gray-400'}`}>
+                          {wallet.pnl_usd ? formatCurrency(wallet.pnl_usd) : 'N/A'}
                         </div>
                       </td>
                       <td className="py-3 px-4">
                         <div className="text-gray-300 text-sm">
-                          {wallet.discovery_reason}
+                          {wallet.win_rate ? `${(wallet.win_rate * 100).toFixed(1)}%` : 'N/A'}
                         </div>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="text-gray-400 text-sm">
-                          {new Date(wallet.discovered_at).toLocaleTimeString()}
+                        <div className="text-gray-300 text-sm">
+                          {wallet.avg_hold_time_minutes ? formatHoldTime(wallet.avg_hold_time_minutes) : 'N/A'}
                         </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        {getAnalysisStatusBadge(wallet.analysis_status)}
                       </td>
                       <td className="py-3 px-4">
                         <Button 
@@ -461,6 +495,281 @@ export default function DEX() {
           )}
         </CardContent>
       </Card>
+
+      {/* Wallet Detail Modal */}
+      <AnimatePresence>
+        {showDetailModal && selectedWalletData && (
+          <Dialog open={!!showDetailModal} onOpenChange={() => setShowDetailModal(null)}>
+            <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="text-xl font-bold text-white flex items-center space-x-2">
+                  <Wallet className="w-6 h-6 text-cyan-bright" />
+                  <span>Wallet Analysis Details</span>
+                </DialogTitle>
+                <DialogDescription className="text-gray-400">
+                  Comprehensive P&L analysis for {truncateAddress(selectedWalletData.wallet_address)}
+                </DialogDescription>
+              </DialogHeader>
+              
+              <div className="space-y-6">
+                {isLoadingPortfolio ? (
+                  <div className="flex items-center justify-center py-12">
+                    <LoadingSpinner size="lg" />
+                  </div>
+                ) : portfolioDetailData ? (
+                  <>
+                    {/* Portfolio Overview Section */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.4 }}
+                    >
+                      <Card className="glass-card border-blue-ice/20">
+                        <CardHeader>
+                          <div className="flex items-center justify-between">
+                            <CardTitle className="text-lg font-bold text-white flex items-center gap-2">
+                              <PieChart className="w-5 h-5 text-cyan-bright" />
+                              Portfolio Overview
+                            </CardTitle>
+                            <div className="flex items-center gap-2">
+                              <ChainBadge chain={portfolioDetailData.chain} />
+                              <Badge variant="outline" className="font-normal">
+                                {portfolioDetailData.portfolio_result.tokens_analyzed} tokens
+                              </Badge>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Left side - Wallet info and P&L */}
+                            <div className="space-y-4">
+                              <div className="flex items-center justify-between p-3 bg-navy-deep/50 rounded-lg">
+                                <span className="text-sm text-gray-400">Wallet Address</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-sm text-white">
+                                    {truncateAddress(portfolioDetailData.wallet_address)}
+                                  </span>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => copyToClipboard(portfolioDetailData.wallet_address)}
+                                    className="h-6 w-6 p-0"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => window.open(getExplorerUrl(portfolioDetailData.wallet_address, portfolioDetailData.chain), '_blank')}
+                                    className="h-6 w-6 p-0"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <DollarSign className="w-4 h-4 text-green-success" />
+                                    <span className="text-sm text-gray-400">Total P&L</span>
+                                  </div>
+                                  <span className={`text-xl font-bold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.total_pnl_usd.toString())
+                                  }`}>
+                                    {formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_pnl_usd.toString()))}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Zap className="w-4 h-4 text-cyan-bright" />
+                                    <span className="text-sm text-gray-400">Realized</span>
+                                  </div>
+                                  <span className={`font-semibold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.total_realized_pnl_usd.toString())
+                                  }`}>
+                                    {formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_realized_pnl_usd.toString()))}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Clock className="w-4 h-4 text-orange-warning" />
+                                    <span className="text-sm text-gray-400">Unrealized</span>
+                                  </div>
+                                  <span className={`font-semibold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.total_unrealized_pnl_usd.toString())
+                                  }`}>
+                                    {formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_unrealized_pnl_usd.toString()))}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Right side - Trading metrics */}
+                            <div className="space-y-4">
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Target className="w-4 h-4 text-purple-400" />
+                                    <span className="text-sm text-gray-400">Win Rate</span>
+                                  </div>
+                                  <p className={`text-lg font-bold ${
+                                    getWinRateColorClass(portfolioDetailData.portfolio_result.overall_win_rate_percentage.toString())
+                                  }`}>
+                                    {formatPercentage(parseFloat(portfolioDetailData.portfolio_result.overall_win_rate_percentage.toString()))}
+                                  </p>
+                                </div>
+
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Activity className="w-4 h-4 text-blue-steel" />
+                                    <span className="text-sm text-gray-400">Total Trades</span>
+                                  </div>
+                                  <p className="text-lg font-bold text-white">
+                                    {portfolioDetailData.portfolio_result.total_trades}
+                                  </p>
+                                  <div className="flex gap-2 text-xs mt-1">
+                                    <span className="text-green-success">
+                                      W: {portfolioDetailData.portfolio_result.winning_trades ?? Math.round(portfolioDetailData.portfolio_result.total_trades * parseFloat(portfolioDetailData.portfolio_result.overall_win_rate_percentage.toString()) / 100)}
+                                    </span>
+                                    <span className="text-red-400">
+                                      L: {portfolioDetailData.portfolio_result.losing_trades ?? (portfolioDetailData.portfolio_result.total_trades - Math.round(portfolioDetailData.portfolio_result.total_trades * parseFloat(portfolioDetailData.portfolio_result.overall_win_rate_percentage.toString()) / 100))}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Clock className="w-4 h-4 text-cyan-bright" />
+                                    <span className="text-sm text-gray-400">Avg Hold</span>
+                                  </div>
+                                  <p className="text-lg font-bold text-white">
+                                    {formatHoldTime(parseFloat(portfolioDetailData.portfolio_result.avg_hold_time_minutes.toString()))}
+                                  </p>
+                                </div>
+
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Coins className="w-4 h-4 text-orange-warning" />
+                                    <span className="text-sm text-gray-400">Tokens</span>
+                                  </div>
+                                  <p className="text-lg font-bold text-white">
+                                    {portfolioDetailData.portfolio_result.tokens_analyzed}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Total Invested</p>
+                                  <p className="text-sm font-semibold text-white">
+                                    {portfolioDetailData.portfolio_result.total_invested_usd && !isNaN(parseFloat(portfolioDetailData.portfolio_result.total_invested_usd.toString()))
+                                      ? formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_invested_usd.toString()))
+                                      : 'N/A'
+                                    }
+                                  </p>
+                                </div>
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Total Returned</p>
+                                  <p className="text-sm font-semibold text-white">
+                                    {portfolioDetailData.portfolio_result.total_returned_usd && !isNaN(parseFloat(portfolioDetailData.portfolio_result.total_returned_usd.toString()))
+                                      ? formatCurrency(parseFloat(portfolioDetailData.portfolio_result.total_returned_usd.toString()))
+                                      : 'N/A'
+                                    }
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-3 mt-3">
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Profit %</p>
+                                  <p className={`text-sm font-semibold ${
+                                    getPnLColorClass(portfolioDetailData.portfolio_result.profit_percentage || '0')
+                                  }`}>
+                                    {portfolioDetailData.portfolio_result.profit_percentage 
+                                      ? `${parseFloat(portfolioDetailData.portfolio_result.profit_percentage.toString()) >= 0 ? '+' : ''}${portfolioDetailData.portfolio_result.profit_percentage}%`
+                                      : 'N/A'
+                                    }
+                                  </p>
+                                </div>
+                                <div className="p-3 bg-navy-deep/50 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-1">Streaks</p>
+                                  <div className="text-xs">
+                                    <span className="text-green-success">W: {portfolioDetailData.portfolio_result.current_winning_streak ?? 0}/{portfolioDetailData.portfolio_result.longest_winning_streak ?? 0}</span>
+                                    <span className="text-gray-400"> | </span>
+                                    <span className="text-red-400">L: {portfolioDetailData.portfolio_result.current_losing_streak ?? 0}/{portfolioDetailData.portfolio_result.longest_losing_streak ?? 0}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </motion.div>
+
+                    <div className="w-full h-px bg-blue-ice/20" />
+
+                    {/* Token Tabs Section */}
+                    {portfolioDetailData.portfolio_result.token_results && portfolioDetailData.portfolio_result.token_results.length > 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.4, delay: 0.1 }}
+                      >
+                        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                          <Coins className="w-5 h-5 text-cyan-bright" />
+                          Token-by-Token Breakdown
+                        </h3>
+                        <TokenTabs tokenResults={portfolioDetailData.portfolio_result.token_results} />
+                      </motion.div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-center py-8">
+                    <AlertTriangle className="w-12 h-12 text-orange-warning mx-auto mb-4" />
+                    <p className="text-gray-400">No detailed data available for this wallet</p>
+                  </div>
+                )}
+              </div>
+
+              <DialogFooter className="flex items-center space-x-2">
+                <Button 
+                  variant="outline"
+                  onClick={() => window.open(getExplorerUrl(selectedWalletData.wallet_address, selectedWalletData.chain), '_blank')}
+                  className="border-blue-steel/50 text-blue-steel hover:bg-blue-steel/20"
+                >
+                  <ExternalLink className="w-4 h-4 mr-2" />
+                  View on Explorer
+                </Button>
+                <Button 
+                  variant="outline"
+                  onClick={() => window.open(`https://gmgn.ai/sol/address/${selectedWalletData.wallet_address}`, '_blank')}
+                  className="border-green-success/50 text-green-success hover:bg-green-success/20"
+                >
+                  <BarChart3 className="w-4 h-4 mr-2" />
+                  View on GMGN
+                </Button>
+                <Button 
+                  variant="outline"
+                  onClick={() => copyToClipboard(selectedWalletData.wallet_address)}
+                  className="border-orange-warning/50 text-orange-warning hover:bg-orange-warning/20"
+                >
+                  <Copy className="w-4 h-4 mr-2" />
+                  Copy Address
+                </Button>
+                <Button 
+                  onClick={() => setShowDetailModal(null)}
+                  className="bg-cyan-bright/10 border-cyan-bright/20 text-cyan-bright hover:bg-cyan-bright/20"
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

@@ -122,6 +122,7 @@ impl PnLJob {
 pub struct BatchJob {
     pub id: Uuid,
     pub wallet_addresses: Vec<String>,
+    pub chain: String,
     pub status: JobStatus,
     pub created_at: chrono::DateTime<Utc>,
     pub started_at: Option<chrono::DateTime<Utc>>,
@@ -132,7 +133,7 @@ pub struct BatchJob {
 }
 
 impl BatchJob {
-    pub fn new(wallet_addresses: Vec<String>, max_transactions: Option<u32>) -> Self {
+    pub fn new(wallet_addresses: Vec<String>, chain: String, max_transactions: Option<u32>) -> Self {
         // Store max_transactions in filters JSON for PostgreSQL storage
         let filters = serde_json::json!({
             "max_transactions": max_transactions
@@ -141,6 +142,7 @@ impl BatchJob {
         Self {
             id: Uuid::new_v4(),
             wallet_addresses,
+            chain,
             status: JobStatus::Pending,
             created_at: Utc::now(),
             started_at: None,
@@ -162,6 +164,7 @@ impl BatchJob {
         Ok(persistence_layer::BatchJob {
             id: self.id,
             wallet_addresses: self.wallet_addresses.clone(),
+            chain: self.chain.clone(),
             status: match self.status {
                 JobStatus::Pending => persistence_layer::JobStatus::Pending,
                 JobStatus::Running => persistence_layer::JobStatus::Running,
@@ -182,6 +185,7 @@ impl BatchJob {
         Ok(Self {
             id: persistent_job.id,
             wallet_addresses: persistent_job.wallet_addresses,
+            chain: persistent_job.chain,
             status: match persistent_job.status {
                 persistence_layer::JobStatus::Pending => JobStatus::Pending,
                 persistence_layer::JobStatus::Running => JobStatus::Running,
@@ -204,18 +208,14 @@ impl BatchJob {
 pub struct JobOrchestrator {
     config: SystemConfig,
     birdeye_client: BirdEyeClient,
-    persistence_client: Arc<Mutex<PersistenceClient>>,
+    persistence_client: Arc<PersistenceClient>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     // batch_jobs stored in PostgreSQL via persistence_client
     instance_id: String, // Unique identifier for this orchestrator instance
 }
 
 impl JobOrchestrator {
-    pub async fn new(config: SystemConfig) -> Result<Self> {
-        // Initialize persistence client (PostgreSQL + Redis)
-        let persistence_client = PersistenceClient::new(&config.redis.url, &config.database.postgres_url).await?;
-        let persistence_client = Arc::new(Mutex::new(persistence_client));
-
+    pub async fn new(config: SystemConfig, persistence_client: Arc<PersistenceClient>) -> Result<Self> {
         // Initialize BirdEye client
         let birdeye_config = config.birdeye.clone();
         let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
@@ -269,7 +269,7 @@ impl JobOrchestrator {
     async fn run_continuous_cycle(&self) -> Result<()> {
         // Cleanup stale processing locks from dead instances (every cycle)
         {
-            let redis = self.persistence_client.lock().await;
+            let redis = &self.persistence_client;
             if let Err(e) = redis.cleanup_stale_processing_locks(600).await { // 10 minutes max age
                 warn!("Failed to cleanup stale processing locks: {}", e);
             }
@@ -278,7 +278,7 @@ impl JobOrchestrator {
         // Claim a batch of work for this instance
         let batch_size = self.config.system.pnl_parallel_batch_size.unwrap_or(10);
         let (claimed_batch, batch_id) = {
-            let redis = self.persistence_client.lock().await;
+            let redis = &self.persistence_client;
             redis.claim_wallet_batch(&self.instance_id, batch_size).await?
         };
 
@@ -297,7 +297,7 @@ impl JobOrchestrator {
         match result {
             Ok(_) => {
                 // Successfully processed all items, release the claim
-                let redis = self.persistence_client.lock().await;
+                let redis = &self.persistence_client;
                 if let Err(e) = redis.release_batch_claim(&batch_id).await {
                     warn!("Failed to release batch claim {}: {}", batch_id, e);
                 }
@@ -305,7 +305,7 @@ impl JobOrchestrator {
             Err(e) => {
                 // Some items failed, return them to the queue
                 warn!("Batch {} processing failed: {}", batch_id, e);
-                let redis = self.persistence_client.lock().await;
+                let redis = &self.persistence_client;
                 if let Err(return_err) = redis.return_failed_batch(&batch_id, &claimed_batch).await {
                     error!("Failed to return failed batch {} to queue: {}", batch_id, return_err);
                 }
@@ -340,29 +340,30 @@ impl JobOrchestrator {
                     Ok(Ok(report)) => {
                         // Store the rich P&L portfolio result for later retrieval
                         let store_result = {
-                            let redis = self.persistence_client.lock().await;
+                            let redis = &self.persistence_client;
                             redis.store_pnl_result(
                                 &pair_clone.wallet_address,
+                                &pair_clone.chain,
                                 &report,
                             ).await
                         };
                         
                         match store_result {
                             Ok(_) => {
-                                // Mark wallet as successfully processed
-                                let redis = self.persistence_client.lock().await;
-                                if let Err(e) = redis.mark_wallet_as_processed(&pair_clone.wallet_address).await {
-                                    warn!("Failed to mark wallet {} as processed: {}", pair_clone.wallet_address, e);
+                                // Mark wallet as successfully processed for this chain
+                                let redis = &self.persistence_client;
+                                if let Err(e) = redis.mark_wallet_as_processed_for_chain(&pair_clone.wallet_address, &pair_clone.chain).await {
+                                    warn!("Failed to mark wallet {} as processed for chain {}: {}", pair_clone.wallet_address, pair_clone.chain, e);
                                 } else {
-                                    debug!("Marked wallet {} as processed and stored P&L result", pair_clone.wallet_address);
+                                    debug!("Marked wallet {} as processed for chain {} and stored P&L result", pair_clone.wallet_address, pair_clone.chain);
                                 }
                                 Ok(report)
                             }
                             Err(e) => {
-                                // Mark wallet as failed if storage fails
-                                let redis = self.persistence_client.lock().await;
-                                if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
-                                    warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
+                                // Mark wallet as failed for this chain if storage fails
+                                let redis = &self.persistence_client;
+                                if let Err(mark_err) = redis.mark_wallet_as_failed_for_chain(&pair_clone.wallet_address, &pair_clone.chain).await {
+                                    warn!("Failed to mark wallet {} as failed for chain {}: {}", pair_clone.wallet_address, pair_clone.chain, mark_err);
                                 }
                                 warn!("Failed to store P&L result for wallet {}: {}", pair_clone.wallet_address, e);
                                 Err(anyhow::anyhow!("{}", e))
@@ -373,9 +374,9 @@ impl JobOrchestrator {
                         // P&L calculation failed
                         warn!("P&L calculation failed for wallet {} token {}: {}", 
                               pair_clone.wallet_address, pair_clone.token_symbol, e);
-                        let redis = self.persistence_client.lock().await;
-                        if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
-                            warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
+                        let redis = &self.persistence_client;
+                        if let Err(mark_err) = redis.mark_wallet_as_failed_for_chain(&pair_clone.wallet_address, &pair_clone.chain).await {
+                            warn!("Failed to mark wallet {} as failed for chain {}: {}", pair_clone.wallet_address, pair_clone.chain, mark_err);
                         }
                         Err(anyhow::anyhow!("{}", e))
                     }
@@ -384,9 +385,9 @@ impl JobOrchestrator {
                         let timeout_err = anyhow::anyhow!("Processing timeout for wallet {} token {}", 
                                                         pair_clone.wallet_address, pair_clone.token_symbol);
                         warn!("{}", timeout_err);
-                        let redis = self.persistence_client.lock().await;
-                        if let Err(mark_err) = redis.mark_wallet_as_failed(&pair_clone.wallet_address).await {
-                            warn!("Failed to mark wallet {} as failed: {}", pair_clone.wallet_address, mark_err);
+                        let redis = &self.persistence_client;
+                        if let Err(mark_err) = redis.mark_wallet_as_failed_for_chain(&pair_clone.wallet_address, &pair_clone.chain).await {
+                            warn!("Failed to mark wallet {} as failed for chain {}: {}", pair_clone.wallet_address, pair_clone.chain, mark_err);
                         }
                         Err(timeout_err)
                     }
@@ -433,7 +434,7 @@ impl JobOrchestrator {
     pub async fn start_continuous_mode_single_cycle(&self) -> Result<bool> {
         // Use work-stealing pattern to claim a single wallet-token pair
         let (claimed_batch, batch_id) = {
-            let redis = self.persistence_client.lock().await;
+            let redis = &self.persistence_client;
             redis.claim_wallet_batch(&self.instance_id, 1).await?
         };
 
@@ -452,7 +453,7 @@ impl JobOrchestrator {
         match result {
             Ok(_) => {
                 // Successfully processed, release the claim
-                let redis = self.persistence_client.lock().await;
+                let redis = &self.persistence_client;
                 if let Err(e) = redis.release_batch_claim(&batch_id).await {
                     warn!("Failed to release test batch claim {}: {}", batch_id, e);
                 }
@@ -461,7 +462,7 @@ impl JobOrchestrator {
             Err(e) => {
                 // Failed, return items to queue
                 warn!("Test batch {} processing failed: {}", batch_id, e);
-                let redis = self.persistence_client.lock().await;
+                let redis = &self.persistence_client;
                 if let Err(return_err) = redis.return_failed_batch(&batch_id, &claimed_batch).await {
                     error!("Failed to return failed test batch {} to queue: {}", batch_id, return_err);
                 }
@@ -474,14 +475,15 @@ impl JobOrchestrator {
     pub async fn submit_batch_job(
         &self,
         wallet_addresses: Vec<String>,
+        chain: String,
         max_transactions: Option<u32>,
     ) -> Result<Uuid> {
-        let batch_job = BatchJob::new(wallet_addresses.clone(), max_transactions);
+        let batch_job = BatchJob::new(wallet_addresses.clone(), chain, max_transactions);
         let job_id = batch_job.id;
 
         // Store batch job in PostgreSQL
         {
-            let persistence_client = self.persistence_client.lock().await;
+            let persistence_client = &self.persistence_client;
             let persistent_job = batch_job.to_persistence_batch_job()?;
             persistence_client.store_batch_job(&persistent_job).await?;
         }
@@ -507,8 +509,8 @@ impl JobOrchestrator {
     /// Execute a batch job
     async fn execute_batch_job(&self, job_id: Uuid) -> Result<()> {
         // Load job from PostgreSQL and update status to Running
-        let (wallet_addresses, max_transactions) = {
-            let persistence_client = self.persistence_client.lock().await;
+        let (wallet_addresses, chain, max_transactions) = {
+            let persistence_client = &self.persistence_client;
             let persistent_job = persistence_client.get_batch_job(&job_id.to_string()).await?
                 .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
             
@@ -520,7 +522,7 @@ impl JobOrchestrator {
             let updated_persistent_job = job.to_persistence_batch_job()?;
             persistence_client.update_batch_job(&updated_persistent_job).await?;
 
-            (job.wallet_addresses.clone(), job.get_max_transactions())
+            (job.wallet_addresses.clone(), job.chain.clone(), job.get_max_transactions())
         };
 
         info!("Executing batch job {} for {} wallets", job_id, wallet_addresses.len());
@@ -528,12 +530,13 @@ impl JobOrchestrator {
         // Process wallets in parallel with timeout
         let futures = wallet_addresses.iter().map(|wallet| {
             let wallet_clone = wallet.clone();
+            let chain_clone = chain.clone();
             async move {
                 // Add timeout for each wallet processing (10 minutes max)
                 let timeout_duration = Duration::from_secs(600);
                 let result = match tokio::time::timeout(
                     timeout_duration, 
-                    self.process_single_wallet(&wallet_clone, max_transactions)
+                    self.process_single_wallet(&wallet_clone, &chain_clone, max_transactions)
                 ).await {
                     Ok(Ok(report)) => Ok(report),
                     Ok(Err(e)) => Err(e),
@@ -555,8 +558,9 @@ impl JobOrchestrator {
             for (wallet, result) in &results {
                 if let Ok(portfolio_result) = result {
                     // Store rich portfolio result in main table for individual wallet queries
-                    let persistence_client = self.persistence_client.lock().await;
-                    match persistence_client.store_pnl_result(wallet, portfolio_result).await {
+                    let persistence_client = &self.persistence_client;
+                    // Use the chain from the batch job
+                    match persistence_client.store_pnl_result(wallet, &chain, portfolio_result).await {
                         Ok(_) => {
                             debug!("Stored rich P&L result for wallet {} from batch job {}", wallet, job_id);
                             success_count += 1;
@@ -569,7 +573,7 @@ impl JobOrchestrator {
             }
             
             // Update batch job status to completed in PostgreSQL
-            let persistence_client = self.persistence_client.lock().await;
+            let persistence_client = &self.persistence_client;
             let persistent_job = persistence_client.get_batch_job(&job_id.to_string()).await?
                 .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
             
@@ -595,7 +599,7 @@ impl JobOrchestrator {
 
     /// Get batch job status
     pub async fn get_batch_job_status(&self, job_id: Uuid) -> Option<BatchJob> {
-        let redis = self.persistence_client.lock().await;
+        let redis = &self.persistence_client;
         match redis.get_batch_job(&job_id.to_string()).await {
             Ok(Some(persistent_job)) => {
                 match BatchJob::from_persistence_batch_job(persistent_job) {
@@ -616,7 +620,7 @@ impl JobOrchestrator {
 
     /// Get batch job results from PostgreSQL using wallet addresses from batch job
     pub async fn get_batch_job_results(&self, job_id: &str) -> Result<Vec<PortfolioPnLResult>> {
-        let persistence = self.persistence_client.lock().await;
+        let persistence = &self.persistence_client;
         
         // First get the batch job to get the wallet addresses
         match persistence.get_batch_job(job_id).await? {
@@ -625,7 +629,7 @@ impl JobOrchestrator {
                 
                 // Fetch P&L results for each wallet in the batch
                 for wallet_address in &batch_job.wallet_addresses {
-                    match persistence.get_portfolio_pnl_result(wallet_address).await? {
+                    match persistence.get_portfolio_pnl_result(wallet_address, &batch_job.chain).await? {
                         Some(stored_result) => {
                             results.push(stored_result.portfolio_result);
                         }
@@ -646,7 +650,7 @@ impl JobOrchestrator {
 
     /// Mark a batch job as failed due to system-level error
     async fn mark_batch_job_as_failed(&self, job_id: Uuid, error_message: &str) -> Result<()> {
-        let redis = self.persistence_client.lock().await;
+        let redis = &self.persistence_client;
         
         // Try to get the job and update its status to Failed
         if let Some(persistent_job) = redis.get_batch_job(&job_id.to_string()).await? {
@@ -668,7 +672,7 @@ impl JobOrchestrator {
 
     /// Get all batch jobs with pagination
     pub async fn get_all_batch_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
-        let redis = self.persistence_client.lock().await;
+        let redis = &self.persistence_client;
         let (persistent_jobs, total_count) = redis.get_all_batch_jobs(limit, offset).await?;
         
         let mut jobs = Vec::new();
@@ -705,7 +709,7 @@ impl JobOrchestrator {
         }
 
         // Calculate P&L using the new algorithm (for continuous analysis)
-        let report = self.calculate_pnl_with_new_algorithm(&pair.wallet_address, transactions).await?;
+        let report = self.calculate_pnl_with_new_algorithm(&pair.wallet_address, &pair.chain, transactions).await?;
 
         debug!("✅ Targeted P&L analysis completed for wallet: {} on token: {}", 
                pair.wallet_address, pair.token_symbol);
@@ -717,16 +721,18 @@ impl JobOrchestrator {
     pub async fn process_single_wallet(
         &self,
         wallet_address: &str,
+        chain: &str,
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
         debug!("Using BirdEye for P&L analysis of wallet: {}", wallet_address);
-        self.process_single_wallet_with_birdeye(wallet_address, max_transactions).await
+        self.process_single_wallet_with_birdeye(wallet_address, chain, max_transactions).await
     }
 
     /// Process a single wallet using BirdEye data
     async fn process_single_wallet_with_birdeye(
         &self,
         wallet_address: &str,
+        chain: &str,
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
         debug!("Starting P&L analysis for wallet: {} using BirdEye API", wallet_address);
@@ -741,7 +747,7 @@ impl JobOrchestrator {
         
         let transactions = self
             .birdeye_client
-            .get_all_trader_transactions_paginated(wallet_address, None, None, max_total_transactions)
+            .get_all_trader_transactions_paginated(wallet_address, chain, None, None, max_total_transactions)
             .await?;
 
         if transactions.is_empty() {
@@ -756,7 +762,7 @@ impl JobOrchestrator {
 
         // --- Start of New P&L Algorithm ---
         // Use the new algorithm strictly following the documentation
-        let report = self.calculate_pnl_with_new_algorithm(wallet_address, transactions).await?;
+        let report = self.calculate_pnl_with_new_algorithm(wallet_address, chain, transactions).await?;
         // --- End of New P&L Algorithm ---
 
         debug!("✅ P&L analysis completed for wallet: {} using BirdEye data", wallet_address);
@@ -777,7 +783,7 @@ impl JobOrchestrator {
         let queue_size = {
             use tokio::time::{timeout, Duration};
             match timeout(Duration::from_millis(1000), async {
-                let redis = self.persistence_client.lock().await;
+                let redis = &self.persistence_client;
                 redis.get_wallet_token_pairs_queue_size().await
             }).await {
                 Ok(Ok(size)) => size,
@@ -798,7 +804,7 @@ impl JobOrchestrator {
         let batch_jobs_count = {
             use tokio::time::{timeout, Duration as TokioDuration};
             match timeout(TokioDuration::from_millis(1000), async {
-                let redis = self.persistence_client.lock().await;
+                let redis = &self.persistence_client;
                 redis.get_batch_job_stats().await
             }).await {
                 Ok(Ok(stats)) => stats.total_jobs,
@@ -822,7 +828,7 @@ impl JobOrchestrator {
 
     /// Clear temporary data
     pub async fn clear_temp_data(&self) -> Result<()> {
-        let redis = self.persistence_client.lock().await;
+        let redis = &self.persistence_client;
         redis.clear_temp_data().await?;
         info!("Cleared temporary Redis data");
         Ok(())
@@ -973,6 +979,7 @@ impl JobOrchestrator {
     async fn calculate_pnl_with_new_algorithm(
         &self,
         wallet_address: &str,
+        chain: &str,
         transactions: Vec<GeneralTraderTransaction>,
     ) -> Result<PortfolioPnLResult> {
         info!("🚀 Starting new P&L algorithm for wallet: {}", wallet_address);
@@ -1004,7 +1011,7 @@ impl JobOrchestrator {
         let pnl_engine = NewPnLEngine::new(wallet_address.to_string());
         
         // Fetch current prices for unrealized P&L calculations
-        let current_prices = self.fetch_current_prices_for_tokens(&events_by_token).await?;
+        let current_prices = self.fetch_current_prices_for_tokens(&events_by_token, chain).await?;
         
         let portfolio_result = pnl_engine.calculate_portfolio_pnl(events_by_token, current_prices.clone()).await
             .map_err(|e| OrchestratorError::JobExecution(format!("Failed to calculate P&L: {}", e)))?;
@@ -1024,6 +1031,7 @@ impl JobOrchestrator {
     async fn fetch_current_prices_for_tokens(
         &self,
         events_by_token: &HashMap<String, Vec<NewFinancialEvent>>,
+        chain: &str,
     ) -> Result<Option<HashMap<String, Decimal>>> {
         let token_addresses: Vec<String> = events_by_token.keys().cloned().collect();
         
@@ -1034,7 +1042,8 @@ impl JobOrchestrator {
         info!("Fetching current prices for {} tokens", token_addresses.len());
         
         // Use BirdEye client to get current prices
-        match self.birdeye_client.get_current_prices(&token_addresses).await {
+        // Use the chain parameter for multichain price fetching
+        match self.birdeye_client.get_current_prices(&token_addresses, chain).await {
             Ok(prices_f64) => {
                 // Convert f64 prices to Decimal
                 let mut prices: HashMap<String, Decimal> = HashMap::new();
@@ -1075,7 +1084,7 @@ impl JobOrchestrator {
         
         let transactions = self
             .birdeye_client
-            .get_all_trader_transactions_paginated(&pair.wallet_address, None, None, max_total_transactions)
+            .get_all_trader_transactions_paginated(&pair.wallet_address, &pair.chain, None, None, max_total_transactions)
             .await?;
 
         if transactions.is_empty() {

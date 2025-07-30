@@ -29,7 +29,7 @@ export function Header() {
         initial={{ y: -100, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
-        className="sticky top-0 z-40 bg-gradient-to-r from-navy-deep via-charcoal to-navy-deep backdrop-blur-xl border-b border-cyan-bright/20 shadow-2xl"
+        className="sticky top-0 z-50 bg-gradient-to-r from-navy-deep via-charcoal to-navy-deep backdrop-blur-xl border-b border-cyan-bright/20 shadow-2xl"
       >
         <div className="px-6 py-4">
           <div className="flex items-center justify-between">
@@ -98,7 +98,7 @@ export function Header() {
 
       {/* Search Dialog */}
       <Dialog open={searchOpen} onOpenChange={setSearchOpen}>
-        <DialogContent className="glass-card border-cyan-bright/30 max-w-md">
+        <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-white flex items-center">
               <Search className="w-5 h-5 mr-2 text-cyan-bright" />

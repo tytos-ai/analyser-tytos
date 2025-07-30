@@ -29,6 +29,7 @@ pub struct AppState {
     pub config: SystemConfig,
     pub orchestrator: Arc<JobOrchestrator>,
     pub service_manager: Arc<ServiceManager>,
+    pub persistence_client: Arc<persistence_layer::PersistenceClient>,
     // API v2 dependencies
     pub birdeye_client: Arc<BirdEyeClient>,
 }
@@ -95,8 +96,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = SystemConfig::load()?;
     info!("Configuration loaded successfully");
 
-    // Initialize job orchestrator
-    let orchestrator = Arc::new(JobOrchestrator::new(config.clone()).await?);
+    // Initialize persistence client for shared database access
+    let persistence_client = Arc::new(
+        persistence_layer::PersistenceClient::new(
+            &config.redis.url,
+            &config.database.postgres_url
+        ).await?
+    );
+    info!("Persistence client initialized with connection pool");
+
+    // Initialize job orchestrator with shared persistence client
+    let orchestrator = Arc::new(JobOrchestrator::new(config.clone(), persistence_client.clone()).await?);
     info!("Job orchestrator initialized");
 
     // Initialize service manager (but don't start any services yet)
@@ -112,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: config.clone(),
         orchestrator,
         service_manager,
+        persistence_client,
         birdeye_client,
     };
 
