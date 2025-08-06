@@ -116,7 +116,7 @@ impl PostgresClient {
     ) -> Result<Option<crate::StoredPortfolioPnLResult>> {
         let row = sqlx::query(
             r#"
-            SELECT wallet_address, chain, portfolio_json, analyzed_at
+            SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived
             FROM pnl_results 
             WHERE wallet_address = $1 AND chain = $2
             "#
@@ -136,6 +136,8 @@ impl PostgresClient {
                 let chain: String = row.get("chain");
                 let portfolio_json: String = row.get("portfolio_json");
                 let analyzed_at: DateTime<Utc> = row.get("analyzed_at");
+                let is_favorited: bool = row.get("is_favorited");
+                let is_archived: bool = row.get("is_archived");
 
                 let portfolio_result: pnl_core::PortfolioPnLResult = serde_json::from_str(&portfolio_json)
                     .map_err(PersistenceError::Serialization)?;
@@ -145,6 +147,8 @@ impl PostgresClient {
                     chain,
                     portfolio_result,
                     analyzed_at,
+                    is_favorited,
+                    is_archived,
                 };
 
                 Ok(Some(stored_result))
@@ -197,7 +201,7 @@ impl PostgresClient {
         let rows = if let Some(chain) = chain_filter {
             sqlx::query(
                 r#"
-                SELECT wallet_address, chain, portfolio_json, analyzed_at
+                SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived
                 FROM pnl_results 
                 WHERE chain = $1
                 ORDER BY analyzed_at DESC
@@ -210,7 +214,7 @@ impl PostgresClient {
         } else {
             sqlx::query(
                 r#"
-                SELECT wallet_address, chain, portfolio_json, analyzed_at
+                SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived
                 FROM pnl_results 
                 ORDER BY analyzed_at DESC
                 LIMIT $1 OFFSET $2
@@ -233,6 +237,8 @@ impl PostgresClient {
             let chain: String = row.get("chain");
             let portfolio_json: String = row.get("portfolio_json");
             let analyzed_at: DateTime<Utc> = row.get("analyzed_at");
+            let is_favorited: bool = row.get("is_favorited");
+            let is_archived: bool = row.get("is_archived");
 
             match serde_json::from_str::<pnl_core::PortfolioPnLResult>(&portfolio_json) {
                 Ok(portfolio_result) => {
@@ -241,6 +247,8 @@ impl PostgresClient {
                         chain,
                         portfolio_result,
                         analyzed_at,
+                        is_favorited,
+                        is_archived,
                     };
                     results.push(stored_result);
                 }
@@ -460,5 +468,63 @@ impl PostgresClient {
         let batch_count: i64 = batch_count.get("count");
 
         Ok((pnl_count as usize, batch_count as usize))
+    }
+
+    /// Update favorite status for a wallet
+    pub async fn update_wallet_favorite_status(
+        &self,
+        wallet_address: &str,
+        chain: &str,
+        is_favorited: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE pnl_results 
+            SET is_favorited = $1
+            WHERE wallet_address = $2 AND chain = $3
+            "#
+        )
+        .bind(is_favorited)
+        .bind(wallet_address)
+        .bind(chain)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("PostgreSQL error updating favorite status: {}", e)
+        ))))?;
+
+        debug!("Updated favorite status for wallet {} on chain {} to {}", 
+               wallet_address, chain, is_favorited);
+        Ok(())
+    }
+
+    /// Update archive status for a wallet
+    pub async fn update_wallet_archive_status(
+        &self,
+        wallet_address: &str,
+        chain: &str,
+        is_archived: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE pnl_results 
+            SET is_archived = $1
+            WHERE wallet_address = $2 AND chain = $3
+            "#
+        )
+        .bind(is_archived)
+        .bind(wallet_address)
+        .bind(chain)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("PostgreSQL error updating archive status: {}", e)
+        ))))?;
+
+        debug!("Updated archive status for wallet {} on chain {} to {}", 
+               wallet_address, chain, is_archived);
+        Ok(())
     }
 }

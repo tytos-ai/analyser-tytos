@@ -235,6 +235,18 @@ impl NewPnLEngine {
         // Calculate portfolio-level statistics
         let total_pnl = total_realized_pnl + total_unrealized_pnl;
         
+        // Sanity check for unrealistic total P&L values
+        let hundred_million = Decimal::from(100_000_000);
+        if total_pnl.abs() > hundred_million {
+            warn!(
+                "Unrealistic total P&L detected for wallet {}: ${} (Realized: ${}, Unrealized: ${}) - likely data error",
+                self.wallet_address,
+                total_pnl,
+                total_realized_pnl,
+                total_unrealized_pnl
+            );
+        }
+        
         let overall_win_rate = if total_trades > 0 {
             Decimal::from(total_winning_trades * 100) / Decimal::from(total_trades)
         } else {
@@ -618,9 +630,32 @@ impl NewPnLEngine {
         current_price: Option<Decimal>,
     ) -> Decimal {
         if let (Some(position), Some(price)) = (remaining_position, current_price) {
+            // Treat zero or negative prices as missing price data
+            if price <= Decimal::ZERO {
+                debug!(
+                    "Zero/negative price for {}: treating as missing price data, unrealized P&L = 0",
+                    position.token_symbol
+                );
+                return Decimal::ZERO;
+            }
+            
             // Use the exact formula specified in documentation:
             // (current_price - weighted_avg_cost_basis) × remaining_quantity
             let unrealized_pnl = (price - position.avg_cost_basis_usd) * position.quantity;
+            
+            // Sanity check for unrealistic values (> $100M)
+            let hundred_million = Decimal::from(100_000_000);
+            if unrealized_pnl.abs() > hundred_million {
+                warn!(
+                    "Unrealistic unrealized P&L detected for {}: {} @ ${} vs cost basis ${} = P&L: ${} - treating as data error",
+                    position.token_symbol,
+                    position.quantity,
+                    price,
+                    position.avg_cost_basis_usd,
+                    unrealized_pnl
+                );
+                return Decimal::ZERO;
+            }
             
             debug!(
                 "Unrealized P&L for {}: {} @ ${} vs cost basis ${} = P&L: ${}",

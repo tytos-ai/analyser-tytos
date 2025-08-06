@@ -54,6 +54,8 @@ pub struct StoredPortfolioPnLResult {
     pub chain: String,
     pub portfolio_result: pnl_core::PortfolioPnLResult,
     pub analyzed_at: chrono::DateTime<chrono::Utc>,
+    pub is_favorited: bool,
+    pub is_archived: bool,
 }
 
 /// Aggregated P&L summary statistics
@@ -251,6 +253,16 @@ impl PersistenceClient {
     
     pub async fn get_stats(&self) -> Result<(usize, usize)> {
         self.postgres_client.get_stats().await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+    
+    pub async fn update_wallet_favorite_status(&self, wallet_address: &str, chain: &str, is_favorited: bool) -> Result<()> {
+        self.postgres_client.update_wallet_favorite_status(wallet_address, chain, is_favorited).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+    
+    pub async fn update_wallet_archive_status(&self, wallet_address: &str, chain: &str, is_archived: bool) -> Result<()> {
+        self.postgres_client.update_wallet_archive_status(wallet_address, chain, is_archived).await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
     

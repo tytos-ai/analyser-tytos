@@ -380,6 +380,8 @@ pub struct StoredPnLResultSummary {
     pub win_rate: Decimal,
     pub avg_hold_time_minutes: Decimal,
     pub analyzed_at: DateTime<Utc>,
+    pub is_favorited: bool,
+    pub is_archived: bool,
 }
 
 /// Summary of all P&L results

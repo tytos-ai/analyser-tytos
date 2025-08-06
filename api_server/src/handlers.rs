@@ -749,6 +749,8 @@ pub async fn get_all_results(
             win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
             avg_hold_time_minutes: stored_result.portfolio_result.avg_hold_time_minutes,
             analyzed_at: stored_result.analyzed_at,
+            is_favorited: stored_result.is_favorited,
+            is_archived: stored_result.is_archived,
         })
         .collect();
     
@@ -994,4 +996,74 @@ pub async fn control_service(
     };
 
     Ok(Json(SuccessResponse::new(response)))
+}
+
+/// Toggle favorite status for a wallet
+pub async fn toggle_wallet_favorite(
+    State(state): State<AppState>,
+    Path(wallet_address): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let chain = query.get("chain").map(|s| s.as_str()).unwrap_or("solana");
+    
+    // Get current status
+    let current_result = state.persistence_client
+        .get_portfolio_pnl_result(&wallet_address, chain)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get wallet: {}", e)))?;
+    
+    match current_result {
+        Some(result) => {
+            // Toggle the favorite status
+            let new_status = !result.is_favorited;
+            
+            state.persistence_client
+                .update_wallet_favorite_status(&wallet_address, chain, new_status)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to update favorite status: {}", e)))?;
+            
+            let response = MessageResponse {
+                message: format!("Wallet {} favorite status set to {}", wallet_address, new_status),
+            };
+            Ok(Json(SuccessResponse::new(response)))
+        }
+        None => {
+            Err(ApiError::NotFound(format!("Wallet {} not found", wallet_address)))
+        }
+    }
+}
+
+/// Toggle archive status for a wallet
+pub async fn toggle_wallet_archive(
+    State(state): State<AppState>,
+    Path(wallet_address): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let chain = query.get("chain").map(|s| s.as_str()).unwrap_or("solana");
+    
+    // Get current status
+    let current_result = state.persistence_client
+        .get_portfolio_pnl_result(&wallet_address, chain)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get wallet: {}", e)))?;
+    
+    match current_result {
+        Some(result) => {
+            // Toggle the archive status
+            let new_status = !result.is_archived;
+            
+            state.persistence_client
+                .update_wallet_archive_status(&wallet_address, chain, new_status)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to update archive status: {}", e)))?;
+            
+            let response = MessageResponse {
+                message: format!("Wallet {} archive status set to {}", wallet_address, new_status),
+            };
+            Ok(Json(SuccessResponse::new(response)))
+        }
+        None => {
+            Err(ApiError::NotFound(format!("Wallet {} not found", wallet_address)))
+        }
+    }
 }

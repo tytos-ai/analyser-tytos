@@ -90,6 +90,7 @@ impl NewTransactionParser {
     /// - Always create exactly 2 events per transaction (one buy, one sell)
     /// - Use embedded price from BirdEye data for USD value calculation
     /// - Use absolute values for quantities to ensure mathematical consistency
+    /// - Skip transactions with unrealistic quantities to prevent data errors
     pub async fn parse_transactions(
         &self,
         transactions: Vec<GeneralTraderTransaction>,
