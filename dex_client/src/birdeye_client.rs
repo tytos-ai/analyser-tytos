@@ -816,49 +816,26 @@ impl BirdEyeClient {
         Ok(gainers_only)
     }
 
-    /// Get newly listed tokens with comprehensive coverage (dual API calls)
+    /// Get newly listed tokens from legitimate platforms only (excludes meme platforms for security)
     pub async fn get_new_listing_tokens_comprehensive(&self, chain: &str) -> Result<Vec<NewListingToken>, BirdEyeError> {
         let limit = 20;
         
-        debug!("🆕 Starting comprehensive new listing token discovery for chain: {}", chain);
+        debug!("🆕 Starting secure new listing token discovery for chain: {} (legitimate platforms only)", chain);
         
-        // Call 1: Non-meme platforms
-        let non_meme_tokens = self.get_new_listing_tokens(chain, limit, false).await?;
+        // Only fetch from non-meme platforms to avoid tokens with security issues (locked liquidity, etc.)
+        let legitimate_tokens = self.get_new_listing_tokens(chain, limit, false).await?;
         
-        // Rate limiting between calls
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        info!("🎯 Secure new listing discovery completed: {} tokens from legitimate platforms only (meme platforms excluded for security)", 
+              legitimate_tokens.len());
         
-        // Call 2: Meme platforms enabled
-        let meme_tokens = self.get_new_listing_tokens(chain, limit, true).await?;
-        
-        // Combine and deduplicate
-        let mut all_tokens = non_meme_tokens.clone();
-        let mut seen_addresses = HashSet::new();
-        
-        // Add non-meme tokens to seen set
-        for token in &non_meme_tokens {
-            seen_addresses.insert(token.address.clone());
-        }
-        
-        // Add meme tokens that aren't duplicates
-        for token in meme_tokens {
-            if seen_addresses.insert(token.address.clone()) {
-                all_tokens.push(token);
-            }
-        }
-        
-        info!("🎯 Comprehensive new listing discovery completed: {} unique tokens found ({} non-meme + {} meme)", 
-              all_tokens.len(), non_meme_tokens.len(), 
-              all_tokens.len() - non_meme_tokens.len());
-        
-        Ok(all_tokens)
+        Ok(legitimate_tokens)
     }
 
     /// Get newly listed tokens from BirdEye API (single call)
     async fn get_new_listing_tokens(&self, chain: &str, limit: u32, meme_platform_enabled: bool) -> Result<Vec<NewListingToken>, BirdEyeError> {
         let url = format!("{}/defi/v2/tokens/new_listing", self.config.api_base_url);
         
-        debug!("📡 Fetching new listing tokens from BirdEye (meme_platform_enabled: {}, limit: {})", 
+        debug!("📡 Fetching new listing tokens from BirdEye (meme_platform_enabled: {}, limit: {}) - secure discovery", 
                meme_platform_enabled, limit);
         
         let response = self.http_client
@@ -889,7 +866,7 @@ impl BirdEyeClient {
             return Err(BirdEyeError::Api("API returned success=false".to_string()));
         }
 
-        debug!("✅ Retrieved {} new listing tokens (meme_platform_enabled: {})", 
+        debug!("✅ Retrieved {} new listing tokens (meme_platform_enabled: {}) - legitimate platforms only", 
                new_listing_response.data.items.len(), meme_platform_enabled);
         
         Ok(new_listing_response.data.items)
