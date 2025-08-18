@@ -180,6 +180,7 @@ async fn create_router(state: AppState) -> Router {
         .route("/api/results/:wallet_address/:token_address", get(get_detailed_result))
         .route("/api/results/:wallet_address/favorite", post(toggle_wallet_favorite))
         .route("/api/results/:wallet_address/archive", post(toggle_wallet_archive))
+        .route("/api/results/backfill-metrics", post(backfill_advanced_filtering_metrics))
         
         // Legacy system endpoints (kept for compatibility)
         .route("/api/status", get(get_system_status))

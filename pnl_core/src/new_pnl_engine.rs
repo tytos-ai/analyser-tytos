@@ -157,6 +157,12 @@ pub struct PortfolioPnLResult {
     /// Calculated profit percentage
     #[serde(default)]
     pub profit_percentage: Decimal,
+    
+    /// Advanced filtering metrics
+    #[serde(default)]
+    pub unique_tokens_count: u32,
+    #[serde(default)]
+    pub active_days_count: u32,
 }
 
 /// P&L Engine Module
@@ -284,6 +290,10 @@ impl NewPnLEngine {
             Decimal::ZERO
         };
         
+        // Calculate advanced filtering metrics
+        let unique_tokens_count = tokens_analyzed;
+        let active_days_count = self.calculate_active_days_count(&token_results);
+        
         let result = PortfolioPnLResult {
             wallet_address: self.wallet_address.clone(),
             token_results,
@@ -305,6 +315,8 @@ impl NewPnLEngine {
             current_losing_streak,
             longest_losing_streak,
             profit_percentage,
+            unique_tokens_count,
+            active_days_count,
         };
         
         info!(
@@ -779,6 +791,24 @@ impl NewPnLEngine {
         }
         
         (current_winning_streak, longest_winning_streak, current_losing_streak, longest_losing_streak)
+    }
+    
+    /// Calculate the number of distinct active trading days from all matched trades
+    fn calculate_active_days_count(&self, token_results: &[TokenPnLResult]) -> u32 {
+        use std::collections::HashSet;
+        
+        let mut trading_dates = HashSet::new();
+        
+        // Collect all unique trading dates (based on sell event timestamps)
+        for token_result in token_results {
+            for trade in &token_result.matched_trades {
+                // Use the sell event timestamp for the trading date
+                let trade_date = trade.sell_event.timestamp.date_naive();
+                trading_dates.insert(trade_date);
+            }
+        }
+        
+        trading_dates.len() as u32
     }
 }
 

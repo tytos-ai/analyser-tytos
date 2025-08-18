@@ -65,6 +65,19 @@ impl PostgresClient {
         let tokens_analyzed = portfolio_result.tokens_analyzed as i32;
         let avg_hold_time = portfolio_result.avg_hold_time_minutes.to_string().parse::<f64>().unwrap_or(0.0);
 
+        // Calculate advanced filtering metrics
+        let unique_tokens_count = portfolio_result.token_results.len() as i32;
+        
+        // Calculate active days from all trades
+        let mut trading_days = std::collections::HashSet::new();
+        for token_result in &portfolio_result.token_results {
+            for trade in &token_result.matched_trades {
+                let trade_date = trade.sell_event.timestamp.date_naive();
+                trading_days.insert(trade_date);
+            }
+        }
+        let active_days_count = trading_days.len() as i32;
+
         // Clear existing data for this wallet and chain
         sqlx::query("DELETE FROM pnl_results WHERE wallet_address = $1 AND chain = $2")
             .bind(wallet_address)
@@ -81,8 +94,8 @@ impl PostgresClient {
             r#"
             INSERT INTO pnl_results 
             (wallet_address, chain, total_pnl_usd, realized_pnl_usd, unrealized_pnl_usd, total_trades, win_rate, 
-             tokens_analyzed, avg_hold_time_minutes, portfolio_json, analyzed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             tokens_analyzed, avg_hold_time_minutes, unique_tokens_count, active_days_count, portfolio_json, analyzed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             "#
         )
         .bind(wallet_address)
@@ -94,6 +107,8 @@ impl PostgresClient {
         .bind(win_rate)
         .bind(tokens_analyzed)
         .bind(avg_hold_time)
+        .bind(unique_tokens_count)
+        .bind(active_days_count)
         .bind(portfolio_json)
         .bind(Utc::now())
         .execute(&self.pool)
@@ -116,7 +131,8 @@ impl PostgresClient {
     ) -> Result<Option<crate::StoredPortfolioPnLResult>> {
         let row = sqlx::query(
             r#"
-            SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived
+            SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
+                   unique_tokens_count, active_days_count
             FROM pnl_results 
             WHERE wallet_address = $1 AND chain = $2
             "#
@@ -138,6 +154,8 @@ impl PostgresClient {
                 let analyzed_at: DateTime<Utc> = row.get("analyzed_at");
                 let is_favorited: bool = row.get("is_favorited");
                 let is_archived: bool = row.get("is_archived");
+                let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
+                let active_days_count: Option<i32> = row.get("active_days_count");
 
                 let portfolio_result: pnl_core::PortfolioPnLResult = serde_json::from_str(&portfolio_json)
                     .map_err(PersistenceError::Serialization)?;
@@ -149,6 +167,8 @@ impl PostgresClient {
                     analyzed_at,
                     is_favorited,
                     is_archived,
+                    unique_tokens_count: unique_tokens_count.map(|v| v as u32),
+                    active_days_count: active_days_count.map(|v| v as u32),
                 };
 
                 Ok(Some(stored_result))
@@ -201,7 +221,8 @@ impl PostgresClient {
         let rows = if let Some(chain) = chain_filter {
             sqlx::query(
                 r#"
-                SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived
+                SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
+                       unique_tokens_count, active_days_count
                 FROM pnl_results 
                 WHERE chain = $1
                 ORDER BY analyzed_at DESC
@@ -214,7 +235,8 @@ impl PostgresClient {
         } else {
             sqlx::query(
                 r#"
-                SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived
+                SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
+                       unique_tokens_count, active_days_count
                 FROM pnl_results 
                 ORDER BY analyzed_at DESC
                 LIMIT $1 OFFSET $2
@@ -239,6 +261,8 @@ impl PostgresClient {
             let analyzed_at: DateTime<Utc> = row.get("analyzed_at");
             let is_favorited: bool = row.get("is_favorited");
             let is_archived: bool = row.get("is_archived");
+            let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
+            let active_days_count: Option<i32> = row.get("active_days_count");
 
             match serde_json::from_str::<pnl_core::PortfolioPnLResult>(&portfolio_json) {
                 Ok(portfolio_result) => {
@@ -249,6 +273,8 @@ impl PostgresClient {
                         analyzed_at,
                         is_favorited,
                         is_archived,
+                        unique_tokens_count: unique_tokens_count.map(|v| v as u32),
+                        active_days_count: active_days_count.map(|v| v as u32),
                     };
                     results.push(stored_result);
                 }
@@ -526,5 +552,264 @@ impl PostgresClient {
         debug!("Updated archive status for wallet {} on chain {} to {}", 
                wallet_address, chain, is_archived);
         Ok(())
+    }
+
+    /// Apply database migrations for advanced filtering features
+    pub async fn apply_advanced_filtering_migration(&self) -> Result<()> {
+        // Add new columns if they don't exist (for existing installations)
+        sqlx::query("ALTER TABLE pnl_results ADD COLUMN IF NOT EXISTS unique_tokens_count INTEGER DEFAULT 0")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error adding unique_tokens_count column: {}", e)
+            ))))?;
+
+        sqlx::query("ALTER TABLE pnl_results ADD COLUMN IF NOT EXISTS active_days_count INTEGER DEFAULT 0")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error adding active_days_count column: {}", e)
+            ))))?;
+
+        // Create indexes for performance
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_pnl_results_unique_tokens ON pnl_results(unique_tokens_count)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error creating unique_tokens_count index: {}", e)
+            ))))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_pnl_results_active_days ON pnl_results(active_days_count)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error creating active_days_count index: {}", e)
+            ))))?;
+
+        info!("Applied advanced filtering migration: added unique_tokens_count and active_days_count columns with indexes");
+        Ok(())
+    }
+
+    /// Backfill metrics for existing P&L results that have zero values
+    pub async fn backfill_advanced_filtering_metrics(&self) -> Result<()> {
+        info!("Starting backfill of advanced filtering metrics for existing records");
+        
+        // Find records with zero values for the new metrics
+        let rows = sqlx::query(
+            r#"
+            SELECT wallet_address, chain, portfolio_json 
+            FROM pnl_results 
+            WHERE (unique_tokens_count = 0 OR active_days_count = 0) AND portfolio_json IS NOT NULL
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("PostgreSQL error: {}", e)
+        ))))?;
+
+        let mut updated_count = 0;
+        
+        for row in rows {
+            let wallet_address: String = row.get("wallet_address");
+            let chain: String = row.get("chain");
+            let portfolio_json: serde_json::Value = row.get("portfolio_json");
+
+            // Parse the portfolio result to calculate metrics
+            match serde_json::from_value::<pnl_core::PortfolioPnLResult>(portfolio_json) {
+                Ok(portfolio_result) => {
+                    // Calculate metrics from portfolio data
+                    let unique_tokens_count = portfolio_result.token_results.len() as i32;
+                    
+                    let mut trading_days = std::collections::HashSet::new();
+                    for token_result in &portfolio_result.token_results {
+                        for trade in &token_result.matched_trades {
+                            let trade_date = trade.sell_event.timestamp.date_naive();
+                            trading_days.insert(trade_date);
+                        }
+                    }
+                    let active_days_count = trading_days.len() as i32;
+
+                    // Update the record with calculated metrics
+                    sqlx::query(
+                        r#"
+                        UPDATE pnl_results 
+                        SET unique_tokens_count = $1, active_days_count = $2
+                        WHERE wallet_address = $3 AND chain = $4
+                        "#
+                    )
+                    .bind(unique_tokens_count)
+                    .bind(active_days_count)
+                    .bind(&wallet_address)
+                    .bind(&chain)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("PostgreSQL error updating metrics: {}", e)
+                    ))))?;
+
+                    updated_count += 1;
+                    
+                    if updated_count % 100 == 0 {
+                        info!("Backfilled metrics for {} records so far...", updated_count);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to parse portfolio JSON for wallet {} on {}: {}", wallet_address, chain, e);
+                }
+            }
+        }
+
+        info!("Backfill completed: updated metrics for {} existing records", updated_count);
+        Ok(())
+    }
+
+    /// Get all P&L results with advanced filtering support
+    pub async fn get_all_pnl_results_with_filters(
+        &self,
+        offset: usize,
+        limit: usize,
+        chain_filter: Option<&str>,
+        min_unique_tokens: Option<u32>,
+        min_active_days: Option<u32>,
+    ) -> Result<(Vec<crate::StoredPortfolioPnLResult>, usize)> {
+        // Build WHERE clauses
+        let mut where_clauses = Vec::new();
+        let mut bind_params: Vec<Box<dyn sqlx::Encode<'_, sqlx::Postgres> + Send + Sync>> = Vec::new();
+        let mut param_count = 0;
+
+        if let Some(chain) = chain_filter {
+            param_count += 1;
+            where_clauses.push(format!("chain = ${}", param_count));
+            bind_params.push(Box::new(chain.to_string()));
+        }
+
+        if let Some(min_tokens) = min_unique_tokens {
+            param_count += 1;
+            where_clauses.push(format!("unique_tokens_count >= ${}", param_count));
+            bind_params.push(Box::new(min_tokens as i32));
+        }
+
+        if let Some(min_days) = min_active_days {
+            param_count += 1;
+            where_clauses.push(format!("active_days_count >= ${}", param_count));
+            bind_params.push(Box::new(min_days as i32));
+        }
+
+        let where_clause = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // Get total count with filtering
+        let count_query = format!("SELECT COUNT(*) as count FROM pnl_results {}", where_clause);
+        let mut count_query_builder = sqlx::query(&count_query);
+        
+        // Bind parameters for count query
+        if let Some(chain) = chain_filter {
+            count_query_builder = count_query_builder.bind(chain);
+        }
+        if let Some(min_tokens) = min_unique_tokens {
+            count_query_builder = count_query_builder.bind(min_tokens as i32);
+        }
+        if let Some(min_days) = min_active_days {
+            count_query_builder = count_query_builder.bind(min_days as i32);
+        }
+
+        let count_row = count_query_builder
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e)
+            ))))?;
+
+        let total_count: i64 = count_row.get("count");
+
+        if total_count == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        // Get paginated results with filtering
+        let results_query = format!(
+            r#"
+            SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
+                   unique_tokens_count, active_days_count
+            FROM pnl_results 
+            {}
+            ORDER BY analyzed_at DESC
+            LIMIT ${} OFFSET ${}
+            "#,
+            where_clause,
+            param_count + 1,
+            param_count + 2
+        );
+
+        let mut results_query_builder = sqlx::query(&results_query);
+        
+        // Bind parameters for results query
+        if let Some(chain) = chain_filter {
+            results_query_builder = results_query_builder.bind(chain);
+        }
+        if let Some(min_tokens) = min_unique_tokens {
+            results_query_builder = results_query_builder.bind(min_tokens as i32);
+        }
+        if let Some(min_days) = min_active_days {
+            results_query_builder = results_query_builder.bind(min_days as i32);
+        }
+        
+        // Add limit and offset
+        results_query_builder = results_query_builder.bind(limit as i64).bind(offset as i64);
+
+        let rows = results_query_builder
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e)
+            ))))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let wallet_address: String = row.get("wallet_address");
+            let chain: String = row.get("chain");
+            let portfolio_json: serde_json::Value = row.get("portfolio_json");
+            let analyzed_at: chrono::DateTime<chrono::Utc> = row.get("analyzed_at");
+            let is_favorited: Option<bool> = row.try_get("is_favorited").ok();
+            let is_archived: Option<bool> = row.try_get("is_archived").ok();
+            let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
+            let active_days_count: Option<i32> = row.get("active_days_count");
+
+            // Parse the portfolio JSON to get the rich result
+            match serde_json::from_value::<pnl_core::PortfolioPnLResult>(portfolio_json) {
+                Ok(portfolio_result) => {
+                    let stored_result = crate::StoredPortfolioPnLResult {
+                        wallet_address,
+                        chain,
+                        portfolio_result,
+                        analyzed_at,
+                        is_favorited: is_favorited.unwrap_or(false),
+                        is_archived: is_archived.unwrap_or(false),
+                        unique_tokens_count: unique_tokens_count.map(|v| v as u32),
+                        active_days_count: active_days_count.map(|v| v as u32),
+                    };
+                    results.push(stored_result);
+                }
+                Err(e) => {
+                    warn!("Failed to parse portfolio JSON for wallet {}: {}", wallet_address, e);
+                    continue;
+                }
+            }
+        }
+
+        info!("Retrieved {} P&L results with advanced filtering (total: {})", results.len(), total_count);
+        Ok((results, total_count as usize))
     }
 }

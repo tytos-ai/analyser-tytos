@@ -234,15 +234,18 @@ impl ServiceManager {
                     break;
                 }
 
-                // Wait for the configured cycle interval from config
+                // Wait for the configured cycle interval
+                // This sleep is automatically cancelled when the task handle is aborted
                 tokio::time::sleep(tokio::time::Duration::from_secs(cycle_interval)).await;
             }
 
-            // Update state to error if we exit the loop
+            // Update state when exiting loop gracefully
             {
                 let mut state = state_clone.write().await;
-                *state = ServiceState::Error("Discovery loop exited unexpectedly".to_string());
+                *state = ServiceState::Stopped;
             }
+            
+            debug!("🛑 Discovery loop exited gracefully");
         });
 
         // Store the handle
@@ -285,19 +288,19 @@ impl ServiceManager {
         // Wait for the background task to finish gracefully (with timeout)
         {
             let mut handle_guard = self.wallet_discovery_handle.lock().await;
-            if let Some(handle) = handle_guard.take() {
+            if let Some(mut handle) = handle_guard.take() {
                 info!("🛑 Waiting for discovery task to finish gracefully (10s timeout)");
                 
-                // Give the task 10 seconds to stop gracefully
-                match tokio::time::timeout(Duration::from_secs(10), async {
-                    let _ = handle.await;
-                }).await {
+                // Give the task 10 seconds to stop gracefully, then abort
+                match tokio::time::timeout(Duration::from_secs(10), &mut handle).await {
                     Ok(_) => {
                         info!("✅ Discovery task stopped gracefully");
                     }
                     Err(_) => {
-                        info!("⚠️ Discovery task timeout - this shouldn't happen with the new fix");
-                        // Note: handle is already dropped, so task should be cancelled
+                        info!("⚠️ Discovery task timeout - aborting task");
+                        handle.abort();
+                        // Wait a bit for the abort to take effect
+                        let _ = handle.await;
                     }
                 }
             }

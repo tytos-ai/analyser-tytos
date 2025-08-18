@@ -377,12 +377,39 @@ pub async fn get_discovered_wallets(
     // Get P&L results (which are the discovered wallets with analysis)
     let persistence_client = &state.persistence_client;
     
-    // Use chain from query parameter if provided
-    let (results, total_count) = persistence_client.get_all_pnl_results(offset, limit, query.chain.as_deref()).await
-        .map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
+    // Apply database migration for new columns if needed
+    if let Err(e) = persistence_client.apply_advanced_filtering_migration().await {
+        warn!("Failed to apply advanced filtering migration: {}", e);
+    }
+    
+    // Use advanced filtering if new parameters are provided, otherwise use legacy method
+    let (results, total_count) = if query.min_unique_tokens.is_some() || query.min_active_days.is_some() {
+        persistence_client.get_all_pnl_results_with_filters(
+            offset, 
+            limit, 
+            query.chain.as_deref(),
+            query.min_unique_tokens,
+            query.min_active_days
+        ).await
+    } else {
+        persistence_client.get_all_pnl_results(offset, limit, query.chain.as_deref()).await
+    }.map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
 
     // Convert P&L results to discovered wallets format
     let wallets: Vec<DiscoveredWalletSummary> = results.into_iter().map(|result| {
+        // Calculate unique tokens and active days from portfolio result
+        let unique_tokens_count = result.portfolio_result.token_results.len() as u32;
+        
+        // Calculate active days from all trades
+        let mut trading_days = std::collections::HashSet::new();
+        for token_result in &result.portfolio_result.token_results {
+            for trade in &token_result.matched_trades {
+                let trade_date = trade.sell_event.timestamp.date_naive();
+                trading_days.insert(trade_date);
+            }
+        }
+        let active_days_count = trading_days.len() as u32;
+
         DiscoveredWalletSummary {
             wallet_address: result.wallet_address,
             chain: result.chain,
@@ -392,6 +419,8 @@ pub async fn get_discovered_wallets(
             win_rate: Some(result.portfolio_result.overall_win_rate_percentage),
             trade_count: Some(result.portfolio_result.total_trades as u32),
             avg_hold_time_minutes: Some(result.portfolio_result.avg_hold_time_minutes),
+            unique_tokens_count: Some(unique_tokens_count),
+            active_days_count: Some(active_days_count),
             status: "analyzed".to_string(),
         }
     }).collect();
@@ -725,7 +754,12 @@ pub async fn get_all_results(
     // Get results from persistence layer (PostgreSQL)
     let persistence_client = &state.persistence_client;
     
-    // Use chain from query parameter if provided
+    // Apply database migration for new columns if needed to ensure data is available
+    if let Err(e) = persistence_client.apply_advanced_filtering_migration().await {
+        warn!("Failed to apply advanced filtering migration: {}", e);
+    }
+    
+    // Use standard method - filtering happens client-side in frontend
     let (stored_results, total_count) = persistence_client.get_all_pnl_results(offset, limit, query.chain.as_deref()).await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch results: {}", e)))?;
     
@@ -748,6 +782,8 @@ pub async fn get_all_results(
             total_trades: stored_result.portfolio_result.total_trades,
             win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
             avg_hold_time_minutes: stored_result.portfolio_result.avg_hold_time_minutes,
+            unique_tokens_count: stored_result.unique_tokens_count,
+            active_days_count: stored_result.active_days_count,
             analyzed_at: stored_result.analyzed_at,
             is_favorited: stored_result.is_favorited,
             is_archived: stored_result.is_archived,
@@ -1066,4 +1102,19 @@ pub async fn toggle_wallet_archive(
             Err(ApiError::NotFound(format!("Wallet {} not found", wallet_address)))
         }
     }
+}
+
+/// Backfill advanced filtering metrics for existing records
+pub async fn backfill_advanced_filtering_metrics(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let persistence_client = &state.persistence_client;
+    
+    persistence_client.backfill_advanced_filtering_metrics().await
+        .map_err(|e| ApiError::Internal(format!("Backfill failed: {}", e)))?;
+    
+    let response = MessageResponse {
+        message: "Advanced filtering metrics backfill completed successfully".to_string(),
+    };
+    Ok(Json(SuccessResponse::new(response)))
 }

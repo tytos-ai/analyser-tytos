@@ -56,6 +56,8 @@ pub struct StoredPortfolioPnLResult {
     pub analyzed_at: chrono::DateTime<chrono::Utc>,
     pub is_favorited: bool,
     pub is_archived: bool,
+    pub unique_tokens_count: Option<u32>,
+    pub active_days_count: Option<u32>,
 }
 
 /// Aggregated P&L summary statistics
@@ -248,6 +250,28 @@ impl PersistenceClient {
     
     pub async fn get_all_pnl_results(&self, offset: usize, limit: usize, chain_filter: Option<&str>) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
         self.postgres_client.get_all_pnl_results(offset, limit, chain_filter).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+
+    pub async fn get_all_pnl_results_with_filters(
+        &self,
+        offset: usize,
+        limit: usize,
+        chain_filter: Option<&str>,
+        min_unique_tokens: Option<u32>,
+        min_active_days: Option<u32>,
+    ) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
+        self.postgres_client.get_all_pnl_results_with_filters(offset, limit, chain_filter, min_unique_tokens, min_active_days).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+
+    pub async fn apply_advanced_filtering_migration(&self) -> Result<()> {
+        self.postgres_client.apply_advanced_filtering_migration().await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+
+    pub async fn backfill_advanced_filtering_metrics(&self) -> Result<()> {
+        self.postgres_client.backfill_advanced_filtering_metrics().await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
     

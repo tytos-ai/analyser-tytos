@@ -137,6 +137,8 @@ pub struct DiscoveredWalletsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     pub chain: Option<String>,
+    pub min_unique_tokens: Option<u32>,
+    pub min_active_days: Option<u32>,
 }
 
 /// Response for discovered wallets endpoint
@@ -158,6 +160,8 @@ pub struct DiscoveredWalletSummary {
     pub win_rate: Option<Decimal>,
     pub trade_count: Option<u32>,
     pub avg_hold_time_minutes: Option<Decimal>,
+    pub unique_tokens_count: Option<u32>,
+    pub active_days_count: Option<u32>,
     pub status: String,
 }
 
@@ -379,6 +383,8 @@ pub struct StoredPnLResultSummary {
     pub total_trades: u32,
     pub win_rate: Decimal,
     pub avg_hold_time_minutes: Decimal,
+    pub unique_tokens_count: Option<u32>,
+    pub active_days_count: Option<u32>,
     pub analyzed_at: DateTime<Utc>,
     pub is_favorited: bool,
     pub is_archived: bool,
