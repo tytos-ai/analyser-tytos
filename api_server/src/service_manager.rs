@@ -193,7 +193,7 @@ impl ServiceManager {
         let birdeye_orch_clone = self.birdeye_orchestrator.clone();
         let state_clone = self.wallet_discovery_state.clone();
         let _stats_clone = self.stats.clone();
-        let cycle_interval = 60; // BirdEye trending discovery interval (hardcoded)
+        let cycle_interval = self.system_config.discovery.cycle_interval_seconds.unwrap_or(60);
 
         let handle = tokio::spawn(async move {
             // Update state to running

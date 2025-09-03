@@ -38,6 +38,11 @@ new_listing_max_age_hours = 24
 new_listing_max_tokens = 25  # Limit new listings for quality filtering
 max_trending_tokens = 25  # Limit trending tokens for quality filtering
 
+# Balance API configuration for real-time wallet balance fetching (fixes phantom buy unrealized P&L bug)
+balance_api_enabled = true  # Enable real balance fetching for accurate unrealized P&L
+balance_api_timeout_seconds = 15  # Shorter timeout for balance calls
+balance_cache_ttl_seconds = 60  # Cache balance data for 1 minute to avoid excessive API calls
+
 
 # PnL filtering configuration section removed - these were never used in actual P&L processing
 # All P&L calculations are performed without filtering based on capital, hold time, trades, or win rate

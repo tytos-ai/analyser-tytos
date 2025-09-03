@@ -5,7 +5,7 @@ use axum::{
     response::Json,
 };
 use chrono::Utc;
-use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult};
+use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult, BalanceFetcher};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -100,8 +100,21 @@ pub async fn get_wallet_analysis_v2(
         None
     };
     
-    // Calculate P&L using new engine (direct PortfolioPnLResult)
-    let pnl_engine = NewPnLEngine::new(wallet_address.clone());
+    // Calculate P&L using new engine with balance API integration (direct PortfolioPnLResult)
+    let balance_fetcher = if state.config.birdeye.balance_api_enabled {
+        BalanceFetcher::new(
+            state.config.birdeye.api_key.clone(),
+            Some(state.config.birdeye.api_base_url.clone())
+        )
+    } else {
+        BalanceFetcher::new("disabled".to_string(), None)
+    };
+    
+    let pnl_engine = if state.config.birdeye.balance_api_enabled {
+        NewPnLEngine::with_balance_fetcher(wallet_address.clone(), balance_fetcher)
+    } else {
+        NewPnLEngine::new(wallet_address.clone())
+    };
     let portfolio_result = pnl_engine
         .calculate_portfolio_pnl(events_by_token, current_prices)
         .await

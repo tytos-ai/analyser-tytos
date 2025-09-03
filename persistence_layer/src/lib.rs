@@ -106,6 +106,18 @@ pub enum JobStatus {
     Cancelled,
 }
 
+impl std::fmt::Display for JobStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobStatus::Pending => write!(f, "Pending"),
+            JobStatus::Running => write!(f, "Running"),
+            JobStatus::Completed => write!(f, "Completed"),
+            JobStatus::Failed => write!(f, "Failed"),
+            JobStatus::Cancelled => write!(f, "Cancelled"),
+        }
+    }
+}
+
 /// Batch P&L analysis job for persistence
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchJob {
@@ -119,6 +131,61 @@ pub struct BatchJob {
     pub filters: serde_json::Value, // Store as JSON for flexibility
     pub individual_jobs: Vec<Uuid>,
     // Results are stored separately and linked by job_id
+}
+
+/// Token analysis job for persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenAnalysisJob {
+    pub id: Uuid,
+    pub token_addresses: Vec<String>,
+    pub chain: String,
+    pub status: JobStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub filters: serde_json::Value, // Store max_transactions and other params as JSON
+    pub discovered_wallets: Vec<String>, // Wallets discovered from tokens
+    pub analyzed_wallets: Vec<String>, // Wallets successfully analyzed
+    pub failed_wallets: Vec<String>, // Wallets that failed analysis
+}
+
+impl TokenAnalysisJob {
+    pub fn new(token_addresses: Vec<String>, chain: String, max_transactions: Option<u32>) -> Self {
+        let filters = serde_json::json!({
+            "max_transactions": max_transactions
+        });
+        
+        Self {
+            id: Uuid::new_v4(),
+            token_addresses,
+            chain,
+            status: JobStatus::Pending,
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            completed_at: None,
+            filters,
+            discovered_wallets: Vec::new(),
+            analyzed_wallets: Vec::new(),
+            failed_wallets: Vec::new(),
+        }
+    }
+    
+    pub fn get_max_transactions(&self) -> Option<u32> {
+        self.filters.get("max_transactions")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+    }
+}
+
+/// Token analysis job statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenAnalysisJobStats {
+    pub total_jobs: u64,
+    pub pending_jobs: u64,
+    pub running_jobs: u64,
+    pub completed_jobs: u64,
+    pub failed_jobs: u64,
+    pub cancelled_jobs: u64,
 }
 
 /// Batch job statistics
@@ -233,6 +300,30 @@ impl PersistenceClient {
         self.redis_client.get_batch_job_stats().await
     }
     
+    // =====================================
+    // Token Analysis Job Management
+    // =====================================
+    
+    pub async fn store_token_analysis_job(&self, job: &TokenAnalysisJob) -> Result<()> {
+        self.postgres_client.store_token_analysis_job(job).await
+    }
+    
+    pub async fn get_token_analysis_job(&self, job_id: &str) -> Result<Option<TokenAnalysisJob>> {
+        self.postgres_client.get_token_analysis_job(job_id).await
+    }
+    
+    pub async fn update_token_analysis_job(&self, job: &TokenAnalysisJob) -> Result<()> {
+        self.postgres_client.update_token_analysis_job(job).await
+    }
+    
+    pub async fn get_all_token_analysis_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<TokenAnalysisJob>, usize)> {
+        self.postgres_client.get_all_token_analysis_jobs(limit, offset).await
+    }
+    
+    pub async fn get_token_analysis_job_stats(&self) -> Result<TokenAnalysisJobStats> {
+        self.postgres_client.get_token_analysis_job_stats().await
+    }
+    
     pub async fn clear_temp_data(&self) -> Result<()> {
         self.redis_client.clear_temp_data().await
     }
@@ -240,6 +331,11 @@ impl PersistenceClient {
     // Delegate PostgreSQL operations to PostgresClient
     pub async fn store_pnl_result(&self, wallet_address: &str, chain: &str, portfolio_result: &pnl_core::PortfolioPnLResult) -> Result<()> {
         self.postgres_client.store_pnl_result(wallet_address, chain, portfolio_result).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+
+    pub async fn store_pnl_result_with_source(&self, wallet_address: &str, chain: &str, portfolio_result: &pnl_core::PortfolioPnLResult, analysis_source: &str) -> Result<()> {
+        self.postgres_client.store_pnl_result_with_source(wallet_address, chain, portfolio_result, analysis_source).await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
     
@@ -260,8 +356,19 @@ impl PersistenceClient {
         chain_filter: Option<&str>,
         min_unique_tokens: Option<u32>,
         min_active_days: Option<u32>,
+        analysis_source_filter: Option<&str>,
     ) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
-        self.postgres_client.get_all_pnl_results_with_filters(offset, limit, chain_filter, min_unique_tokens, min_active_days).await
+        self.postgres_client.get_all_pnl_results_with_filters(offset, limit, chain_filter, min_unique_tokens, min_active_days, analysis_source_filter).await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+
+    pub async fn get_pnl_results_by_analysis_source(
+        &self,
+        analysis_source: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
+        self.postgres_client.get_pnl_results_by_analysis_source(analysis_source, offset, limit).await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
 
@@ -1653,6 +1760,124 @@ impl RedisClient {
         
         let deleted: i32 = conn.del(&results_key).await?;
         Ok(deleted > 0)
+    }
+
+    // =====================================
+    // Token Analysis Job Management (Redis)
+    // =====================================
+
+    /// Store a token analysis job in Redis for persistence
+    pub async fn store_token_analysis_job(&self, job: &TokenAnalysisJob) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let job_key = format!("token_analysis_job:{}", job.id);
+        let job_json = serde_json::to_string(job)?;
+
+        // Store the job data
+        let _: () = conn.set(&job_key, &job_json).await?;
+
+        // Add to token analysis jobs index for easy retrieval
+        let _: () = conn.sadd("token_analysis_jobs_index", job.id.to_string()).await?;
+
+        // Add to timeline for chronological ordering
+        let timestamp = job.created_at.timestamp() as f64;
+        let _: () = conn.zadd("token_analysis_jobs_timeline", job.id.to_string(), timestamp).await?;
+
+        debug!("Stored token analysis job {} in Redis", job.id);
+        Ok(())
+    }
+
+    /// Update an existing token analysis job in Redis
+    pub async fn update_token_analysis_job(&self, job: &TokenAnalysisJob) -> Result<()> {
+        let mut conn = self.get_connection().await?;
+        let job_key = format!("token_analysis_job:{}", job.id);
+        let job_json = serde_json::to_string(job)?;
+
+        let _: () = conn.set(&job_key, &job_json).await?;
+        debug!("Updated token analysis job {} in Redis", job.id);
+        Ok(())
+    }
+
+    /// Get a specific token analysis job by ID
+    pub async fn get_token_analysis_job(&self, job_id: &str) -> Result<Option<TokenAnalysisJob>> {
+        let mut conn = self.get_connection().await?;
+        let job_key = format!("token_analysis_job:{}", job_id);
+        
+        let job_json: Option<String> = conn.get(&job_key).await?;
+        match job_json {
+            Some(json) => {
+                match serde_json::from_str::<TokenAnalysisJob>(&json) {
+                    Ok(job) => Ok(Some(job)),
+                    Err(e) => {
+                        warn!("Corrupted token analysis job data for {}: {}", job_id, e);
+                        // Clean up corrupted data
+                        let _: () = conn.del(&job_key).await?;
+                        let _: () = conn.srem("token_analysis_jobs_index", job_id).await?;
+                        let _: () = conn.zrem("token_analysis_jobs_timeline", job_id).await?;
+                        Ok(None)
+                    }
+                }
+            }
+            None => Ok(None)
+        }
+    }
+
+    /// Get all token analysis jobs with pagination, sorted by creation time (newest first)
+    pub async fn get_all_token_analysis_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<TokenAnalysisJob>, usize)> {
+        let mut conn = self.get_connection().await?;
+        
+        let total_count: usize = conn.zcard("token_analysis_jobs_timeline").await?;
+
+        // Get job IDs from timeline, newest first (reverse order)
+        let job_ids: Vec<String> = conn
+            .zrevrange("token_analysis_jobs_timeline", offset as isize, (offset + limit - 1) as isize)
+            .await?;
+
+        // Fetch job details for each ID
+        let mut jobs = Vec::new();
+        for job_id in job_ids {
+            if let Some(job) = self.get_token_analysis_job(&job_id).await? {
+                jobs.push(job);
+            }
+        }
+
+        Ok((jobs, total_count))
+    }
+
+    /// Get token analysis job statistics
+    pub async fn get_token_analysis_job_stats(&self) -> Result<TokenAnalysisJobStats> {
+        let mut conn = self.get_connection().await?;
+        
+        let total_jobs: usize = conn.zcard("token_analysis_jobs_timeline").await?;
+        
+        // Count jobs by status
+        let all_job_ids: Vec<String> = conn.smembers("token_analysis_jobs_index").await?;
+        
+        let mut pending_count = 0u64;
+        let mut running_count = 0u64;
+        let mut completed_count = 0u64;
+        let mut failed_count = 0u64;
+        let mut cancelled_count = 0u64;
+
+        for job_id in all_job_ids {
+            if let Some(job) = self.get_token_analysis_job(&job_id).await? {
+                match job.status {
+                    JobStatus::Pending => pending_count += 1,
+                    JobStatus::Running => running_count += 1,
+                    JobStatus::Completed => completed_count += 1,
+                    JobStatus::Failed => failed_count += 1,
+                    JobStatus::Cancelled => cancelled_count += 1,
+                }
+            }
+        }
+
+        Ok(TokenAnalysisJobStats {
+            total_jobs: total_jobs as u64,
+            pending_jobs: pending_count,
+            running_jobs: running_count,
+            completed_jobs: completed_count,
+            failed_jobs: failed_count,
+            cancelled_jobs: cancelled_count,
+        })
     }
 
     // =====================================

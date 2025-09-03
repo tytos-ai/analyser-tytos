@@ -2,9 +2,9 @@ use chrono::Utc;
 use config_manager::SystemConfig;
 use futures::future::join_all;
 use dex_client::{BirdEyeClient, BirdEyeError, GeneralTraderTransaction, TokenTransactionSide};
-use persistence_layer::{PersistenceError, PersistenceClient, DiscoveredWalletToken};
+use persistence_layer::{PersistenceError, PersistenceClient, DiscoveredWalletToken, TokenAnalysisJob, JobStatus};
 // New algorithm imports (primary P&L system)
-use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, NewFinancialEvent};
+use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, NewFinancialEvent, BalanceFetcher};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,16 +76,6 @@ impl From<config_manager::ConfigurationError> for OrchestratorError {
 }
 
 pub type Result<T> = std::result::Result<T, OrchestratorError>;
-
-/// Status of a P&L analysis job
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum JobStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
 
 /// P&L analysis job information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +200,7 @@ pub struct JobOrchestrator {
     birdeye_client: BirdEyeClient,
     persistence_client: Arc<PersistenceClient>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
+    running_token_analysis_jobs: Arc<Mutex<HashMap<Uuid, TokenAnalysisJob>>>,
     // batch_jobs stored in PostgreSQL via persistence_client
     instance_id: String, // Unique identifier for this orchestrator instance
 }
@@ -236,6 +227,7 @@ impl JobOrchestrator {
             birdeye_client,
             persistence_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
+            running_token_analysis_jobs: Arc::new(Mutex::new(HashMap::new())),
             instance_id,
         })
     }
@@ -341,10 +333,11 @@ impl JobOrchestrator {
                         // Store the rich P&L portfolio result for later retrieval
                         let store_result = {
                             let redis = &self.persistence_client;
-                            redis.store_pnl_result(
+                            redis.store_pnl_result_with_source(
                                 &pair_clone.wallet_address,
                                 &pair_clone.chain,
                                 &report,
+                                "continuous",
                             ).await
                         };
                         
@@ -560,7 +553,7 @@ impl JobOrchestrator {
                     // Store rich portfolio result in main table for individual wallet queries
                     let persistence_client = &self.persistence_client;
                     // Use the chain from the batch job
-                    match persistence_client.store_pnl_result(wallet, &chain, portfolio_result).await {
+                    match persistence_client.store_pnl_result_with_source(wallet, &chain, portfolio_result, "batch").await {
                         Ok(_) => {
                             debug!("Stored rich P&L result for wallet {} from batch job {}", wallet, job_id);
                             success_count += 1;
@@ -1007,8 +1000,22 @@ impl JobOrchestrator {
         
         info!("📊 Grouped events into {} token groups", events_by_token.len());
         
-        // Step 3: Calculate P&L using the new engine
-        let pnl_engine = NewPnLEngine::new(wallet_address.to_string());
+        // Step 3: Calculate P&L using the new engine with balance API integration
+        let balance_fetcher = if self.config.birdeye.balance_api_enabled {
+            BalanceFetcher::new(
+                self.config.birdeye.api_key.clone(), 
+                Some(self.config.birdeye.api_base_url.clone())
+            )
+        } else {
+            // Create a dummy fetcher - balance API disabled in config
+            BalanceFetcher::new("disabled".to_string(), None)
+        };
+        
+        let pnl_engine = if self.config.birdeye.balance_api_enabled {
+            NewPnLEngine::with_balance_fetcher(wallet_address.to_string(), balance_fetcher)
+        } else {
+            NewPnLEngine::new(wallet_address.to_string())
+        };
         
         // Fetch current prices for unrealized P&L calculations
         let current_prices = self.fetch_current_prices_for_tokens(&events_by_token, chain).await?;
@@ -1100,6 +1107,268 @@ impl JobOrchestrator {
         Ok(transactions)
     }
 
+    // =====================================
+    // Token Analysis Methods
+    // =====================================
+
+    /// Submit a token analysis job
+    pub async fn submit_token_analysis_job(
+        &self,
+        token_addresses: Vec<String>,
+        chain: String,
+        max_transactions: Option<u32>,
+    ) -> Result<Uuid> {
+        let job = TokenAnalysisJob::new(token_addresses.clone(), chain.clone(), max_transactions);
+        let job_id = job.id;
+
+        info!("🚀 Starting token analysis job {} for {} tokens on {}", 
+              job_id, token_addresses.len(), chain);
+
+        // Store job in persistence and memory
+        self.persistence_client.store_token_analysis_job(&job).await
+            .map_err(|e| OrchestratorError::Persistence(e.to_string()))?;
+        
+        {
+            let mut running_jobs = self.running_token_analysis_jobs.lock().await;
+            running_jobs.insert(job_id, job);
+        }
+
+        // Spawn background task for token analysis
+        let orchestrator_clone = self.clone();
+        let job_id_clone = job_id;
+        tokio::spawn(async move {
+            if let Err(e) = orchestrator_clone.process_token_analysis_job(job_id_clone).await {
+                error!("Token analysis job {} failed: {}", job_id_clone, e);
+                
+                // Update job status to failed
+                let mut running_jobs = orchestrator_clone.running_token_analysis_jobs.lock().await;
+                if let Some(job) = running_jobs.get_mut(&job_id_clone) {
+                    job.status = JobStatus::Failed;
+                    job.completed_at = Some(Utc::now());
+                    
+                    // Update in persistence
+                    if let Err(persist_err) = orchestrator_clone.persistence_client.update_token_analysis_job(job).await {
+                        error!("Failed to update failed job {} in persistence: {}", job_id_clone, persist_err);
+                    }
+                }
+            }
+        });
+
+        Ok(job_id)
+    }
+
+    /// Process a token analysis job
+    async fn process_token_analysis_job(&self, job_id: Uuid) -> Result<()> {
+        info!("🔄 Processing token analysis job {}", job_id);
+
+        // Get job from running jobs and update status
+        let (token_addresses, chain, max_transactions) = {
+            let mut running_jobs = self.running_token_analysis_jobs.lock().await;
+            let job = running_jobs.get_mut(&job_id)
+                .ok_or_else(|| OrchestratorError::JobExecution(format!("Token analysis job {} not found", job_id)))?;
+            
+            job.status = JobStatus::Running;
+            job.started_at = Some(Utc::now());
+            
+            // Update in persistence
+            self.persistence_client.update_token_analysis_job(job).await
+                .map_err(|e| OrchestratorError::Persistence(e.to_string()))?;
+            
+            (job.token_addresses.clone(), job.chain.clone(), job.get_max_transactions())
+        };
+
+        let mut discovered_wallet_addresses = std::collections::HashSet::new();
+
+        // Step 1: Discover top traders for each token
+        for token_address in &token_addresses {
+            info!("🔍 Discovering top traders for token: {}", token_address);
+            
+            match self.birdeye_client.get_top_traders_paginated(token_address, &chain).await {
+                Ok(traders) => {
+                    info!("📊 Found {} top traders for token {}", traders.len(), token_address);
+                    for trader in traders {
+                        discovered_wallet_addresses.insert(trader.owner);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to get top traders for token {}: {}", token_address, e);
+                }
+            }
+        }
+
+        let discovered_wallets: Vec<String> = discovered_wallet_addresses.into_iter().collect();
+        info!("🎯 Discovered {} unique wallets across {} tokens", 
+              discovered_wallets.len(), token_addresses.len());
+
+        // Update job with discovered wallets
+        {
+            let mut running_jobs = self.running_token_analysis_jobs.lock().await;
+            if let Some(job) = running_jobs.get_mut(&job_id) {
+                job.discovered_wallets = discovered_wallets.clone();
+            }
+        }
+
+        // Step 2: Analyze discovered wallets (similar to batch job processing)
+        let mut analyzed_wallets = Vec::new();
+        let mut failed_wallets = Vec::new();
+
+        // Process wallets in parallel batches (like batch jobs)
+        let batch_size = self.config.system.pnl_parallel_batch_size.unwrap_or(10);
+        for wallet_chunk in discovered_wallets.chunks(batch_size) {
+            let futures: Vec<_> = wallet_chunk.iter().map(|wallet| {
+                let wallet = wallet.clone();
+                let chain = chain.clone();
+                let max_transactions = max_transactions;
+                async move {
+                    let result = self.process_single_wallet_for_token_analysis(&wallet, &chain, max_transactions).await;
+                    (wallet, result)
+                }
+            }).collect();
+
+            let results = join_all(futures).await;
+            
+            for (wallet, result) in results {
+                match result {
+                    Ok(_) => {
+                        analyzed_wallets.push(wallet);
+                    }
+                    Err(e) => {
+                        warn!("Failed to analyze wallet {} for token analysis: {}", wallet, e);
+                        failed_wallets.push(wallet);
+                    }
+                }
+            }
+        }
+
+        // Update final job status
+        {
+            let mut running_jobs = self.running_token_analysis_jobs.lock().await;
+            if let Some(job) = running_jobs.get_mut(&job_id) {
+                job.analyzed_wallets = analyzed_wallets.clone();
+                job.failed_wallets = failed_wallets.clone();
+                job.status = JobStatus::Completed;
+                job.completed_at = Some(Utc::now());
+                
+                // Update in persistence
+                if let Err(e) = self.persistence_client.update_token_analysis_job(job).await {
+                    error!("Failed to update completed job {} in persistence: {}", job_id, e);
+                }
+            }
+        }
+
+        // Clean up completed job from memory after a delay to allow API calls to fetch final status
+        let orchestrator_clone = self.clone();
+        let job_id_clone = job_id;
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await; // Keep in memory for 1 minute
+            let mut running_jobs = orchestrator_clone.running_token_analysis_jobs.lock().await;
+            if let Some(job) = running_jobs.get(&job_id_clone) {
+                if job.status == JobStatus::Completed || job.status == JobStatus::Failed {
+                    running_jobs.remove(&job_id_clone);
+                    debug!("Cleaned up completed job {} from memory", job_id_clone);
+                }
+            }
+        });
+
+        info!("✅ Token analysis job {} completed: {}/{} wallets successfully analyzed", 
+              job_id, analyzed_wallets.len(), discovered_wallets.len());
+
+        Ok(())
+    }
+
+    /// Process a single wallet for token analysis
+    async fn process_single_wallet_for_token_analysis(
+        &self,
+        wallet_address: &str,
+        chain: &str,
+        max_transactions: Option<u32>,
+    ) -> Result<()> {
+        // Use the same P&L processing logic as batch jobs, but store with "token_analysis" source
+        let transactions = self.birdeye_client
+            .get_all_trader_transactions(wallet_address, chain, None, None, max_transactions)
+            .await?;
+
+        if transactions.is_empty() {
+            warn!("No transactions found for wallet {}", wallet_address);
+            return Err(OrchestratorError::JobExecution(
+                format!("No transactions found for wallet {}", wallet_address)
+            ));
+        }
+
+        let parser = NewTransactionParser::new(wallet_address.to_string());
+        let events = parser.parse_transactions(transactions).await
+            .map_err(|e| OrchestratorError::PnL(e))?;
+
+        if events.is_empty() {
+            warn!("No financial events found for wallet {}", wallet_address);
+            return Err(OrchestratorError::JobExecution(
+                format!("No financial events found for wallet {}", wallet_address)
+            ));
+        }
+
+        // Group events by token for P&L processing
+        let events_by_token = NewTransactionParser::group_events_by_token(events);
+        
+        // Create P&L engine with balance API integration for token analysis
+        let balance_fetcher = if self.config.birdeye.balance_api_enabled {
+            BalanceFetcher::new(
+                self.config.birdeye.api_key.clone(), 
+                Some(self.config.birdeye.api_base_url.clone())
+            )
+        } else {
+            BalanceFetcher::new("disabled".to_string(), None)
+        };
+        
+        let engine = if self.config.birdeye.balance_api_enabled {
+            NewPnLEngine::with_balance_fetcher(wallet_address.to_string(), balance_fetcher)
+        } else {
+            NewPnLEngine::new(wallet_address.to_string())
+        };
+        let portfolio_result = engine.calculate_portfolio_pnl(events_by_token, None).await
+            .map_err(|e| OrchestratorError::PnL(e))?;
+
+        // Store with "token_analysis" source
+        self.persistence_client
+            .store_pnl_result_with_source(wallet_address, chain, &portfolio_result, "token_analysis")
+            .await
+            .map_err(|e| OrchestratorError::Persistence(e.to_string()))?;
+
+        debug!("✅ Analyzed wallet {} for token analysis", wallet_address);
+        Ok(())
+    }
+
+    /// Get token analysis job status
+    pub async fn get_token_analysis_job_status(&self, job_id: Uuid) -> Option<TokenAnalysisJob> {
+        // First check in-memory jobs (for running jobs)
+        {
+            let running_jobs = self.running_token_analysis_jobs.lock().await;
+            if let Some(job) = running_jobs.get(&job_id) {
+                return Some(job.clone());
+            }
+        }
+        
+        // If not in memory, check persistence (for completed/failed jobs)
+        match self.persistence_client.get_token_analysis_job(&job_id.to_string()).await {
+            Ok(job) => job,
+            Err(e) => {
+                error!("Failed to get job {} from persistence: {}", job_id, e);
+                None
+            }
+        }
+    }
+
+    /// Get all running token analysis jobs
+    pub async fn get_all_token_analysis_jobs(&self) -> Vec<TokenAnalysisJob> {
+        let running_jobs = self.running_token_analysis_jobs.lock().await;
+        running_jobs.values().cloned().collect()
+    }
+
+    /// Get all token analysis jobs from persistence with pagination
+    pub async fn get_all_token_analysis_jobs_from_persistence(&self, limit: usize, offset: usize) -> Result<(Vec<TokenAnalysisJob>, usize)> {
+        self.persistence_client.get_all_token_analysis_jobs(limit, offset).await
+            .map_err(|e| OrchestratorError::Persistence(e.to_string()))
+    }
+
 }
 
 // Clone implementation for JobOrchestrator
@@ -1110,6 +1379,7 @@ impl Clone for JobOrchestrator {
             birdeye_client: self.birdeye_client.clone(),
             persistence_client: self.persistence_client.clone(),
             running_jobs: self.running_jobs.clone(),
+            running_token_analysis_jobs: self.running_token_analysis_jobs.clone(),
             instance_id: self.instance_id.clone(),
         }
     }

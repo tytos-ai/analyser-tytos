@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
-use job_orchestrator::{BatchJob, JobStatus, OrchestratorStatus};
+use job_orchestrator::{BatchJob, OrchestratorStatus};
+use persistence_layer::JobStatus;
 use pnl_core::PortfolioPnLResult;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -492,6 +493,115 @@ pub struct BatchJobHistorySummary {
     pub running_jobs: u64,
     pub completed_jobs: u64,
     pub failed_jobs: u64,
+}
+
+// =====================================
+// Token Analysis Types
+// =====================================
+
+/// Request to submit a token analysis job
+#[derive(Debug, Deserialize)]
+pub struct TokenAnalysisRequest {
+    /// Array of token addresses to analyze (supports single or multiple)
+    pub token_addresses: Vec<String>,
+    /// Blockchain network (defaults to "solana" if not specified)
+    pub chain: Option<String>,
+    /// Maximum transactions per wallet (optional override)
+    pub max_transactions: Option<u32>,
+}
+
+/// Query parameters for getting jobs
+#[derive(Debug, Deserialize)]
+pub struct GetJobsQueryParams {
+    /// Filter by job status (optional)
+    pub status: Option<String>,
+    /// Number of items to skip (pagination)
+    pub offset: Option<usize>,
+    /// Maximum number of items to return (pagination)
+    pub limit: Option<usize>,
+}
+
+/// Response for token analysis submission
+#[derive(Debug, Serialize)]
+pub struct TokenAnalysisResponse {
+    pub job_id: Uuid,
+    pub token_count: usize,
+    pub estimated_wallets: usize,
+    pub status: JobStatus,
+    pub submitted_at: DateTime<Utc>,
+}
+
+/// Token analysis job status response
+#[derive(Debug, Serialize)]
+pub struct TokenAnalysisStatusResponse {
+    pub job_id: Uuid,
+    pub status: JobStatus,
+    pub token_addresses: Vec<String>,
+    pub chain: String,
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub progress: TokenAnalysisProgress,
+}
+
+/// Token analysis progress information
+#[derive(Debug, Serialize)]
+pub struct TokenAnalysisProgress {
+    pub total_tokens: usize,
+    pub processed_tokens: usize,
+    pub total_discovered_wallets: usize,
+    pub analyzed_wallets: usize,
+    pub successful_analyses: usize,
+    pub failed_analyses: usize,
+}
+
+/// Token analysis results response
+#[derive(Debug, Serialize)]
+pub struct TokenAnalysisResultsResponse {
+    pub job_id: Uuid,
+    pub status: JobStatus,
+    pub token_addresses: Vec<String>,
+    pub chain: String,
+    pub summary: TokenAnalysisSummary,
+    pub results: Vec<StoredPnLResultSummary>,
+}
+
+/// Summary statistics for token analysis results
+#[derive(Debug, Serialize)]
+pub struct TokenAnalysisSummary {
+    pub total_wallets_analyzed: usize,
+    pub successful_analyses: usize,
+    pub failed_analyses: usize,
+    pub total_pnl_usd: Decimal,
+    pub profitable_wallets: usize,
+    pub average_pnl_usd: Decimal,
+    pub total_trades: u32,
+    pub average_win_rate: f64,
+    pub tokens_processed: usize,
+}
+
+/// Token analysis job summary for listing endpoint
+#[derive(Debug, Serialize)]
+pub struct TokenAnalysisJobSummary {
+    pub id: Uuid,
+    pub token_addresses: Vec<String>,
+    pub chain: String,
+    pub status: JobStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub total_wallets_discovered: usize,
+    pub total_wallets_analyzed: usize,
+    pub failed_wallets_count: usize,
+}
+
+/// Response for getting all token analysis jobs
+#[derive(Debug, Serialize)]
+pub struct GetTokenAnalysisJobsResponse {
+    pub jobs: Vec<TokenAnalysisJobSummary>,
+    pub total_count: usize,
+    pub offset: usize,
+    pub limit: usize,
 }
 
 // =====================================

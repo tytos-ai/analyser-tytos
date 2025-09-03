@@ -2,10 +2,15 @@
 pub mod new_parser;
 pub mod new_pnl_engine;
 pub mod comprehensive_tests;
+pub mod balance_fetcher;
+
+#[cfg(test)]
+pub mod phantom_buy_fix_test;
 
 // New algorithm exports (primary P&L system)
 pub use new_parser::{NewTransactionParser, NewFinancialEvent, NewEventType, ParsedTransaction};
 pub use new_pnl_engine::{NewPnLEngine, TokenPnLResult, PortfolioPnLResult, MatchedTrade, UnmatchedSell, RemainingPosition};
+pub use balance_fetcher::{BalanceFetcher, TokenBalance};
 
 
 use serde::{Deserialize, Serialize};

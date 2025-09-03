@@ -1,6 +1,6 @@
 use anyhow::Result;
 use config_manager::SystemConfig;
-use dex_client::{BirdEyeClient, TopTrader, TrendingToken as BirdEyeTrendingToken, GeneralTraderTransaction, GainerLoser, DexScreenerClient, DexScreenerBoostedToken, NewListingToken, NewListingTokenFilter};
+use dex_client::{BirdEyeClient, TopTrader, TrendingToken as BirdEyeTrendingToken, GeneralTraderTransaction, DexScreenerClient, DexScreenerTrendingToken};
 use persistence_layer::{RedisClient, DiscoveredWalletToken};
 // NewFinancialEvent/NewEventType imports removed - using GeneralTraderTransaction directly
 use rust_decimal::Decimal;
@@ -9,16 +9,104 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
+use chrono::{DateTime, Utc, Duration as ChronoDuration};
 
 // BirdEyeTrendingConfig removed - now uses SystemConfig directly
 
-/// Orchestrates trending token discovery and top trader identification using BirdEye API + DexScreener boosted tokens
+/// Token cache entry with timestamp for deduplication
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct TokenCacheEntry {
+    token_address: String,
+    chain_id: String,
+    last_processed: DateTime<Utc>,
+}
+
+/// Redis-based token cache for time-based deduplication
+struct TokenCache {
+    redis_client: Arc<Mutex<Option<RedisClient>>>,
+    cache_duration_hours: i64,
+    key_prefix: String,
+}
+
+impl TokenCache {
+    fn new(redis_client: Arc<Mutex<Option<RedisClient>>>, cache_duration_hours: i64) -> Self {
+        Self {
+            redis_client,
+            cache_duration_hours,
+            key_prefix: "token_cache".to_string(),
+        }
+    }
+
+    /// Check if a token was processed recently (within cache duration)
+    async fn is_token_cached(&self, token_address: &str, chain_id: &str) -> bool {
+        let redis_guard = self.redis_client.lock().await;
+        if let Some(ref redis) = *redis_guard {
+            let cache_key = format!("{}:{}:{}", self.key_prefix, chain_id, token_address);
+            
+            match redis.get_cached_data(&cache_key).await {
+                Ok(Some(cached_data)) => {
+                    if let Ok(entry) = serde_json::from_str::<TokenCacheEntry>(&cached_data) {
+                        let now = Utc::now();
+                        let time_diff = now.signed_duration_since(entry.last_processed);
+                        
+                        // Check if token is still within cache window
+                        if time_diff < ChronoDuration::hours(self.cache_duration_hours) {
+                            debug!("🎯 Token {} on {} cached (processed {} ago)", 
+                                   token_address, chain_id, time_diff);
+                            return true;
+                        } else {
+                            debug!("⏰ Token {} on {} cache expired ({} ago)", 
+                                   token_address, chain_id, time_diff);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    debug!("🆕 Token {} on {} not in cache", token_address, chain_id);
+                }
+                Err(e) => {
+                    debug!("⚠️ Failed to check cache for token {} on {}: {}", token_address, chain_id, e);
+                }
+            }
+        } else {
+            warn!("⚠️ Redis client not available for token cache check");
+        }
+        false
+    }
+
+    /// Cache a token with current timestamp
+    async fn cache_token(&self, token_address: &str, chain_id: &str) -> Result<()> {
+        let redis_guard = self.redis_client.lock().await;
+        if let Some(ref redis) = *redis_guard {
+            let cache_key = format!("{}:{}:{}", self.key_prefix, chain_id, token_address);
+            let entry = TokenCacheEntry {
+                token_address: token_address.to_string(),
+                chain_id: chain_id.to_string(),
+                last_processed: Utc::now(),
+            };
+
+            let entry_json = serde_json::to_string(&entry)?;
+            
+            // Set with expiration (cache_duration_hours + 1 hour buffer)
+            let expiry_seconds = ((self.cache_duration_hours + 1) * 3600) as u64;
+            redis.set_with_expiry(&cache_key, &entry_json, expiry_seconds).await?;
+            
+            debug!("💾 Cached token {} on {} for {} hours", 
+                   token_address, chain_id, self.cache_duration_hours);
+        } else {
+            warn!("⚠️ Redis client not available for token caching");
+        }
+        Ok(())
+    }
+}
+
+/// Orchestrates trending token discovery using DexScreener scraping (replaces BirdEye trending)
 pub struct BirdEyeTrendingOrchestrator {
     config: SystemConfig,
     birdeye_client: BirdEyeClient,
-    dexscreener_client: Option<DexScreenerClient>,
+    dexscreener_client: Option<Arc<Mutex<DexScreenerClient>>>,
     redis_client: Arc<Mutex<Option<RedisClient>>>,
     is_running: Arc<Mutex<bool>>,
+    token_cache: TokenCache,
 }
 
 impl BirdEyeTrendingOrchestrator {
@@ -39,18 +127,27 @@ impl BirdEyeTrendingOrchestrator {
                 rate_limit_delay_ms: config.dexscreener.rate_limit_delay_ms,
                 max_retries: config.dexscreener.max_retries,
                 enabled: config.dexscreener.enabled,
+                // Browser automation settings
+                chrome_executable_path: config.dexscreener.chrome_executable_path.clone(),
+                headless_mode: config.dexscreener.headless_mode,
+                anti_detection_enabled: config.dexscreener.anti_detection_enabled,
             };
-            Some(DexScreenerClient::new(dexscreener_config)?)
+            Some(Arc::new(Mutex::new(DexScreenerClient::new(dexscreener_config)?)))
         } else {
             None
         };
+        
+        let redis_arc = Arc::new(Mutex::new(redis_client));
+        let cache_duration = config.discovery.token_cache_duration_hours.unwrap_or(1);
+        let token_cache = TokenCache::new(redis_arc.clone(), cache_duration);
         
         Ok(Self {
             config,
             birdeye_client,
             dexscreener_client,
-            redis_client: Arc::new(Mutex::new(redis_client)),
+            redis_client: redis_arc,
             is_running: Arc::new(Mutex::new(false)),
+            token_cache,
         })
     }
 
@@ -202,6 +299,26 @@ impl BirdEyeTrendingOrchestrator {
             debug!("🎯 Processing token {}/{}: {} ({})", 
                    i + 1, trending_tokens.len(), token.symbol, token.address);
 
+            // Check if token is cached (skip if processed recently)
+            if self.token_cache.is_token_cached(&token.address, chain).await {
+                debug!("⏭️ Skipping cached token {} ({}) - processed recently", 
+                       token.symbol, token.address);
+                continue;
+            }
+
+            // Security check for non-Solana chains using Honeypot.is
+            if chain != "solana" {
+                if !dex_client::is_token_safe(&token.address, chain).await {
+                    warn!("🚫 Skipping honeypot/high-risk token: {} ({}) on {}", 
+                          token.symbol, token.address, chain);
+                    // Cache the rejected token to avoid rechecking
+                    if let Err(e) = self.token_cache.cache_token(&token.address, chain).await {
+                        warn!("⚠️ Failed to cache rejected token {} ({}): {}", token.symbol, token.address, e);
+                    }
+                    continue;
+                }
+            }
+
             match self.get_top_traders_for_token(&token.address, chain).await {
                 Ok(top_traders) => {
                     if !top_traders.is_empty() {
@@ -222,9 +339,18 @@ impl BirdEyeTrendingOrchestrator {
                     } else {
                         debug!("⭕ No quality traders found for {} ({})", token.symbol, token.address);
                     }
+                    
+                    // Cache the token after successful processing (regardless of traders found)
+                    if let Err(e) = self.token_cache.cache_token(&token.address, chain).await {
+                        warn!("⚠️ Failed to cache token {} ({}): {}", token.symbol, token.address, e);
+                    }
                 }
                 Err(e) => {
                     warn!("❌ Failed to get top traders for {} ({}): {}", token.symbol, token.address, e);
+                    // Also cache failed tokens to avoid immediate retries
+                    if let Err(cache_err) = self.token_cache.cache_token(&token.address, chain).await {
+                        warn!("⚠️ Failed to cache failed token {} ({}): {}", token.symbol, token.address, cache_err);
+                    }
                 }
             }
 
@@ -250,339 +376,69 @@ impl BirdEyeTrendingOrchestrator {
             }
         }
 
-        // Step 3: Get top gainers across different timeframes with pagination for this chain
-        info!("🏆 Starting paginated multi-timeframe gainers discovery for chain: {}", chain);
-        
-        match self.get_top_gainers_for_chain(chain).await {
-            Ok(gainers) => {
-                if !gainers.is_empty() {
-                    info!("💰 Found {} top gainers across all timeframes for chain {}", gainers.len(), chain);
-                    
-                    // Convert gainers to wallet-token pairs and push to queue
-                    match self.push_gainers_to_queue(&gainers, "ALL_TIMEFRAMES", chain).await {
-                        Ok(pushed_count) => {
-                            total_discovered_wallets += pushed_count;
-                            debug!("📤 Pushed {} gainer wallets to analysis queue for chain {}", pushed_count, chain);
-                        }
-                        Err(e) => {
-                            warn!("❌ Failed to push gainers for chain {}: {}", chain, e);
-                        }
-                    }
-                } else {
-                    debug!("⭕ No gainers found across all timeframes for chain {}", chain);
-                }
-            }
-            Err(e) => {
-                warn!("❌ Failed to get gainers for chain {}: {}", chain, e);
-            }
-        }
+        // Step 3: Removed BirdEye gainers discovery - using only DexScreener scraping for token discovery
 
-        // Step 4: Get boosted tokens from DexScreener (NEW DISCOVERY SOURCE)
-        if let Some(ref dexscreener_client) = self.dexscreener_client {
-            info!("🚀 Starting DexScreener boosted token discovery");
-            
-            // Get both latest and top boosted tokens
-            match dexscreener_client.get_all_boosted_tokens().await {
-                Ok((latest_tokens, top_tokens)) => {
-                    // Process latest boosted tokens
-                    if !latest_tokens.is_empty() {
-                        info!("📈 Found {} latest boosted tokens", latest_tokens.len());
-                        match self.process_boosted_tokens(&latest_tokens, "latest").await {
-                            Ok(pushed_count) => {
-                                total_discovered_wallets += pushed_count;
-                                debug!("📤 Pushed {} wallets from latest boosted tokens", pushed_count);
-                            }
-                            Err(e) => {
-                                warn!("❌ Failed to process latest boosted tokens: {}", e);
-                            }
-                        }
-                    }
-                    
-                    // Process top boosted tokens
-                    if !top_tokens.is_empty() {
-                        info!("🏆 Found {} top boosted tokens", top_tokens.len());
-                        match self.process_boosted_tokens(&top_tokens, "top").await {
-                            Ok(pushed_count) => {
-                                total_discovered_wallets += pushed_count;
-                                debug!("📤 Pushed {} wallets from top boosted tokens", pushed_count);
-                            }
-                            Err(e) => {
-                                warn!("❌ Failed to process top boosted tokens: {}", e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("❌ Failed to fetch boosted tokens from DexScreener: {}", e);
-                }
-            }
-        } else {
-            debug!("⭕ DexScreener client disabled, skipping boosted token discovery");
-        }
+        // Step 4: Removed DexScreener boosted tokens discovery - using only DexScreener scraping for trending tokens
 
-        // Step 5: Get newly listed tokens (NEW DISCOVERY SOURCE) for this chain
-        if self.config.birdeye.new_listing_enabled {
-            info!("🆕 Starting new listing token discovery for chain: {}", chain);
-            
-            match self.get_new_listing_tokens_for_chain(chain).await {
-                Ok(new_listing_tokens) => {
-                    if !new_listing_tokens.is_empty() {
-                        info!("📈 Found {} new listing tokens for chain {}", new_listing_tokens.len(), chain);
-                        
-                        match self.process_new_listing_tokens(&new_listing_tokens).await {
-                            Ok(pushed_count) => {
-                                total_discovered_wallets += pushed_count;
-                                debug!("📤 Pushed {} wallets from new listing tokens for chain {}", pushed_count, chain);
-                            }
-                            Err(e) => {
-                                warn!("❌ Failed to process new listing tokens for chain {}: {}", chain, e);
-                            }
-                        }
-                    } else {
-                        debug!("⭕ No new listing tokens found for chain {}", chain);
-                    }
-                }
-                Err(e) => {
-                    warn!("❌ Failed to fetch new listing tokens for chain {}: {}", chain, e);
-                }
-            }
-        } else {
-            debug!("⭕ New listing token discovery disabled for chain {}", chain);
-        }
+        // Step 5: Removed BirdEye new listings discovery - using only DexScreener scraping for trending tokens
 
-        info!("✅ Enhanced Multi-Source Discovery Cycle Completed for chain {}: {} total quality wallets discovered", chain, total_discovered_wallets);
-        debug!("📊 Discovery breakdown for chain {}: Paginated trending (unlimited tokens, 3 sorts × 5 pages = 15 calls) → paginated top traders (5x) | Paginated gainers (3 timeframes × 5 pages = 15 calls) → direct wallets | DexScreener boosted → paginated top traders (5x) | New listing tokens → paginated top traders (5x)", chain);
+        info!("✅ DexScreener Scraping Discovery Cycle Completed for chain {}: {} total quality wallets discovered", chain, total_discovered_wallets);
+        debug!("📊 Simplified discovery pipeline for chain {}: DexScreener trending tokens scraping → BirdEye top traders API → wallet queue", chain);
         Ok(total_discovered_wallets)
     }
 
-    /// Get top gainers across all timeframes with pagination for a specific chain
-    async fn get_top_gainers_for_chain(&self, chain: &str) -> Result<Vec<GainerLoser>> {
-        debug!("💰 Fetching top gainers across all timeframes with pagination for chain: {}", chain);
-
-        match self.birdeye_client.get_gainers_losers_paginated(chain).await {
-            Ok(gainers) => {
-                debug!("📊 Retrieved {} gainers across all timeframes and pages for chain {}", gainers.len(), chain);
-                Ok(gainers)
-            }
-            Err(e) => {
-                error!("❌ Failed to fetch gainers for chain {}: {}", chain, e);
-                Err(e.into())
-            }
-        }
-    }
-
-    /// Push gainer wallets to Redis queue for P&L analysis
-    async fn push_gainers_to_queue(&self, gainers: &[GainerLoser], timeframe: &str, chain: &str) -> Result<usize> {
-        if gainers.is_empty() {
-            return Ok(0);
-        }
-
-        // Convert gainers to DiscoveredWalletToken format
-        // For gainers, we don't have a specific token, so we'll use a generic identifier
-        let wallet_token_pairs: Vec<DiscoveredWalletToken> = gainers.iter()
-            .map(|gainer| DiscoveredWalletToken {
-                wallet_address: gainer.address.clone(),
-                chain: chain.to_string(),
-                token_address: "ALL_TOKENS".to_string(), // Generic for gainers
-                token_symbol: format!("GAINER_{}", timeframe.to_uppercase()),
-                trader_volume_usd: gainer.volume,
-                trader_trades: gainer.trade_count,
-                discovered_at: chrono::Utc::now(),
-            })
-            .collect();
-
-        debug!("📤 Pushing {} gainer wallet-token pairs to Redis queue for timeframe {} on chain {}", 
-               wallet_token_pairs.len(), timeframe, chain);
-
-        let redis = self.redis_client.lock().await;
-        if let Some(ref redis_client) = *redis {
-            match redis_client.push_discovered_wallet_token_pairs_deduplicated(&wallet_token_pairs).await {
-                Ok(pushed_count) => {
-                    let skipped_count = wallet_token_pairs.len() - pushed_count;
-                    if skipped_count > 0 {
-                        info!("✅ Pushed {} new gainer wallet-token pairs for {} on chain {} (skipped {} duplicates)", 
-                              pushed_count, timeframe, chain, skipped_count);
-                    } else {
-                        info!("✅ Successfully pushed {} gainer wallet-token pairs for {} on chain {}", 
-                              pushed_count, timeframe, chain);
-                    }
-                    Ok(pushed_count)
-                }
-                Err(e) => {
-                    error!("❌ Failed to push gainer wallet-token pairs to Redis queue: {}", e);
-                    Err(e.into())
-                }
-            }
-        } else {
-            warn!("⚠️ Redis client not available, cannot push gainer wallet-token pairs");
-            Ok(0)
-        }
-    }
-
-    /// Process boosted tokens from DexScreener and get top traders for each
-    async fn process_boosted_tokens(&self, boosted_tokens: &[DexScreenerBoostedToken], source: &str) -> Result<usize> {
-        if boosted_tokens.is_empty() {
-            return Ok(0);
-        }
-
-        debug!("🔄 Processing {} boosted tokens from {}", boosted_tokens.len(), source);
-        
-        // Filter for enabled chains only
-        let mut processed_tokens: Vec<DexScreenerBoostedToken> = boosted_tokens
-            .iter()
-            .filter(|token| self.config.multichain.enabled_chains.contains(&token.chain_id))
-            .cloned()
-            .collect();
-            
-        // Limit to max boosted tokens (no filtering by boost amount needed)
-        if processed_tokens.len() > self.config.dexscreener.max_boosted_tokens as usize {
-            processed_tokens.truncate(self.config.dexscreener.max_boosted_tokens as usize);
-        }
-
-        debug!("📊 Processing {} boosted tokens from {}", processed_tokens.len(), source);
-
-        let mut total_discovered_wallets = 0;
-
-        // For each boosted token, get top traders using BirdEye
-        for (i, boosted_token) in processed_tokens.iter().enumerate() {
-            // Check if we should stop before processing each boosted token
-            {
-                let is_running = self.is_running.lock().await;
-                if !*is_running {
-                    info!("🛑 Stop requested during boosted token processing, breaking out of loop at token {}/{}", 
-                          i + 1, processed_tokens.len());
-                    break;
-                }
-            }
-
-            debug!("🎯 Processing boosted token {}/{}: {}", 
-                   i + 1, processed_tokens.len(), boosted_token.token_address);
-
-            // Use the chain from the boosted token
-            let boosted_chain = &boosted_token.chain_id;
-            match self.get_top_traders_for_token(&boosted_token.token_address, boosted_chain).await {
-                Ok(top_traders) => {
-                    if !top_traders.is_empty() {
-                        info!("👤 Found {} quality traders for boosted token {} ({})", 
-                              top_traders.len(), boosted_token.token_address, source);
-
-                        // Create a synthetic "trending token" structure for boosted tokens
-                        let synthetic_token = BirdEyeTrendingToken {
-                            address: boosted_token.token_address.clone(),
-                            symbol: format!("BOOSTED_{}", source.to_uppercase()),
-                            name: boosted_token.description.clone().unwrap_or_else(|| "Boosted Token".to_string()),
-                            decimals: None,
-                            price: 0.0, // Default price for boosted tokens
-                            price_change_24h: None,
-                            volume_24h: Some(1000.0), // Default volume for boosted tokens
-                            volume_change_24h: None,
-                            liquidity: None,
-                            fdv: None,
-                            marketcap: None,
-                            rank: None,
-                            logo_uri: None,
-                            txns_24h: None,
-                            last_trade_unix_time: None,
-                        };
-
-                        // Push quality wallet-token pairs to Redis for P&L analysis
-                        match self.push_wallet_token_pairs_to_queue(&top_traders, &synthetic_token, boosted_chain).await {
-                            Ok(pushed_count) => {
-                                total_discovered_wallets += pushed_count;
-                                debug!("📤 Pushed {} wallets to analysis queue for boosted token {}", 
-                                       pushed_count, boosted_token.token_address);
-                            }
-                            Err(e) => {
-                                warn!("❌ Failed to push wallets for boosted token {}: {}", 
-                                      boosted_token.token_address, e);
-                            }
-                        }
-                    } else {
-                        debug!("⭕ No quality traders found for boosted token {}", boosted_token.token_address);
-                    }
-                }
-                Err(e) => {
-                    warn!("❌ Failed to get top traders for boosted token {}: {}", 
-                          boosted_token.token_address, e);
-                }
-            }
-
-            // Rate limiting between boosted tokens (interruptible)
-            if i < processed_tokens.len() - 1 {
-                // Make this sleep interruptible by checking stop flag every 100ms
-                let sleep_duration = Duration::from_millis(500);
-                let check_interval = Duration::from_millis(100);
-                let start_time = std::time::Instant::now();
-                
-                while start_time.elapsed() < sleep_duration {
-                    tokio::time::sleep(check_interval).await;
-                    
-                    // Check if we should stop during rate limiting sleep
-                    {
-                        let is_running = self.is_running.lock().await;
-                        if !*is_running {
-                            info!("🛑 Stop requested during boosted token rate limiting, breaking out early");
-                            return Ok(total_discovered_wallets);
-                        }
-                    }
-                }
-            }
-        }
-
-        debug!("✅ Boosted token processing completed: {} total wallets discovered from {}", 
-               total_discovered_wallets, source);
-        Ok(total_discovered_wallets)
-    }
 
     /// Get trending tokens for a specific chain using enhanced multi-sort discovery
     async fn get_trending_tokens_for_chain(&self, chain: &str) -> Result<Vec<BirdEyeTrendingToken>> {
-        debug!("📊 Starting paginated trending token discovery from BirdEye for chain: {}", chain);
+        debug!("📊 Starting trending token discovery from DexScreener scraping for chain: {}", chain);
 
-        match self.birdeye_client.get_trending_tokens_paginated(chain).await {
-            Ok(mut tokens) => {
-                info!("🎯 Paginated discovery completed: {} unique tokens found across all pages for chain {}", tokens.len(), chain);
-                
-                // Apply volume-based sorting (already done in multi-sort method but ensure consistency)
-                tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
-                
-                // Apply max trending tokens limit (0 = unlimited)
-                if self.config.birdeye.max_trending_tokens > 0 && tokens.len() > self.config.birdeye.max_trending_tokens {
-                    tokens.truncate(self.config.birdeye.max_trending_tokens);
-                    info!("📈 Processing trending tokens: {} tokens (limited to {}) for chain {}", tokens.len(), self.config.birdeye.max_trending_tokens, chain);
-                } else {
-                    info!("📈 Processing all discovered trending tokens: {} tokens for chain {}", tokens.len(), chain);
-                }
-
-                if self.config.system.debug_mode && !tokens.is_empty() {
-                    debug!("🎯 Top trending tokens by multi-sort discovery for chain {}:", chain);
-                    for (i, token) in tokens.iter().enumerate().take(8) {
-                        debug!("  {}. {} ({}) - Vol: ${:.0}, Liq: ${:.0}, Change: {:.1}%", 
-                               i + 1, token.symbol, token.address, 
-                               token.volume_24h.unwrap_or(0.0),
-                               token.liquidity.unwrap_or(0.0),
-                               token.price_change_24h.unwrap_or(0.0));
+        // Use DexScreener scraping instead of BirdEye API
+        if let Some(ref dexscreener_client_arc) = self.dexscreener_client {
+            let mut dexscreener_client = dexscreener_client_arc.lock().await;
+            
+            // Use DexScreener scraping to get trending tokens (24h timeframe)
+            match dexscreener_client.get_trending_tokens_scraped(chain, "trendingScoreH24").await {
+                Ok(dex_tokens) => {
+                    info!("🎯 DexScreener scraping completed: {} tokens found for chain {}", dex_tokens.len(), chain);
+                    
+                    // Convert DexScreener tokens to BirdEye format for compatibility
+                    let mut converted_tokens: Vec<BirdEyeTrendingToken> = dex_tokens
+                        .into_iter()
+                        .map(|token| self.convert_dexscreener_to_birdeye_token(token))
+                        .collect();
+                    
+                    // Apply volume-based sorting
+                    converted_tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
+                    
+                    // Apply max trending tokens limit (0 = unlimited)
+                    if self.config.birdeye.max_trending_tokens > 0 && converted_tokens.len() > self.config.birdeye.max_trending_tokens {
+                        converted_tokens.truncate(self.config.birdeye.max_trending_tokens);
+                        info!("📈 Processing trending tokens: {} tokens (limited to {}) for chain {}", converted_tokens.len(), self.config.birdeye.max_trending_tokens, chain);
+                    } else {
+                        info!("📈 Processing all discovered trending tokens: {} tokens for chain {}", converted_tokens.len(), chain);
                     }
-                }
 
-                Ok(tokens)
+                    if self.config.system.debug_mode && !converted_tokens.is_empty() {
+                        debug!("🎯 Top trending tokens from DexScreener scraping for chain {}:", chain);
+                        for (i, token) in converted_tokens.iter().enumerate().take(8) {
+                            debug!("  {}. {} ({}) - Vol: ${:.0}, Liq: ${:.0}, Change: {:.1}%", 
+                                   i + 1, token.symbol, token.address, 
+                                   token.volume_24h.unwrap_or(0.0),
+                                   token.liquidity.unwrap_or(0.0),
+                                   token.price_change_24h.unwrap_or(0.0));
+                        }
+                    }
+                    
+                    return Ok(converted_tokens);
+                }
+                Err(e) => {
+                    error!("❌ DexScreener scraping failed for chain {}: {}", chain, e);
+                    return Err(anyhow::anyhow!("DexScreener scraping failed - no trending tokens available"));
+                }
             }
-            Err(e) => {
-                error!("❌ Multi-sort trending token discovery failed for chain {}: {}", chain, e);
-                warn!("🔄 Falling back to single-sort discovery method for chain {}", chain);
-                
-                // Fallback to original method
-                match self.birdeye_client.get_trending_tokens_paginated(chain).await {
-                    Ok(mut fallback_tokens) => {
-                        fallback_tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
-                        warn!("⚠️ Using fallback discovery: {} tokens retrieved for chain {}", fallback_tokens.len(), chain);
-                        Ok(fallback_tokens)
-                    }
-                    Err(fallback_e) => {
-                        error!("❌ Both multi-sort and fallback discovery failed for chain {}: {}", chain, fallback_e);
-                        Err(e.into())
-                    }
-                }
-            }
+        } else {
+            error!("❌ DexScreener client not initialized for chain {}", chain);
+            return Err(anyhow::anyhow!("DexScreener client not available - trending token discovery requires DexScreener scraping"));
         }
     }
 
@@ -675,131 +531,6 @@ impl BirdEyeTrendingOrchestrator {
 
     // get_wallet_transaction_history method removed - was unused and relied on removed get_trader_transactions
 
-    /// Get new listing tokens with comprehensive coverage for a specific chain
-    async fn get_new_listing_tokens_for_chain(&self, chain: &str) -> Result<Vec<NewListingToken>> {
-        debug!("🆕 Fetching new listing tokens with comprehensive coverage for chain: {}", chain);
-        
-        let all_tokens = self.birdeye_client.get_new_listing_tokens_comprehensive(chain).await?;
-        
-        // Apply quality filtering
-        let filter = NewListingTokenFilter {
-            min_liquidity: Some(self.config.birdeye.new_listing_min_liquidity),
-            max_age_hours: Some(self.config.birdeye.new_listing_max_age_hours),
-            max_tokens: Some(self.config.birdeye.new_listing_max_tokens),
-            exclude_sources: None,
-        };
-        
-        let filtered_tokens = self.birdeye_client.filter_new_listing_tokens(all_tokens, &filter);
-        
-        info!("🎯 New listing discovery completed: {} quality tokens after filtering for chain {}", filtered_tokens.len(), chain);
-        
-        if self.config.system.debug_mode && !filtered_tokens.is_empty() {
-            debug!("🆕 Top new listing tokens for chain {}:", chain);
-            for (i, token) in filtered_tokens.iter().enumerate().take(8) {
-                debug!("  {}. {} ({}) - Liquidity: ${:.2}, Source: {}", 
-                       i + 1, token.symbol, token.address, token.liquidity, token.source);
-            }
-        }
-        
-        Ok(filtered_tokens)
-    }
-
-
-    /// Process new listing tokens and get top traders for each
-    async fn process_new_listing_tokens(&self, new_listing_tokens: &[NewListingToken]) -> Result<usize> {
-        if new_listing_tokens.is_empty() {
-            return Ok(0);
-        }
-        
-        debug!("🔄 Processing {} new listing tokens", new_listing_tokens.len());
-        
-        let mut total_discovered_wallets = 0;
-        
-        for (i, token) in new_listing_tokens.iter().enumerate() {
-            // Check if we should stop before processing each new listing token
-            {
-                let is_running = self.is_running.lock().await;
-                if !*is_running {
-                    info!("🛑 Stop requested during new listing token processing, breaking out of loop at token {}/{}", 
-                          i + 1, new_listing_tokens.len());
-                    break;
-                }
-            }
-
-            debug!("🎯 Processing new listing token {}/{}: {} ({})", 
-                   i + 1, new_listing_tokens.len(), token.symbol, token.address);
-            
-            // Use default chain for new listing tokens
-            let listing_chain = &self.config.multichain.default_chain;
-            match self.get_top_traders_for_token(&token.address, listing_chain).await {
-                Ok(top_traders) => {
-                    if !top_traders.is_empty() {
-                        info!("👤 Found {} quality traders for new listing token {} ({})", 
-                              top_traders.len(), token.symbol, token.address);
-                        
-                        // Convert NewListingToken to TrendingToken format for compatibility
-                        let synthetic_trending_token = BirdEyeTrendingToken {
-                            address: token.address.clone(),
-                            symbol: token.symbol.clone(),
-                            name: token.name.clone(),
-                            decimals: Some(token.decimals),
-                            price: 0.0, // Will be fetched by price service
-                            price_change_24h: None,
-                            volume_24h: Some(token.liquidity), // Use liquidity as volume proxy
-                            volume_change_24h: None,
-                            liquidity: Some(token.liquidity),
-                            fdv: None,
-                            marketcap: None,
-                            rank: None,
-                            logo_uri: token.logo_uri.clone(),
-                            txns_24h: None,
-                            last_trade_unix_time: None,
-                        };
-                        
-                        // Use existing wallet-token pair pushing logic
-                        match self.push_wallet_token_pairs_to_queue(&top_traders, &synthetic_trending_token, listing_chain).await {
-                            Ok(pushed_count) => {
-                                total_discovered_wallets += pushed_count;
-                                debug!("📤 Pushed {} wallets for new listing token {}", pushed_count, token.symbol);
-                            }
-                            Err(e) => {
-                                warn!("❌ Failed to push wallets for new listing token {}: {}", token.symbol, e);
-                            }
-                        }
-                    } else {
-                        debug!("⭕ No quality traders found for new listing token {}", token.symbol);
-                    }
-                }
-                Err(e) => {
-                    warn!("❌ Failed to get top traders for new listing token {}: {}", token.symbol, e);
-                }
-            }
-            
-            // Rate limiting between tokens (interruptible)
-            if i < new_listing_tokens.len() - 1 {
-                // Make this sleep interruptible by checking stop flag every 100ms
-                let sleep_duration = Duration::from_millis(500);
-                let check_interval = Duration::from_millis(100);
-                let start_time = std::time::Instant::now();
-                
-                while start_time.elapsed() < sleep_duration {
-                    tokio::time::sleep(check_interval).await;
-                    
-                    // Check if we should stop during rate limiting sleep
-                    {
-                        let is_running = self.is_running.lock().await;
-                        if !*is_running {
-                            info!("🛑 Stop requested during new listing token rate limiting, breaking out early");
-                            return Ok(total_discovered_wallets);
-                        }
-                    }
-                }
-            }
-        }
-        
-        info!("✅ New listing token processing completed: {} total wallets discovered", total_discovered_wallets);
-        Ok(total_discovered_wallets)
-    }
 
     /// Get statistics about the current discovery state
     pub async fn get_discovery_stats(&self) -> Result<DiscoveryStats> {
@@ -826,6 +557,27 @@ impl BirdEyeTrendingOrchestrator {
                 new_listing_tokens_discovered: 0,
                 new_listing_wallets_discovered: 0,
             })
+        }
+    }
+    
+    /// Convert DexScreener token to BirdEye format for compatibility
+    fn convert_dexscreener_to_birdeye_token(&self, dex_token: DexScreenerTrendingToken) -> BirdEyeTrendingToken {
+        BirdEyeTrendingToken {
+            address: dex_token.address,
+            symbol: dex_token.symbol,
+            name: dex_token.name,
+            decimals: dex_token.decimals,
+            price: dex_token.price,
+            price_change_24h: dex_token.price_change_24h,
+            volume_24h: dex_token.volume_24h,
+            volume_change_24h: dex_token.volume_change_24h,
+            liquidity: dex_token.liquidity,
+            fdv: dex_token.fdv,
+            marketcap: dex_token.marketcap,
+            rank: dex_token.rank,
+            logo_uri: dex_token.logo_uri,
+            txns_24h: dex_token.txns_24h,
+            last_trade_unix_time: dex_token.last_trade_unix_time,
         }
     }
 }

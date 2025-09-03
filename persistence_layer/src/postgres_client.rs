@@ -6,7 +6,7 @@ use uuid::Uuid;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use crate::{PersistenceError, Result, BatchJob, JobStatus};
+use crate::{PersistenceError, Result, BatchJob, JobStatus, TokenAnalysisJob, TokenAnalysisJobStats};
 
 /// PostgreSQL client for persistent storage of P&L results and batch jobs
 #[derive(Debug, Clone)]
@@ -52,6 +52,17 @@ impl PostgresClient {
         chain: &str,
         portfolio_result: &pnl_core::PortfolioPnLResult,
     ) -> Result<()> {
+        self.store_pnl_result_with_source(wallet_address, chain, portfolio_result, "continuous").await
+    }
+
+    /// Store a P&L result for a wallet with specific analysis source
+    pub async fn store_pnl_result_with_source(
+        &self,
+        wallet_address: &str,
+        chain: &str,
+        portfolio_result: &pnl_core::PortfolioPnLResult,
+        analysis_source: &str,
+    ) -> Result<()> {
         // Store with chain field for multichain support
         let portfolio_json = serde_json::to_string(portfolio_result)
             .map_err(PersistenceError::Serialization)?;
@@ -94,8 +105,8 @@ impl PostgresClient {
             r#"
             INSERT INTO pnl_results 
             (wallet_address, chain, total_pnl_usd, realized_pnl_usd, unrealized_pnl_usd, total_trades, win_rate, 
-             tokens_analyzed, avg_hold_time_minutes, unique_tokens_count, active_days_count, portfolio_json, analyzed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             tokens_analyzed, avg_hold_time_minutes, unique_tokens_count, active_days_count, portfolio_json, analyzed_at, analysis_source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             "#
         )
         .bind(wallet_address)
@@ -111,6 +122,7 @@ impl PostgresClient {
         .bind(active_days_count)
         .bind(portfolio_json)
         .bind(Utc::now())
+        .bind(analysis_source)
         .execute(&self.pool)
         .await
         .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -407,6 +419,253 @@ impl PostgresClient {
     // directly from pnl_results table using wallet addresses from batch job
 
     // =====================================
+    // Token Analysis Job Storage
+    // =====================================
+
+    /// Store a token analysis job
+    pub async fn store_token_analysis_job(&self, job: &TokenAnalysisJob) -> Result<()> {
+        let token_addresses_json = serde_json::to_string(&job.token_addresses)
+            .map_err(PersistenceError::Serialization)?;
+        let filters_json = serde_json::to_string(&job.filters)
+            .map_err(PersistenceError::Serialization)?;
+        let discovered_wallets_json = serde_json::to_string(&job.discovered_wallets)
+            .map_err(PersistenceError::Serialization)?;
+        let analyzed_wallets_json = serde_json::to_string(&job.analyzed_wallets)
+            .map_err(PersistenceError::Serialization)?;
+        let failed_wallets_json = serde_json::to_string(&job.failed_wallets)
+            .map_err(PersistenceError::Serialization)?;
+        let status_str = job.status.to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO token_analysis_jobs 
+            (id, token_addresses, chain, status, created_at, started_at, completed_at, filters_json, discovered_wallets, analyzed_wallets, failed_wallets)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (id) 
+            DO UPDATE SET 
+                token_addresses = EXCLUDED.token_addresses,
+                chain = EXCLUDED.chain,
+                status = EXCLUDED.status,
+                created_at = EXCLUDED.created_at,
+                started_at = EXCLUDED.started_at,
+                completed_at = EXCLUDED.completed_at,
+                filters_json = EXCLUDED.filters_json,
+                discovered_wallets = EXCLUDED.discovered_wallets,
+                analyzed_wallets = EXCLUDED.analyzed_wallets,
+                failed_wallets = EXCLUDED.failed_wallets
+            "#
+        )
+        .bind(job.id.to_string())
+        .bind(token_addresses_json)
+        .bind(&job.chain)
+        .bind(status_str)
+        .bind(job.created_at)
+        .bind(job.started_at)
+        .bind(job.completed_at)
+        .bind(filters_json)
+        .bind(discovered_wallets_json)
+        .bind(analyzed_wallets_json)
+        .bind(failed_wallets_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("PostgreSQL error: {}", e)
+        ))))?;
+
+        debug!("Stored token analysis job {}", job.id);
+        Ok(())
+    }
+
+    /// Update a token analysis job
+    pub async fn update_token_analysis_job(&self, job: &TokenAnalysisJob) -> Result<()> {
+        self.store_token_analysis_job(job).await
+    }
+
+    /// Get a token analysis job by ID
+    pub async fn get_token_analysis_job(&self, job_id: &str) -> Result<Option<TokenAnalysisJob>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, token_addresses, chain, status, created_at, started_at, completed_at, 
+                   filters_json, discovered_wallets, analyzed_wallets, failed_wallets
+            FROM token_analysis_jobs 
+            WHERE id = $1
+            "#
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("PostgreSQL error: {}", e)
+        ))))?;
+
+        match row {
+            Some(row) => {
+                let token_addresses: Vec<String> = serde_json::from_str(row.get("token_addresses"))
+                    .map_err(PersistenceError::Serialization)?;
+                let filters: serde_json::Value = serde_json::from_str(row.get("filters_json"))
+                    .map_err(PersistenceError::Serialization)?;
+                let discovered_wallets: Vec<String> = serde_json::from_str(row.get("discovered_wallets"))
+                    .map_err(PersistenceError::Serialization)?;
+                let analyzed_wallets: Vec<String> = serde_json::from_str(row.get("analyzed_wallets"))
+                    .map_err(PersistenceError::Serialization)?;
+                let failed_wallets: Vec<String> = serde_json::from_str(row.get("failed_wallets"))
+                    .map_err(PersistenceError::Serialization)?;
+
+                // Parse status string back to enum
+                let status_str: String = row.get("status");
+                let status = match status_str.as_str() {
+                    "Pending" => JobStatus::Pending,
+                    "Running" => JobStatus::Running,
+                    "Completed" => JobStatus::Completed,
+                    "Failed" => JobStatus::Failed,
+                    "Cancelled" => JobStatus::Cancelled,
+                    _ => JobStatus::Failed, // Default to Failed for unknown status
+                };
+
+                let id_str: String = row.get("id");
+                let id = uuid::Uuid::parse_str(&id_str)
+                    .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid UUID: {}", e)
+                    ))))?;
+
+                let job = TokenAnalysisJob {
+                    id,
+                    token_addresses,
+                    chain: row.get("chain"),
+                    status,
+                    created_at: row.get("created_at"),
+                    started_at: row.get("started_at"),
+                    completed_at: row.get("completed_at"),
+                    filters,
+                    discovered_wallets,
+                    analyzed_wallets,
+                    failed_wallets,
+                };
+
+                Ok(Some(job))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get all token analysis jobs with pagination
+    pub async fn get_all_token_analysis_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<TokenAnalysisJob>, usize)> {
+        // Get total count
+        let count_row = sqlx::query("SELECT COUNT(*) as count FROM token_analysis_jobs")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e)
+            ))))?;
+        let total_count: i64 = count_row.get("count");
+
+        // Get jobs with pagination, ordered by created_at DESC (newest first)
+        let rows = sqlx::query(
+            r#"
+            SELECT id, token_addresses, chain, status, created_at, started_at, completed_at, 
+                   filters_json, discovered_wallets, analyzed_wallets, failed_wallets
+            FROM token_analysis_jobs 
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            "#
+        )
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("PostgreSQL error: {}", e)
+        ))))?;
+
+        let mut jobs = Vec::new();
+        for row in rows {
+            let token_addresses: Vec<String> = serde_json::from_str(row.get("token_addresses"))
+                .map_err(PersistenceError::Serialization)?;
+            let filters: serde_json::Value = serde_json::from_str(row.get("filters_json"))
+                .map_err(PersistenceError::Serialization)?;
+            let discovered_wallets: Vec<String> = serde_json::from_str(row.get("discovered_wallets"))
+                .map_err(PersistenceError::Serialization)?;
+            let analyzed_wallets: Vec<String> = serde_json::from_str(row.get("analyzed_wallets"))
+                .map_err(PersistenceError::Serialization)?;
+            let failed_wallets: Vec<String> = serde_json::from_str(row.get("failed_wallets"))
+                .map_err(PersistenceError::Serialization)?;
+
+            // Parse status string back to enum
+            let status_str: String = row.get("status");
+            let status = match status_str.as_str() {
+                "Pending" => JobStatus::Pending,
+                "Running" => JobStatus::Running,
+                "Completed" => JobStatus::Completed,
+                "Failed" => JobStatus::Failed,
+                "Cancelled" => JobStatus::Cancelled,
+                _ => JobStatus::Failed, // Default to Failed for unknown status
+            };
+
+            let id_str: String = row.get("id");
+            let id = uuid::Uuid::parse_str(&id_str)
+                .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Invalid UUID: {}", e)
+                ))))?;
+
+            let job = TokenAnalysisJob {
+                id,
+                token_addresses,
+                chain: row.get("chain"),
+                status,
+                created_at: row.get("created_at"),
+                started_at: row.get("started_at"),
+                completed_at: row.get("completed_at"),
+                filters,
+                discovered_wallets,
+                analyzed_wallets,
+                failed_wallets,
+            };
+
+            jobs.push(job);
+        }
+
+        debug!("Retrieved {} token analysis jobs (offset: {}, limit: {})", jobs.len(), offset, limit);
+        Ok((jobs, total_count as usize))
+    }
+
+    /// Get token analysis job statistics
+    pub async fn get_token_analysis_job_stats(&self) -> Result<TokenAnalysisJobStats> {
+        let row = sqlx::query(
+            r#"
+            SELECT 
+                COUNT(*) as total_jobs,
+                COUNT(CASE WHEN status = 'Running' THEN 1 END) as running_jobs,
+                COUNT(CASE WHEN status = 'Completed' THEN 1 END) as completed_jobs,
+                COUNT(CASE WHEN status = 'Failed' THEN 1 END) as failed_jobs,
+                COUNT(CASE WHEN status = 'Pending' THEN 1 END) as pending_jobs,
+                COUNT(CASE WHEN status = 'Cancelled' THEN 1 END) as cancelled_jobs
+            FROM token_analysis_jobs
+            "#
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("PostgreSQL error: {}", e)
+        ))))?;
+
+        Ok(TokenAnalysisJobStats {
+            total_jobs: row.get::<i64, _>("total_jobs") as u64,
+            running_jobs: row.get::<i64, _>("running_jobs") as u64,
+            completed_jobs: row.get::<i64, _>("completed_jobs") as u64,
+            failed_jobs: row.get::<i64, _>("failed_jobs") as u64,
+            pending_jobs: row.get::<i64, _>("pending_jobs") as u64,
+            cancelled_jobs: row.get::<i64, _>("cancelled_jobs") as u64,
+        })
+    }
+
+    // =====================================
     // Health and Utility
     // =====================================
 
@@ -618,7 +877,12 @@ impl PostgresClient {
         for row in rows {
             let wallet_address: String = row.get("wallet_address");
             let chain: String = row.get("chain");
-            let portfolio_json: serde_json::Value = row.get("portfolio_json");
+            let portfolio_json_str: String = row.get("portfolio_json");
+            let portfolio_json: serde_json::Value = serde_json::from_str(&portfolio_json_str)
+                .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("JSON parsing error: {}", e)
+                ))))?;
 
             // Parse the portfolio result to calculate metrics
             match serde_json::from_value::<pnl_core::PortfolioPnLResult>(portfolio_json) {
@@ -678,6 +942,7 @@ impl PostgresClient {
         chain_filter: Option<&str>,
         min_unique_tokens: Option<u32>,
         min_active_days: Option<u32>,
+        analysis_source_filter: Option<&str>,
     ) -> Result<(Vec<crate::StoredPortfolioPnLResult>, usize)> {
         // Build WHERE clauses
         let mut where_clauses = Vec::new();
@@ -702,6 +967,12 @@ impl PostgresClient {
             bind_params.push(Box::new(min_days as i32));
         }
 
+        if let Some(analysis_source) = analysis_source_filter {
+            param_count += 1;
+            where_clauses.push(format!("analysis_source = ${}", param_count));
+            bind_params.push(Box::new(analysis_source.to_string()));
+        }
+
         let where_clause = if where_clauses.is_empty() {
             String::new()
         } else {
@@ -721,6 +992,9 @@ impl PostgresClient {
         }
         if let Some(min_days) = min_active_days {
             count_query_builder = count_query_builder.bind(min_days as i32);
+        }
+        if let Some(analysis_source) = analysis_source_filter {
+            count_query_builder = count_query_builder.bind(analysis_source);
         }
 
         let count_row = count_query_builder
@@ -764,6 +1038,9 @@ impl PostgresClient {
         if let Some(min_days) = min_active_days {
             results_query_builder = results_query_builder.bind(min_days as i32);
         }
+        if let Some(analysis_source) = analysis_source_filter {
+            results_query_builder = results_query_builder.bind(analysis_source);
+        }
         
         // Add limit and offset
         results_query_builder = results_query_builder.bind(limit as i64).bind(offset as i64);
@@ -780,15 +1057,15 @@ impl PostgresClient {
         for row in rows {
             let wallet_address: String = row.get("wallet_address");
             let chain: String = row.get("chain");
-            let portfolio_json: serde_json::Value = row.get("portfolio_json");
+            let portfolio_json_str: String = row.get("portfolio_json");
             let analyzed_at: chrono::DateTime<chrono::Utc> = row.get("analyzed_at");
             let is_favorited: Option<bool> = row.try_get("is_favorited").ok();
             let is_archived: Option<bool> = row.try_get("is_archived").ok();
             let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
             let active_days_count: Option<i32> = row.get("active_days_count");
 
-            // Parse the portfolio JSON to get the rich result
-            match serde_json::from_value::<pnl_core::PortfolioPnLResult>(portfolio_json) {
+            // Parse the portfolio JSON to get the rich result (same pattern as working functions)
+            match serde_json::from_str::<pnl_core::PortfolioPnLResult>(&portfolio_json_str) {
                 Ok(portfolio_result) => {
                     let stored_result = crate::StoredPortfolioPnLResult {
                         wallet_address,
@@ -811,5 +1088,22 @@ impl PostgresClient {
 
         info!("Retrieved {} P&L results with advanced filtering (total: {})", results.len(), total_count);
         Ok((results, total_count as usize))
+    }
+
+    /// Get P&L results filtered by analysis source
+    pub async fn get_pnl_results_by_analysis_source(
+        &self,
+        analysis_source: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<crate::StoredPortfolioPnLResult>, usize)> {
+        self.get_all_pnl_results_with_filters(
+            offset,
+            limit,
+            None,     // chain_filter
+            None,     // min_unique_tokens
+            None,     // min_active_days
+            Some(analysis_source),
+        ).await
     }
 }

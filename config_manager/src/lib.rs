@@ -45,6 +45,9 @@ pub struct SystemConfig {
     
     /// Database configuration
     pub database: DatabaseConfig,
+    
+    /// Token discovery configuration
+    pub discovery: DiscoveryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +124,18 @@ pub struct BirdEyeConfig {
     
     /// Maximum number of trending tokens to process (0 = unlimited)
     pub max_trending_tokens: usize,
+    
+    /// Enable balance API for real-time wallet balance fetching (fixes phantom buy unrealized P&L bug)
+    #[serde(default = "default_balance_api_enabled")]
+    pub balance_api_enabled: bool,
+    
+    /// Timeout for balance API calls in seconds
+    #[serde(default = "default_balance_api_timeout")]
+    pub balance_api_timeout_seconds: u64,
+    
+    /// Cache TTL for balance data in seconds
+    #[serde(default = "default_balance_cache_ttl")]
+    pub balance_cache_ttl_seconds: u64,
 }
 
 
@@ -146,6 +161,16 @@ pub struct DexScreenerConfig {
     
     /// Maximum number of boosted tokens to process per endpoint
     pub max_boosted_tokens: u32,
+    
+    // Browser automation settings for scraping trending tokens
+    /// Chrome executable path (None = use system default)
+    pub chrome_executable_path: Option<String>,
+    
+    /// Run browser in headless mode
+    pub headless_mode: bool,
+    
+    /// Enable anti-detection features
+    pub anti_detection_enabled: bool,
 }
 
 
@@ -171,6 +196,15 @@ pub struct ApiConfig {
     
     /// API server port
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    /// Discovery cycle interval in seconds
+    pub cycle_interval_seconds: Option<u64>,
+    
+    /// Token cache duration in hours (how long to skip processing same token)
+    pub token_cache_duration_hours: Option<i64>,
 }
 
 impl Default for SystemConfig {
@@ -202,6 +236,9 @@ impl Default for SystemConfig {
                 new_listing_max_age_hours: 24,   // Last 24 hours
                 new_listing_max_tokens: 25,      // Top 25 tokens max
                 max_trending_tokens: 500,        // Default to 500 trending tokens
+                balance_api_enabled: default_balance_api_enabled(),   // Enable balance API by default
+                balance_api_timeout_seconds: default_balance_api_timeout(),  // 15 second timeout
+                balance_cache_ttl_seconds: default_balance_cache_ttl(), // 1 minute cache
             },
             dexscreener: DexScreenerConfig {
                 api_base_url: "https://api.dexscreener.com".to_string(),
@@ -211,6 +248,10 @@ impl Default for SystemConfig {
                 enabled: true,                   // Enable DexScreener by default
                 min_boost_amount: 100.0,         // Minimum boost amount to consider
                 max_boosted_tokens: 20,          // Max boosted tokens per endpoint
+                // Browser automation defaults
+                chrome_executable_path: None,    // Use system default Chrome
+                headless_mode: true,             // Run in headless mode by default
+                anti_detection_enabled: true,    // Enable stealth mode by default
             },
             trader_filter: TraderFilterConfig {
                 min_capital_deployed_sol: 0.05,
@@ -225,9 +266,18 @@ impl Default for SystemConfig {
                 postgres_url: "postgresql://postgres:password@localhost:5432/wallet_analyzer".to_string(),
                 enabled: true,
             },
+            discovery: DiscoveryConfig {
+                cycle_interval_seconds: Some(60),  // Default 1 minute cycle interval
+                token_cache_duration_hours: Some(1), // Default 1 hour cache duration
+            },
         }
     }
 }
+
+// Default functions for balance API configuration
+fn default_balance_api_enabled() -> bool { true }
+fn default_balance_api_timeout() -> u64 { 15 }
+fn default_balance_cache_ttl() -> u64 { 60 }
 
 impl BirdEyeConfig {
     /// Validate BirdEye configuration values against API limits
