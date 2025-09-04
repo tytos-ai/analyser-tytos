@@ -190,6 +190,43 @@ impl NewPnLEngine {
             balance_fetcher: Some(balance_fetcher),
         }
     }
+    
+    /// Check if a token is an exchange currency (used for trading, not investment)
+    /// This prevents double-counting in portfolio totals across all supported chains
+    fn is_exchange_currency_token(token_result: &TokenPnLResult) -> bool {
+        // Check if this is an exchange currency based on trading patterns:
+        // 1. All trades have very short hold times (1-2 seconds = phantom trades)
+        // 2. All trades have $0 P&L (phantom buy-sell pairs)
+        
+        let is_phantom_pattern = 
+            token_result.avg_hold_time_minutes < Decimal::new(1, 1) && // 0.1 minutes = 6 seconds avg
+            token_result.total_realized_pnl_usd.abs() < Decimal::new(1, 2) && // 0.01 = ~$0 P&L
+            token_result.total_trades > 0;
+        
+        // Also check for known exchange currency addresses across chains
+        let is_known_exchange_currency = matches!(token_result.token_address.as_str(),
+            // Solana
+            "So11111111111111111111111111111111111111112" | // SOL
+            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" | // USDT on Solana
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" | // USDC on Solana
+            
+            // Ethereum
+            "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" | // WETH
+            "0xdAC17F958D2ee523a2206206994597C13D831ec7" | // USDT on Ethereum
+            "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" | // USDC on Ethereum
+            
+            // Binance Smart Chain
+            "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" | // WBNB
+            "0x55d398326f99059fF775485246999027B3197955" | // USDT on BSC
+            "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d" | // USDC on BSC
+            
+            // Base
+            "0x4200000000000000000000000000000000000006" | // WETH on Base
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"   // USDC on Base
+        );
+        
+        is_phantom_pattern || is_known_exchange_currency
+    }
 
     /// Enable balance fetching by setting the balance fetcher
     pub fn set_balance_fetcher(&mut self, balance_fetcher: BalanceFetcher) {
@@ -286,14 +323,16 @@ impl NewPnLEngine {
             Decimal::ZERO
         };
         
-        // Calculate portfolio investment metrics
+        // Calculate portfolio investment metrics (exclude exchange currencies to avoid double counting)
         let total_invested_usd: Decimal = token_results
             .iter()
+            .filter(|t| !Self::is_exchange_currency_token(t))
             .map(|t| t.total_invested_usd)
             .sum();
             
         let total_returned_usd: Decimal = token_results
             .iter()
+            .filter(|t| !Self::is_exchange_currency_token(t))
             .map(|t| t.total_returned_usd)
             .sum();
         
@@ -395,15 +434,24 @@ impl NewPnLEngine {
             sell_events.len()
         );
         
-        // Calculate investment metrics (simple - just 6 lines!)
+        // Calculate investment metrics (exclude phantom buys from total_invested!)
         let total_invested_usd: Decimal = events
             .iter()
             .filter(|e| e.event_type == NewEventType::Buy)
+            .filter(|e| !e.transaction_hash.starts_with("phantom_buy_"))  // Exclude phantom buys
             .map(|e| e.usd_value)
             .sum();
             
         let total_returned_usd: Decimal = sell_events
             .iter()
+            .filter(|e| {
+                // Exclude sells that are part of phantom buy pairs (exchange currency swaps)
+                // These are sells of exchange currencies (SOL, ETH, etc) to buy target tokens
+                !events.iter().any(|buy| 
+                    buy.transaction_hash.starts_with("phantom_buy_") && 
+                    buy.transaction_hash.contains(&e.transaction_hash)
+                )
+            })
             .map(|e| e.usd_value)
             .sum();
         

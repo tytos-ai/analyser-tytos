@@ -830,7 +830,7 @@ impl JobOrchestrator {
     /// Consolidate duplicate transaction hashes by merging multi-step swaps into single transactions
     /// This preprocessing step ensures each unique tx_hash results in exactly one transaction
     /// preserving the existing P&L algorithm's expectation of one transaction = one buy/sell pair
-    fn consolidate_duplicate_hashes(transactions: Vec<GeneralTraderTransaction>) -> Vec<GeneralTraderTransaction> {
+    pub fn consolidate_duplicate_hashes(transactions: Vec<GeneralTraderTransaction>) -> Vec<GeneralTraderTransaction> {
         use std::collections::HashMap;
         
         // Group transactions by tx_hash
@@ -864,7 +864,7 @@ impl JobOrchestrator {
 
     /// Consolidate multiple entries with the same tx_hash into a single net transaction
     /// This handles multi-step swaps by calculating net token flows and weighted average pricing
-    fn consolidate_duplicate_entries(entries: Vec<GeneralTraderTransaction>) -> GeneralTraderTransaction {
+    pub fn consolidate_duplicate_entries(entries: Vec<GeneralTraderTransaction>) -> GeneralTraderTransaction {
         use std::collections::HashMap;
         
         let first_entry = &entries[0];
@@ -1295,8 +1295,18 @@ impl JobOrchestrator {
             ));
         }
 
+        // Step 0: Preprocessing - Consolidate duplicate transaction hashes (DEX aggregation fix)
+        let original_count = transactions.len();
+        let consolidated_transactions = Self::consolidate_duplicate_hashes(transactions);
+        let consolidated_count = consolidated_transactions.len();
+        
+        if original_count != consolidated_count {
+            info!("🔄 Token analysis preprocessing: {} transactions → {} consolidated transactions", 
+                  original_count, consolidated_count);
+        }
+
         let parser = NewTransactionParser::new(wallet_address.to_string());
-        let events = parser.parse_transactions(transactions).await
+        let events = parser.parse_transactions(consolidated_transactions).await
             .map_err(|e| OrchestratorError::PnL(e))?;
 
         if events.is_empty() {
@@ -1400,17 +1410,9 @@ mod tests {
     #[test]
     fn test_pnl_job_creation() {
         let wallet = "test_wallet".to_string();
-        let filters = PnLFilters {
-            min_capital_sol: Decimal::ZERO,
-            min_hold_minutes: Decimal::ZERO,
-            min_trades: 1,
-            min_win_rate: Decimal::ZERO,
-            max_signatures: None,
-            max_transactions_to_fetch: None,
-            timeframe_filter: None,
-        };
+        let max_transactions = Some(500u32);
 
-        let job = PnLJob::new(wallet.clone(), filters);
+        let job = PnLJob::new(wallet.clone(), max_transactions);
         assert_eq!(job.wallet_address, wallet);
         assert_eq!(job.status, JobStatus::Pending);
     }
@@ -1418,18 +1420,12 @@ mod tests {
     #[test]
     fn test_batch_job_creation() {
         let wallets = vec!["wallet1".to_string(), "wallet2".to_string()];
-        let filters = PnLFilters {
-            min_capital_sol: Decimal::ZERO,
-            min_hold_minutes: Decimal::ZERO,
-            min_trades: 1,
-            min_win_rate: Decimal::ZERO,
-            max_signatures: None,
-            max_transactions_to_fetch: None,
-            timeframe_filter: None,
-        };
+        let chain = "solana".to_string();
+        let max_transactions = Some(500u32);
 
-        let batch_job = BatchJob::new(wallets.clone(), filters);
+        let batch_job = BatchJob::new(wallets.clone(), chain.clone(), max_transactions);
         assert_eq!(batch_job.wallet_addresses, wallets);
+        assert_eq!(batch_job.chain, chain);
         assert_eq!(batch_job.status, JobStatus::Pending);
     }
 }

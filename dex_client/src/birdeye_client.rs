@@ -1332,11 +1332,57 @@ impl BirdEyeClient {
         Ok(price_response.data.value)
     }
 
-    /// Get current prices for multiple tokens
+    /// Get current prices for multiple tokens (with batching to avoid HTTP 414)
     pub async fn get_current_prices(&self, token_addresses: &[String], chain: &str) -> Result<HashMap<String, f64>, BirdEyeError> {
+        const BATCH_SIZE: usize = 50;  // Conservative batch size to avoid HTTP 414
+        
+        if token_addresses.is_empty() {
+            return Ok(HashMap::new());
+        }
+        
+        // If small enough, use single request (optimization)
+        if token_addresses.len() <= BATCH_SIZE {
+            return self.fetch_price_batch(token_addresses, chain).await;
+        }
+        
+        // For larger lists, batch the requests
+        let mut all_prices = HashMap::new();
+        let chunks: Vec<_> = token_addresses.chunks(BATCH_SIZE).collect();
+        
+        info!("Fetching current prices for {} tokens in {} batches of up to {} tokens each", 
+              token_addresses.len(), chunks.len(), BATCH_SIZE);
+        
+        for (i, chunk) in chunks.iter().enumerate() {
+            debug!("Fetching price batch {}/{} ({} tokens)", i + 1, chunks.len(), chunk.len());
+            
+            match self.fetch_price_batch(&chunk.to_vec(), chain).await {
+                Ok(batch_prices) => {
+                    debug!("Successfully fetched {} prices in batch {}", batch_prices.len(), i + 1);
+                    all_prices.extend(batch_prices);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch prices for batch {}/{}: {}", i + 1, chunks.len(), e);
+                    // Continue with other batches instead of failing entirely
+                }
+            }
+            
+            // Add delay between batches to avoid rate limiting (except for last batch)
+            if i < chunks.len() - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+        
+        info!("Completed batch price fetching: {}/{} tokens have prices", 
+              all_prices.len(), token_addresses.len());
+        
+        Ok(all_prices)
+    }
+    
+    /// Helper method to fetch prices for a single batch of tokens
+    async fn fetch_price_batch(&self, token_addresses: &[String], chain: &str) -> Result<HashMap<String, f64>, BirdEyeError> {
         let url = format!("{}/defi/multi_price", self.config.api_base_url);
         
-        debug!("Fetching current prices from BirdEye for {} tokens", token_addresses.len());
+        debug!("Fetching price batch from BirdEye for {} tokens", token_addresses.len());
         
         let address_list = token_addresses.join(",");
         
@@ -1378,7 +1424,7 @@ impl BirdEyeClient {
             }
         }
 
-        debug!("Retrieved current prices from BirdEye for {}/{} tokens", 
+        debug!("Retrieved prices from BirdEye batch for {}/{} tokens", 
                prices.len(), token_addresses.len());
         Ok(prices)
     }

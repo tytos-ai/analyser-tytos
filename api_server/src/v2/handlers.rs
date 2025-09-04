@@ -5,6 +5,7 @@ use axum::{
     response::Json,
 };
 use chrono::Utc;
+use job_orchestrator::JobOrchestrator;
 use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult, BalanceFetcher};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
@@ -60,11 +61,21 @@ pub async fn get_wallet_analysis_v2(
     
     debug!("Fetched {} transactions for wallet {}", transactions.len(), wallet_address);
     
-    // Parse transactions into financial events using new parser
+    // Step 0: Preprocessing - Consolidate duplicate transaction hashes (DEX aggregation fix)
+    let original_count = transactions.len();
+    let consolidated_transactions = JobOrchestrator::consolidate_duplicate_hashes(transactions);
+    let consolidated_count = consolidated_transactions.len();
+    
+    if original_count != consolidated_count {
+        info!("🔄 API preprocessing: {} transactions → {} consolidated transactions", 
+              original_count, consolidated_count);
+    }
+    
+    // Parse consolidated transactions into financial events using new parser
     let parser = NewTransactionParser::new(wallet_address.clone());
     
     let events = parser
-        .parse_transactions(transactions)
+        .parse_transactions(consolidated_transactions)
         .await
         .map_err(|e| ApiError::InternalServerError(format!("Transaction parsing error: {}", e)))?;
     

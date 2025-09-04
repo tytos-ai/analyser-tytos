@@ -80,6 +80,51 @@ impl NewTransactionParser {
         Self { wallet_address }
     }
     
+    /// Validates price against nearest_price and returns the safer option
+    /// Uses 5% deviation threshold to detect corrupted price data
+    fn validate_and_extract_price(
+        &self,
+        main_price: Option<f64>,
+        nearest_price: Option<f64>, 
+        token_symbol: &str,
+        side: &str, // "quote" or "base" for logging
+    ) -> Result<Decimal, String> {
+        const PRICE_DEVIATION_THRESHOLD: f64 = 1.25; // 25% threshold
+        
+        let main = main_price.unwrap_or(0.0);
+        let nearest = nearest_price.unwrap_or(0.0);
+        
+        // Both prices available - validate deviation
+        if main > 0.0 && nearest > 0.0 {
+            let ratio = main.max(nearest) / main.min(nearest);
+            if ratio > PRICE_DEVIATION_THRESHOLD {
+                warn!(
+                    "Price deviation detected for {} {}: main=${:.6}, nearest=${:.6} ({}x), using nearest_price",
+                    token_symbol, side, main, nearest, ratio
+                );
+                return Ok(Decimal::try_from(nearest)
+                    .map_err(|e| format!("Invalid nearest_price conversion: {}", e))?);
+            }
+            return Ok(Decimal::try_from(main)
+                .map_err(|e| format!("Invalid main_price conversion: {}", e))?);
+        }
+        
+        // Fallback to nearest_price if available
+        if nearest > 0.0 {
+            debug!("Using nearest_price for {} {}: ${:.6}", token_symbol, side, nearest);
+            return Ok(Decimal::try_from(nearest)
+                .map_err(|e| format!("Invalid nearest_price fallback conversion: {}", e))?);
+        }
+        
+        // Last resort: use main price if available
+        if main > 0.0 {
+            return Ok(Decimal::try_from(main)
+                .map_err(|e| format!("Invalid main_price fallback conversion: {}", e))?);
+        }
+        
+        Ok(Decimal::ZERO)
+    }
+    
     /// Core algorithm: Parse BirdEye transactions into financial events
     /// 
     /// For every single transaction from BirdEye:
@@ -159,21 +204,25 @@ impl NewTransactionParser {
         let quote_change = Decimal::try_from(transaction.quote.ui_change_amount)
             .map_err(|e| format!("Invalid quote ui_change_amount: {}", e))?;
         
-        let quote_price = transaction.quote.price
-            .map(Decimal::try_from)
-            .transpose()
-            .map_err(|e| format!("Invalid quote price: {}", e))?
-            .unwrap_or(Decimal::ZERO);
+        // Extract quote price with validation against nearest_price
+        let quote_price = self.validate_and_extract_price(
+            transaction.quote.price,
+            transaction.quote.nearest_price,
+            &transaction.quote.symbol,
+            "quote"
+        )?;
         
         // Examine base side
         let base_change = Decimal::try_from(transaction.base.ui_change_amount)
             .map_err(|e| format!("Invalid base ui_change_amount: {}", e))?;
         
-        let base_price = transaction.base.price
-            .map(Decimal::try_from)
-            .transpose()
-            .map_err(|e| format!("Invalid base price: {}", e))?
-            .unwrap_or(Decimal::ZERO);
+        // Extract base price with validation against nearest_price
+        let base_price = self.validate_and_extract_price(
+            transaction.base.price,
+            transaction.base.nearest_price,
+            &transaction.base.symbol,
+            "base"
+        )?;
         
         // Create events based on ui_change_amount signs
         let (buy_event, sell_event) = if quote_change < Decimal::ZERO && base_change > Decimal::ZERO {
