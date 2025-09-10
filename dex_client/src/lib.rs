@@ -4,6 +4,8 @@
 pub mod birdeye_client;
 pub mod dexscreener_client;
 pub mod token_metadata_service;
+pub mod price_enricher;
+pub mod history_trait_impl;
 
 // Re-export configs from config_manager
 pub use config_manager::{BirdEyeConfig, DexScreenerConfig};
@@ -14,6 +16,8 @@ pub use birdeye_client::{
     GeneralTraderTransactionsResponse,
     TrendingTokenFilter, TopTraderFilter,
     NewListingToken, NewListingTokenFilter,
+    // Portfolio API types
+    WalletPortfolioResponse, WalletPortfolioData, WalletTokenBalance,
 };
 
 pub use dexscreener_client::{
@@ -24,6 +28,10 @@ pub use dexscreener_client::{
 
 pub use token_metadata_service::{
     TokenMetadataService, TokenMetadataError, TokenMetadata, TokenExtensions,
+};
+
+pub use price_enricher::{
+    PriceEnricher, EnrichedTransaction, EnrichedBalanceChange, PriceStrategy,
 };
 
 use thiserror::Error;
@@ -165,5 +173,58 @@ async fn check_solana_token_safety(token_address: &str) -> bool {
             true // Fail open - don't block discovery on API issues
         }
     }
+}
+
+/// Convert portfolio token balances to a map of token addresses to current USD prices
+/// This enables accurate unrealized P&L calculation using real-time market prices
+pub fn extract_current_prices_from_portfolio(portfolio: &[WalletTokenBalance]) -> std::collections::HashMap<String, rust_decimal::Decimal> {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+    use rust_decimal::Decimal;
+    
+    let mut price_map = HashMap::new();
+    
+    for token in portfolio {
+        // Only include tokens with positive balances and valid prices
+        if token.ui_amount > 0.0 && token.price_usd > 0.0 {
+            // Convert f64 price to Decimal for precision
+            if let Ok(price_decimal) = Decimal::from_str(&token.price_usd.to_string()) {
+                price_map.insert(token.address.clone(), price_decimal);
+            } else {
+                tracing::warn!("Failed to convert price {} to Decimal for token {}", token.price_usd, token.address);
+            }
+        }
+    }
+    
+    tracing::debug!("Extracted {} current prices from portfolio", price_map.len());
+    price_map
+}
+
+/// Extract actual current balances from portfolio for balance reconciliation
+/// Returns map of token address to (balance, symbol, decimals)
+pub fn extract_current_balances_from_portfolio(portfolio: &[WalletTokenBalance]) -> std::collections::HashMap<String, (rust_decimal::Decimal, String, u32)> {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+    use rust_decimal::Decimal;
+    
+    let mut balance_map = HashMap::new();
+    
+    for token in portfolio {
+        // Only include tokens with positive balances
+        if token.ui_amount > 0.0 {
+            // Convert f64 ui_amount to Decimal for precision
+            if let Ok(balance_decimal) = Decimal::from_str(&token.ui_amount.to_string()) {
+                balance_map.insert(
+                    token.address.clone(), 
+                    (balance_decimal, token.symbol.clone().unwrap_or_else(|| "UNKNOWN".to_string()), token.decimals)
+                );
+            } else {
+                tracing::warn!("Failed to convert balance {} to Decimal for token {}", token.ui_amount, token.address);
+            }
+        }
+    }
+    
+    tracing::debug!("Extracted {} current balances from portfolio", balance_map.len());
+    balance_map
 }
 

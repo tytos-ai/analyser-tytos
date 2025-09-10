@@ -3,6 +3,7 @@ pub mod new_parser;
 pub mod new_pnl_engine;
 pub mod comprehensive_tests;
 pub mod balance_fetcher;
+pub mod history_parser;
 
 #[cfg(test)]
 pub mod phantom_buy_fix_test;
@@ -11,6 +12,7 @@ pub mod phantom_buy_fix_test;
 pub use new_parser::{NewTransactionParser, NewFinancialEvent, NewEventType, ParsedTransaction};
 pub use new_pnl_engine::{NewPnLEngine, TokenPnLResult, PortfolioPnLResult, MatchedTrade, UnmatchedSell, RemainingPosition};
 pub use balance_fetcher::{BalanceFetcher, TokenBalance};
+pub use history_parser::{HistoryTransactionParser, ParsedHistoryTransaction, HistoryTransaction, HistoryBalanceChange};
 
 
 use serde::{Deserialize, Serialize};

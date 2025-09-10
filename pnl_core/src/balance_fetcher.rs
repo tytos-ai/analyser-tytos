@@ -36,8 +36,8 @@ struct BirdeyeBalanceItem {
     pub address: String,
     pub balance: u64,
     pub decimals: u8,
-    pub symbol: String,
-    pub name: String,
+    pub symbol: Option<String>,
+    pub name: Option<String>,
     #[serde(rename = "uiAmount")]
     pub ui_amount: f64,
     #[serde(rename = "priceUsd")]
@@ -129,8 +129,8 @@ impl BalanceFetcher {
                 address: item.address.clone(),
                 balance,
                 decimals: item.decimals,
-                symbol: item.symbol,
-                name: item.name,
+                symbol: item.symbol.unwrap_or_else(|| "UNKNOWN".to_string()),
+                name: item.name.unwrap_or_else(|| "Unknown Token".to_string()),
                 ui_amount,
                 price_usd,
                 value_usd,

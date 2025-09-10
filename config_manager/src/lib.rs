@@ -34,6 +34,9 @@ pub struct SystemConfig {
     /// BirdEye API configuration
     pub birdeye: BirdEyeConfig,
     
+    /// GoldRush API configuration for EVM chains
+    pub goldrush: GoldRushConfig,
+    
     /// DexScreener API configuration
     pub dexscreener: DexScreenerConfig,
     
@@ -138,6 +141,29 @@ pub struct BirdEyeConfig {
     pub balance_cache_ttl_seconds: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoldRushConfig {
+    /// GoldRush API key
+    pub api_key: String,
+    
+    /// GoldRush API base URL
+    pub api_base_url: String,
+    
+    /// Request timeout in seconds
+    pub request_timeout_seconds: u64,
+    
+    /// Enable GoldRush for EVM chains
+    pub enabled: bool,
+    
+    /// Supported chains
+    pub supported_chains: Vec<String>,
+    
+    /// Default maximum transactions per wallet
+    pub default_max_transactions: u32,
+    
+    /// Rate limit delay between requests in milliseconds
+    pub rate_limit_delay_ms: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DexScreenerConfig {
@@ -217,7 +243,12 @@ impl Default for SystemConfig {
             },
             data_source: "BirdEye".to_string(),
             multichain: MultichainConfig {
-                enabled_chains: vec!["solana".to_string()], // Default to Solana only
+                enabled_chains: vec![
+                    "solana".to_string(),
+                    "ethereum".to_string(),
+                    "base".to_string(),
+                    "bsc".to_string()
+                ],
                 default_chain: "solana".to_string(),
             },
             redis: RedisConfig {
@@ -239,6 +270,19 @@ impl Default for SystemConfig {
                 balance_api_enabled: default_balance_api_enabled(),   // Enable balance API by default
                 balance_api_timeout_seconds: default_balance_api_timeout(),  // 15 second timeout
                 balance_cache_ttl_seconds: default_balance_cache_ttl(), // 1 minute cache
+            },
+            goldrush: GoldRushConfig {
+                api_key: "cqt_rQqPrvKMbyqJmTV7WVMMrGh9XKqt".to_string(),
+                api_base_url: "https://api.covalenthq.com/v1".to_string(),
+                request_timeout_seconds: 30,
+                enabled: true,
+                supported_chains: vec![
+                    "eth-mainnet".to_string(),
+                    "base-mainnet".to_string(),
+                    "bsc-mainnet".to_string(),
+                ],
+                default_max_transactions: 1000,
+                rate_limit_delay_ms: 200, // 5 requests per second
             },
             dexscreener: DexScreenerConfig {
                 api_base_url: "https://api.dexscreener.com".to_string(),
@@ -288,6 +332,35 @@ impl BirdEyeConfig {
         if self.max_transactions_per_trader > 100 {
             return Err(ConfigurationError::InvalidValue("max_transactions_per_trader cannot exceed 100 (BirdEye API limit)".to_string()));
         }
+        Ok(())
+    }
+}
+
+impl GoldRushConfig {
+    /// Validate GoldRush configuration
+    pub fn validate(&self) -> Result<()> {
+        if self.enabled && self.api_key.is_empty() {
+            return Err(ConfigurationError::InvalidValue(
+                "GoldRush API key is required when GoldRush is enabled".to_string()
+            ));
+        }
+        
+        if self.supported_chains.is_empty() {
+            return Err(ConfigurationError::InvalidValue(
+                "At least one supported chain must be specified for GoldRush".to_string()
+            ));
+        }
+        
+        // Validate supported chains
+        let valid_chains = ["eth-mainnet", "base-mainnet", "bsc-mainnet"];
+        for chain in &self.supported_chains {
+            if !valid_chains.contains(&chain.as_str()) {
+                return Err(ConfigurationError::InvalidValue(
+                    format!("Unsupported GoldRush chain: {}. Valid chains: {:?}", chain, valid_chains)
+                ));
+            }
+        }
+        
         Ok(())
     }
 }
@@ -343,6 +416,7 @@ impl SystemConfig {
     pub fn validate(&self) -> Result<()> {
         // Validate individual components
         self.birdeye.validate()?;
+        self.goldrush.validate()?;
         
         // Validate data source
         if self.data_source != "BirdEye" {

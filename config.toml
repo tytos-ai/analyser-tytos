@@ -7,7 +7,7 @@ pnl_parallel_batch_size = 20
 data_source = "BirdEye"
 
 [multichain]
-enabled_chains = ["solana", "ethereum", "base", "bsc"]
+enabled_chains = ["solana"]
 default_chain = "solana"
 
 [redis]

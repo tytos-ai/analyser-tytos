@@ -1,10 +1,19 @@
 use chrono::Utc;
 use config_manager::SystemConfig;
 use futures::future::join_all;
-use dex_client::{BirdEyeClient, BirdEyeError, GeneralTraderTransaction, TokenTransactionSide};
+use dex_client::{
+    BirdEyeClient, BirdEyeError, GeneralTraderTransaction, TokenTransactionSide, 
+    PriceEnricher, EnrichedTransaction, PriceStrategy,
+    // Portfolio API imports
+    extract_current_prices_from_portfolio
+};
+use goldrush_client::{
+    GoldRushClient, GoldRushError, GoldRushChain, GoldRushTransaction,
+    GoldRushEventConverter, TokenTransfer, LogEvent,
+};
 use persistence_layer::{PersistenceError, PersistenceClient, DiscoveredWalletToken, TokenAnalysisJob, JobStatus};
 // New algorithm imports (primary P&L system)
-use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, NewFinancialEvent, BalanceFetcher};
+use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, NewFinancialEvent, BalanceFetcher, HistoryTransactionParser};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,6 +37,8 @@ pub enum OrchestratorError {
     PnL(String),
     #[error("BirdEye price client error: {0}")]
     BirdEyePrice(String),
+    #[error("GoldRush client error: {0}")]
+    GoldRush(String),
     #[error("Configuration error: {0}")]
     Config(String),
     #[error("Lock acquisition failed")]
@@ -67,11 +78,23 @@ impl From<BirdEyeError> for OrchestratorError {
     }
 }
 
+impl From<GoldRushError> for OrchestratorError {
+    fn from(err: GoldRushError) -> Self {
+        OrchestratorError::GoldRush(err.to_string())
+    }
+}
+
 
 
 impl From<config_manager::ConfigurationError> for OrchestratorError {
     fn from(err: config_manager::ConfigurationError) -> Self {
         OrchestratorError::Config(err.to_string())
+    }
+}
+
+impl From<String> for OrchestratorError {
+    fn from(err: String) -> Self {
+        OrchestratorError::PnL(err)
     }
 }
 
@@ -82,6 +105,7 @@ pub type Result<T> = std::result::Result<T, OrchestratorError>;
 pub struct PnLJob {
     pub id: Uuid,
     pub wallet_address: String,
+    pub chain: String, // "solana", "ethereum", "base", "bsc"
     pub status: JobStatus,
     pub created_at: chrono::DateTime<Utc>,
     pub started_at: Option<chrono::DateTime<Utc>>,
@@ -92,10 +116,11 @@ pub struct PnLJob {
 }
 
 impl PnLJob {
-    pub fn new(wallet_address: String, max_transactions: Option<u32>) -> Self {
+    pub fn new(wallet_address: String, chain: String, max_transactions: Option<u32>) -> Self {
         Self {
             id: Uuid::new_v4(),
             wallet_address,
+            chain,
             status: JobStatus::Pending,
             created_at: Utc::now(),
             started_at: None,
@@ -198,6 +223,7 @@ impl BatchJob {
 pub struct JobOrchestrator {
     config: SystemConfig,
     birdeye_client: BirdEyeClient,
+    goldrush_client: Option<GoldRushClient>,
     persistence_client: Arc<PersistenceClient>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     running_token_analysis_jobs: Arc<Mutex<HashMap<Uuid, TokenAnalysisJob>>>,
@@ -211,7 +237,26 @@ impl JobOrchestrator {
         let birdeye_config = config.birdeye.clone();
         let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
 
-
+        // Initialize GoldRush client if enabled
+        let goldrush_client = if config.goldrush.enabled {
+            match GoldRushClient::with_config(goldrush_client::GoldRushConfig {
+                api_key: config.goldrush.api_key.clone(),
+                base_url: config.goldrush.api_base_url.clone(),
+                timeout_seconds: config.goldrush.request_timeout_seconds,
+            }) {
+                Ok(client) => {
+                    info!("GoldRush client initialized for EVM chains");
+                    Some(client)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize GoldRush client: {}", e);
+                    None
+                }
+            }
+        } else {
+            info!("GoldRush client disabled in configuration");
+            None
+        };
 
         // Generate unique instance ID using hostname and process ID
         let instance_id = format!("{}:{}:{}", 
@@ -225,6 +270,7 @@ impl JobOrchestrator {
         Ok(Self {
             config,
             birdeye_client,
+            goldrush_client,
             persistence_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
             running_token_analysis_jobs: Arc::new(Mutex::new(HashMap::new())),
@@ -501,51 +547,89 @@ impl JobOrchestrator {
 
     /// Execute a batch job
     async fn execute_batch_job(&self, job_id: Uuid) -> Result<()> {
+        let start_time = std::time::Instant::now();
+        info!("🚀 Starting batch job execution: {}", job_id);
+        
         // Load job from PostgreSQL and update status to Running
+        info!("📋 Loading batch job details from database...");
         let (wallet_addresses, chain, max_transactions) = {
             let persistence_client = &self.persistence_client;
             let persistent_job = persistence_client.get_batch_job(&job_id.to_string()).await?
                 .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
             
             let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
+            info!("✅ Job loaded successfully - Chain: {}, Wallets: {}, Max Transactions: {:?}", 
+                  job.chain, job.wallet_addresses.len(), job.get_max_transactions());
+            
             job.status = JobStatus::Running;
             job.started_at = Some(Utc::now());
+            info!("🔄 Updating job status to Running...");
 
             // Update status in PostgreSQL
             let updated_persistent_job = job.to_persistence_batch_job()?;
             persistence_client.update_batch_job(&updated_persistent_job).await?;
+            info!("✅ Job status updated in database");
 
             (job.wallet_addresses.clone(), job.chain.clone(), job.get_max_transactions())
         };
 
-        info!("Executing batch job {} for {} wallets", job_id, wallet_addresses.len());
+        info!("🎯 Starting batch job execution: {} for {} wallets on {} chain", 
+              job_id, wallet_addresses.len(), chain);
 
         // Process wallets in parallel with timeout
-        let futures = wallet_addresses.iter().map(|wallet| {
+        let wallet_count = wallet_addresses.len();
+        info!("⚡ Starting parallel processing of {} wallets (timeout: 10 minutes per wallet)...", wallet_count);
+        let futures = wallet_addresses.iter().enumerate().map(|(index, wallet)| {
             let wallet_clone = wallet.clone();
             let chain_clone = chain.clone();
             async move {
+                let wallet_start_time = std::time::Instant::now();
+                info!("🔄 Processing wallet {}/{}: {} on {}", index + 1, wallet_count, wallet_clone, chain_clone);
+                
                 // Add timeout for each wallet processing (10 minutes max)
                 let timeout_duration = Duration::from_secs(600);
                 let result = match tokio::time::timeout(
                     timeout_duration, 
                     self.process_single_wallet(&wallet_clone, &chain_clone, max_transactions)
                 ).await {
-                    Ok(Ok(report)) => Ok(report),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(OrchestratorError::JobExecution(
-                        format!("Wallet processing timed out after {} seconds", timeout_duration.as_secs())
-                    )),
+                    Ok(Ok(report)) => {
+                        let elapsed = wallet_start_time.elapsed();
+                        info!("✅ Wallet {}/{} completed successfully in {:.2}s: {} (Realized P&L: ${:.2}, Unrealized P&L: ${:.2})", 
+                              index + 1, wallet_count, elapsed.as_secs_f64(), wallet_clone,
+                              report.total_realized_pnl_usd, report.total_unrealized_pnl_usd);
+                        Ok(report)
+                    },
+                    Ok(Err(e)) => {
+                        let elapsed = wallet_start_time.elapsed();
+                        warn!("❌ Wallet {}/{} failed in {:.2}s: {} - Error: {}", 
+                              index + 1, wallet_count, elapsed.as_secs_f64(), wallet_clone, e);
+                        Err(e)
+                    },
+                    Err(_) => {
+                        warn!("⏰ Wallet {}/{} timed out after {} seconds: {}", 
+                              index + 1, wallet_count, timeout_duration.as_secs(), wallet_clone);
+                        Err(OrchestratorError::JobExecution(
+                            format!("Wallet processing timed out after {} seconds", timeout_duration.as_secs())
+                        ))
+                    },
                 };
                 (wallet_clone, result)
             }
         });
 
+        info!("⏳ Waiting for all {} wallet processing tasks to complete...", wallet_count);
         let results = join_all(futures).await;
+        let processing_elapsed = start_time.elapsed();
+        info!("🏁 All wallet processing completed in {:.2}s", processing_elapsed.as_secs_f64());
 
         // Store individual P&L results in main PostgreSQL table and batch results
+        info!("💾 Storing P&L results to database...");
         let successful_count = {
             let mut success_count = 0;
+            let total_results = results.len();
+            let successful_results = results.iter().filter(|(_, r)| r.is_ok()).count();
+            info!("📊 Processing {} results ({} successful, {} failed)", 
+                  total_results, successful_results, total_results - successful_results);
             
             // Store each successful wallet's rich P&L result in main pnl_results table
             for (wallet, result) in &results {
@@ -553,19 +637,25 @@ impl JobOrchestrator {
                     // Store rich portfolio result in main table for individual wallet queries
                     let persistence_client = &self.persistence_client;
                     // Use the chain from the batch job
+                    info!("💾 Storing result for wallet: {} (Realized: ${:.2}, Unrealized: ${:.2}, {} tokens)", 
+                          wallet, portfolio_result.total_realized_pnl_usd, 
+                          portfolio_result.total_unrealized_pnl_usd, portfolio_result.token_results.len());
                     match persistence_client.store_pnl_result_with_source(wallet, &chain, portfolio_result, "batch").await {
                         Ok(_) => {
-                            debug!("Stored rich P&L result for wallet {} from batch job {}", wallet, job_id);
+                            info!("✅ Successfully stored P&L result for wallet {} from batch job {}", wallet, job_id);
                             success_count += 1;
                         }
                         Err(e) => {
-                            warn!("Failed to store P&L result for wallet {} from batch job {}: {}", wallet, job_id, e);
+                            warn!("❌ Failed to store P&L result for wallet {} from batch job {}: {}", wallet, job_id, e);
                         }
                     }
+                } else if let Err(e) = result {
+                    warn!("⚠️ Skipping storage for failed wallet {}: {}", wallet, e);
                 }
             }
             
             // Update batch job status to completed in PostgreSQL
+            info!("🔄 Updating batch job status to Completed...");
             let persistence_client = &self.persistence_client;
             let persistent_job = persistence_client.get_batch_job(&job_id.to_string()).await?
                 .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
@@ -573,6 +663,7 @@ impl JobOrchestrator {
             let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
             job.status = JobStatus::Completed;
             job.completed_at = Some(Utc::now());
+            info!("✅ Job completion time set: {}", job.completed_at.unwrap());
 
             // Note: Individual P&L results are already stored in pnl_results table above
             // No need to store results in batch job - they're retrieved from PostgreSQL when needed
@@ -580,12 +671,20 @@ impl JobOrchestrator {
             // Update final status
             let updated_persistent_job = job.to_persistence_batch_job()?;
             persistence_client.update_batch_job(&updated_persistent_job).await?;
+            info!("✅ Batch job status updated to Completed in database");
 
             success_count
         };
 
-        info!("Batch job {} completed: {}/{} wallets successful", 
-              job_id, successful_count, wallet_addresses.len());
+        let total_elapsed = start_time.elapsed();
+        info!("🎉 Batch job {} completed successfully in {:.2}s: {}/{} wallets successful ({:.1}% success rate)", 
+              job_id, total_elapsed.as_secs_f64(), successful_count, wallet_count, 
+              (successful_count as f64 / wallet_count as f64) * 100.0);
+
+        if successful_count < wallet_count {
+            let failed_count = wallet_count - successful_count;
+            warn!("⚠️ {} out of {} wallets failed processing", failed_count, wallet_count);
+        }
 
         Ok(())
     }
@@ -717,48 +816,162 @@ impl JobOrchestrator {
         chain: &str,
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
-        debug!("Using BirdEye for P&L analysis of wallet: {}", wallet_address);
-        self.process_single_wallet_with_birdeye(wallet_address, chain, max_transactions).await
+        info!("🔍 Starting P&L analysis for wallet: {} on chain: {} (max_txs: {:?})", 
+              wallet_address, chain, max_transactions);
+              
+        // Route to appropriate client based on chain
+        let result = match chain.to_lowercase().as_str() {
+            "solana" => {
+                info!("📊 Using BirdEye for Solana P&L analysis of wallet: {}", wallet_address);
+                self.process_single_wallet_with_birdeye(wallet_address, chain, max_transactions).await
+            }
+            "ethereum" | "base" | "bsc" => {
+                info!("⛓️ Using GoldRush for {} P&L analysis of wallet: {}", chain, wallet_address);
+                self.process_single_wallet_with_goldrush(wallet_address, chain, max_transactions).await
+            }
+            _ => {
+                error!("❌ Unsupported chain: {}. Supported chains: solana, ethereum, base, bsc", chain);
+                return Err(OrchestratorError::Config(format!("Unsupported chain: {}", chain)));
+            }
+        };
+        
+        match &result {
+            Ok(portfolio) => {
+                info!("✅ P&L analysis completed for wallet: {} - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens", 
+                      wallet_address, portfolio.total_realized_pnl_usd, 
+                      portfolio.total_unrealized_pnl_usd, portfolio.token_results.len());
+            }
+            Err(e) => {
+                warn!("❌ P&L analysis failed for wallet: {} - Error: {}", wallet_address, e);
+            }
+        }
+        
+        result
     }
 
-    /// Process a single wallet using BirdEye data
+    /// Process a single wallet using BirdEye transaction history API (captures swaps AND sends)
     async fn process_single_wallet_with_birdeye(
         &self,
         wallet_address: &str,
         chain: &str,
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
-        debug!("Starting P&L analysis for wallet: {} using BirdEye API", wallet_address);
+        let step_start = std::time::Instant::now();
+        info!("🐦 Starting BirdEye P&L analysis for wallet: {} on chain: {}", wallet_address, chain);
 
-        // Fetch all trading transactions for the wallet using BirdEye with pagination
         let max_total_transactions = max_transactions
             .unwrap_or(self.config.birdeye.default_max_transactions);
+        info!("📋 Configuration: Max transactions = {}, BirdEye API timeout = {}s", 
+              max_total_transactions, self.config.birdeye.request_timeout_seconds);
         
-        // No time bounds filtering - get all transactions (filter in frontend)
-        debug!("Fetching up to {} transactions for wallet {}", 
+        // Step 1: Fetch transaction history (includes both swaps AND sends)
+        info!("📥 Step 1/4: Fetching transaction history from BirdEye API...");
+        info!("🔄 Requesting up to {} transaction history entries for wallet {}", 
                max_total_transactions, wallet_address);
         
-        let transactions = self
+        let history_start = std::time::Instant::now();
+        let history_transactions = self
             .birdeye_client
-            .get_all_trader_transactions_paginated(wallet_address, chain, None, None, max_total_transactions)
+            .get_wallet_transaction_history(wallet_address, Some(chain), Some(max_total_transactions))
             .await?;
+        let history_elapsed = history_start.elapsed();
 
-        if transactions.is_empty() {
+        if history_transactions.is_empty() {
+            warn!("❌ No transaction history found for wallet: {}", wallet_address);
             return Err(OrchestratorError::JobExecution(format!(
-                "No transactions found for wallet: {}",
+                "No transaction history found for wallet: {}",
                 wallet_address
             )));
         }
 
-        info!("📊 Found {} BirdEye transactions for wallet {}", 
-              transactions.len(), wallet_address);
+        info!("✅ Step 1 completed in {:.2}s: Found {} transaction history entries for wallet {}", 
+              history_elapsed.as_secs_f64(), history_transactions.len(), wallet_address);
 
-        // --- Start of New P&L Algorithm ---
-        // Use the new algorithm strictly following the documentation
-        let report = self.calculate_pnl_with_new_algorithm(wallet_address, chain, transactions).await?;
-        // --- End of New P&L Algorithm ---
+        // Step 2: Enrich transactions with price data
+        info!("💰 Step 2/4: Enriching {} transactions with historical price data...", history_transactions.len());
+        info!("🔧 Using PriceStrategy::HistoricalWithFallback for optimal price accuracy");
+        
+        let enrich_start = std::time::Instant::now();
+        let birdeye_client_for_enricher = BirdEyeClient::new(self.config.birdeye.clone())?;
+        let mut price_enricher = PriceEnricher::new(birdeye_client_for_enricher);
+        
+        let enriched_transactions = price_enricher
+            .enrich_transactions_batch(history_transactions, PriceStrategy::HistoricalWithFallback)
+            .await?;
+        let enrich_elapsed = enrich_start.elapsed();
 
-        debug!("✅ P&L analysis completed for wallet: {} using BirdEye data", wallet_address);
+        if enriched_transactions.is_empty() {
+            warn!("❌ No enriched transactions after price resolution for wallet: {}", wallet_address);
+            return Err(OrchestratorError::JobExecution(format!(
+                "No enriched transactions after price resolution for wallet: {}",
+                wallet_address
+            )));
+        }
+
+        let successfully_enriched = enriched_transactions.iter().filter(|t| t.price_resolution_complete).count();
+        info!("✅ Step 2 completed in {:.2}s: {}/{} transactions successfully enriched ({:.1}% success rate)", 
+              enrich_elapsed.as_secs_f64(), successfully_enriched, enriched_transactions.len(),
+              (successfully_enriched as f64 / enriched_transactions.len() as f64) * 100.0);
+
+        // Step 3: Fetch current portfolio for accurate unrealized P&L calculation
+        info!("📈 Step 3/4: Fetching current portfolio for real-time token prices...");
+        info!("🔄 Requesting current wallet portfolio from BirdEye API for wallet {}", wallet_address);
+        
+        let portfolio_start = std::time::Instant::now();
+        let current_portfolio = self
+            .birdeye_client
+            .get_wallet_portfolio(wallet_address, Some(chain))
+            .await?;
+        let portfolio_elapsed = portfolio_start.elapsed();
+
+        let portfolio_total_value = current_portfolio.iter().map(|t| t.value_usd).sum::<f64>();
+        info!("✅ Step 3 completed in {:.2}s: Current portfolio fetched - {} tokens with total value ${:.2}", 
+              portfolio_elapsed.as_secs_f64(), current_portfolio.len(), portfolio_total_value);
+
+        // Extract current prices from portfolio for accurate unrealized P&L
+        info!("🔍 Processing current portfolio holdings for unrealized P&L...");
+        if !current_portfolio.is_empty() {
+            info!("📋 Current Holdings Detail:");
+            for (i, token) in current_portfolio.iter().enumerate().take(10) { // Show first 10 tokens
+                info!("   Token {}: {} {} (${:.6}/token) = ${:.2} value (balance: {:.6})", 
+                      i+1, token.symbol.as_ref().unwrap_or(&"UNKNOWN".to_string()), 
+                      token.address, token.price_usd, token.value_usd, token.ui_amount);
+            }
+            if current_portfolio.len() > 10 {
+                info!("   ... and {} more tokens", current_portfolio.len() - 10);
+            }
+        }
+        
+        let current_prices = extract_current_prices_from_portfolio(&current_portfolio);
+        info!("💲 Extracted {} current token prices for unrealized P&L calculation", current_prices.len());
+        
+        // Show some sample prices for debugging
+        if !current_prices.is_empty() {
+            info!("📊 Sample Current Prices (for unrealized P&L calculation):");
+            for (token_addr, price) in current_prices.iter().take(5) {
+                info!("   {}: ${:.6}", token_addr, price);
+            }
+        }
+
+        // Step 4: Calculate P&L using transaction history algorithm with current prices
+        info!("🧮 Step 4/4: Calculating P&L using history algorithm with current prices...");
+        info!("🔧 Processing {} enriched transactions with {} current prices", 
+              enriched_transactions.len(), current_prices.len());
+        
+        let pnl_start = std::time::Instant::now();
+        let report = self.calculate_pnl_with_history_algorithm_with_prices(
+            wallet_address, 
+            chain, 
+            enriched_transactions,
+            current_prices
+        ).await?;
+        let pnl_elapsed = pnl_start.elapsed();
+
+        let total_elapsed = step_start.elapsed();
+        info!("✅ Step 4 completed in {:.2}s: P&L calculation finished", pnl_elapsed.as_secs_f64());
+        info!("🎉 BirdEye P&L analysis completed for wallet {} in {:.2}s total - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens", 
+              wallet_address, total_elapsed.as_secs_f64(), report.total_realized_pnl_usd, 
+              report.total_unrealized_pnl_usd, report.token_results.len());
 
         Ok(report)
     }
@@ -967,8 +1180,722 @@ impl JobOrchestrator {
         }
     }
 
-    /// Calculate P&L using the new algorithm as specified in the documentation
-    /// This method strictly follows the algorithm description in pnl_algorithm_documentation.md
+    /// Calculate P&L using transaction history with enriched price data
+    /// This method handles both swaps AND send transactions using the new HistoryTransactionParser
+    async fn calculate_pnl_with_history_algorithm(
+        &self,
+        wallet_address: &str,
+        _chain: &str,
+        enriched_transactions: Vec<EnrichedTransaction>,
+    ) -> Result<PortfolioPnLResult> {
+        info!("🚀 Starting history P&L algorithm for wallet: {} with {} enriched transactions", 
+              wallet_address, enriched_transactions.len());
+        
+        // Step 1: Parse enriched transactions using HistoryTransactionParser
+        let history_parser = HistoryTransactionParser::new(wallet_address.to_string());
+        let financial_events = history_parser.parse_enriched_transactions(enriched_transactions).await
+            .map_err(|e| OrchestratorError::JobExecution(format!("Failed to parse enriched transactions: {}", e)))?;
+        
+        info!("📊 Parsed enriched transactions into {} financial events (including send transactions)", 
+              financial_events.len());
+        
+        // Step 2: Group events by token for P&L processing
+        let events_by_token = HistoryTransactionParser::group_events_by_token(financial_events);
+        
+        info!("📊 Grouped events into {} token groups", events_by_token.len());
+        
+        // Step 3: Calculate P&L using the new engine with balance API integration
+        let balance_fetcher = if self.config.birdeye.balance_api_enabled {
+            BalanceFetcher::new(
+                self.config.birdeye.api_key.clone(), 
+                Some(self.config.birdeye.api_base_url.clone())
+            )
+        } else {
+            // Create a dummy fetcher - balance API disabled in config
+            BalanceFetcher::new("disabled".to_string(), None)
+        };
+        
+        let pnl_engine = if self.config.birdeye.balance_api_enabled {
+            info!("💰 Using balance API for accurate remaining position valuation");
+            NewPnLEngine::with_balance_fetcher(wallet_address.to_string(), balance_fetcher)
+        } else {
+            info!("💰 Balance API disabled - using standard P&L calculations");
+            NewPnLEngine::new(wallet_address.to_string())
+        };
+
+        let mut portfolio_result = PortfolioPnLResult {
+            wallet_address: wallet_address.to_string(),
+            token_results: Vec::new(),
+            total_realized_pnl_usd: Decimal::ZERO,
+            total_unrealized_pnl_usd: Decimal::ZERO,
+            total_pnl_usd: Decimal::ZERO,
+            total_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            overall_win_rate_percentage: Decimal::ZERO,
+            avg_hold_time_minutes: Decimal::ZERO,
+            tokens_analyzed: 0,
+            events_processed: 0,
+            analysis_timestamp: Utc::now(),
+            total_invested_usd: Decimal::ZERO,
+            total_returned_usd: Decimal::ZERO,
+            current_winning_streak: 0,
+            longest_winning_streak: 0,
+            current_losing_streak: 0,
+            longest_losing_streak: 0,
+            profit_percentage: Decimal::ZERO,
+            unique_tokens_count: events_by_token.len() as u32,
+            active_days_count: 0, // Will be calculated
+        };
+
+        let mut total_events = 0;
+        for (token_address, events) in events_by_token {
+            debug!("Processing {} events for token: {}", events.len(), token_address);
+            total_events += events.len();
+
+            match pnl_engine.calculate_token_pnl(events, None).await {
+                Ok(token_result) => {
+                    // Update portfolio totals
+                    portfolio_result.total_realized_pnl_usd += token_result.total_realized_pnl_usd;
+                    portfolio_result.total_unrealized_pnl_usd += token_result.total_unrealized_pnl_usd;
+                    portfolio_result.total_trades += token_result.total_trades;
+                    portfolio_result.winning_trades += token_result.winning_trades;
+                    portfolio_result.losing_trades += token_result.losing_trades;
+                    portfolio_result.total_invested_usd += token_result.total_invested_usd;
+                    portfolio_result.total_returned_usd += token_result.total_returned_usd;
+                    
+                    portfolio_result.token_results.push(token_result);
+                }
+                Err(e) => {
+                    warn!("❌ Failed to calculate P&L for token {}: {}. Skipping token.", token_address, e);
+                }
+            }
+        }
+
+        // Calculate final portfolio metrics
+        portfolio_result.total_pnl_usd = portfolio_result.total_realized_pnl_usd + portfolio_result.total_unrealized_pnl_usd;
+        portfolio_result.tokens_analyzed = portfolio_result.token_results.len() as u32;
+        portfolio_result.events_processed = total_events as u32;
+
+        if portfolio_result.total_trades > 0 {
+            portfolio_result.overall_win_rate_percentage = Decimal::from(portfolio_result.winning_trades) 
+                / Decimal::from(portfolio_result.total_trades) * Decimal::from(100);
+        }
+
+        if portfolio_result.total_invested_usd > Decimal::ZERO {
+            portfolio_result.profit_percentage = (portfolio_result.total_pnl_usd / portfolio_result.total_invested_usd) * Decimal::from(100);
+        }
+
+        // Calculate average hold time from token results
+        if !portfolio_result.token_results.is_empty() {
+            let total_avg_hold_time: Decimal = portfolio_result.token_results.iter()
+                .map(|token| token.avg_hold_time_minutes)
+                .sum();
+            portfolio_result.avg_hold_time_minutes = total_avg_hold_time / Decimal::from(portfolio_result.token_results.len());
+        }
+
+        // Calculate winning/losing streaks from token results
+        for token_result in &portfolio_result.token_results {
+            if token_result.current_winning_streak > portfolio_result.current_winning_streak {
+                portfolio_result.current_winning_streak = token_result.current_winning_streak;
+            }
+            if token_result.longest_winning_streak > portfolio_result.longest_winning_streak {
+                portfolio_result.longest_winning_streak = token_result.longest_winning_streak;
+            }
+            if token_result.current_losing_streak > portfolio_result.current_losing_streak {
+                portfolio_result.current_losing_streak = token_result.current_losing_streak;
+            }
+            if token_result.longest_losing_streak > portfolio_result.longest_losing_streak {
+                portfolio_result.longest_losing_streak = token_result.longest_losing_streak;
+            }
+        }
+
+        info!("✅ History P&L algorithm completed for wallet: {}", wallet_address);
+        info!("📊 Final results: {} tokens, {} events, total P&L: ${}", 
+              portfolio_result.tokens_analyzed, 
+              portfolio_result.events_processed, 
+              portfolio_result.total_pnl_usd);
+
+        Ok(portfolio_result)
+    }
+
+    /// Process a single wallet using GoldRush API for EVM chains (captures swaps AND sends as sells)
+    async fn process_single_wallet_with_goldrush(
+        &self,
+        wallet_address: &str,
+        chain: &str,
+        _max_transactions: Option<u32>,
+    ) -> Result<PortfolioPnLResult> {
+        info!("🚀 Starting GoldRush P&L analysis (Balances + Transfers approach):");
+        info!("  Wallet: {}", wallet_address);
+        info!("  Chain: {}", chain);
+
+        // Check if GoldRush client is available
+        let goldrush_client = match &self.goldrush_client {
+            Some(client) => {
+                info!("✅ GoldRush client is available");
+                client
+            },
+            None => {
+                error!("❌ GoldRush client not initialized!");
+                return Err(OrchestratorError::GoldRush(
+                    "GoldRush client not available. Please check configuration".to_string()
+                ));
+            }
+        };
+
+        // Validate wallet address for EVM
+        info!("🔍 Validating EVM wallet address format...");
+        match GoldRushClient::validate_wallet_address(wallet_address) {
+            Ok(_) => info!("✅ Wallet address format is valid"),
+            Err(e) => {
+                error!("❌ Invalid wallet address: {}", e);
+                return Err(e.into());
+            }
+        }
+
+        // Convert chain string to GoldRush chain enum
+        let goldrush_chain = match chain.to_lowercase().as_str() {
+            "ethereum" => {
+                info!("📍 Using Ethereum mainnet");
+                GoldRushChain::Ethereum
+            },
+            "base" => {
+                info!("📍 Using Base mainnet");
+                GoldRushChain::Base
+            },
+            "bsc" => {
+                info!("📍 Using BSC mainnet");
+                GoldRushChain::Bsc
+            },
+            _ => {
+                error!("❌ Unsupported chain: {}", chain);
+                return Err(OrchestratorError::Config(format!("Unsupported GoldRush chain: {}", chain)));
+            }
+        };
+
+        // Step 1: Get all tokens the wallet has interacted with
+        info!("📋 STEP 1: Fetching token balances to discover all tokens...");
+        let balance_start = std::time::Instant::now();
+        let token_balances = match goldrush_client
+            .get_wallet_balances(wallet_address, goldrush_chain)
+            .await {
+                Ok(balances) => {
+                    let balance_elapsed = balance_start.elapsed();
+                    info!("✅ Found {} token balances in {:.2}s", balances.len(), balance_elapsed.as_secs_f64());
+                    
+                    // Log significant balances with USD values
+                    let significant_balances: Vec<_> = balances.iter()
+                        .filter(|b| !b.is_spam.unwrap_or(false) && b.balance.as_deref().unwrap_or("0") != "0")
+                        .collect();
+                    
+                    info!("💰 Significant tokens (non-spam, non-zero): {}", significant_balances.len());
+                    for (i, balance) in significant_balances.iter().take(5).enumerate() {
+                        let ticker_symbol = balance.contract_ticker_symbol.as_deref().unwrap_or("Unknown");
+                        let usd_value = balance.pretty_quote.as_deref().unwrap_or("$0.00");
+                        info!("    {}. {} - {} - {}", i + 1, ticker_symbol, usd_value, &balance.contract_address[..10]);
+                    }
+                    
+                    balances
+                },
+                Err(e) => {
+                    error!("❌ Failed to fetch token balances: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+        if token_balances.is_empty() {
+            warn!("No token balances found for wallet: {}", wallet_address);
+            return Ok(PortfolioPnLResult {
+                wallet_address: wallet_address.to_string(),
+                token_results: Vec::new(),
+                total_realized_pnl_usd: Decimal::ZERO,
+                total_unrealized_pnl_usd: Decimal::ZERO,
+                total_pnl_usd: Decimal::ZERO,
+                total_trades: 0,
+                winning_trades: 0,
+                losing_trades: 0,
+                overall_win_rate_percentage: Decimal::ZERO,
+                avg_hold_time_minutes: Decimal::ZERO,
+                tokens_analyzed: 0,
+                events_processed: 0,
+                analysis_timestamp: Utc::now(),
+                total_invested_usd: Decimal::ZERO,
+                total_returned_usd: Decimal::ZERO,
+                current_winning_streak: 0,
+                longest_winning_streak: 0,
+                current_losing_streak: 0,
+                longest_losing_streak: 0,
+                profit_percentage: Decimal::ZERO,
+                unique_tokens_count: 0,
+                active_days_count: 0,
+            });
+        }
+
+        // Step 2: Get ALL wallet transactions with logs (OPTIMIZED - Single API call!)
+        info!("🚀 STEP 2: Fetching ALL wallet transactions with logs (OPTIMIZED APPROACH)");
+        info!("  ⚡ This replaces {} individual token API calls with 1 efficient call!", token_balances.len());
+        let transactions_start = std::time::Instant::now();
+        
+        let transactions = match goldrush_client
+            .get_wallet_transactions_with_logs(wallet_address, goldrush_chain, Some(20))
+            .await {
+                Ok(txs) => txs,
+                Err(e) => {
+                    error!("❌ Failed to fetch wallet transactions: {}", e);
+                    return Err(OrchestratorError::GoldRush(format!(
+                        "Failed to fetch wallet transactions: {}", e
+                    )));
+                }
+            };
+            
+        let transactions_elapsed = transactions_start.elapsed();
+        info!("✅ STEP 2 Complete: Fetched {} transactions in {:.2}s", transactions.len(), transactions_elapsed.as_secs_f64());
+        info!("  ⚡ Performance improvement: ~{}x faster than individual token calls!", 
+              if token_balances.len() > 0 { token_balances.len() } else { 1 });
+              
+        if transactions.is_empty() {
+            warn!("No transactions found for wallet: {}", wallet_address);
+            return Ok(PortfolioPnLResult {
+                wallet_address: wallet_address.to_string(),
+                token_results: Vec::new(),
+                total_realized_pnl_usd: Decimal::ZERO,
+                total_unrealized_pnl_usd: Decimal::ZERO,
+                total_pnl_usd: Decimal::ZERO,
+                total_trades: 0,
+                winning_trades: 0,
+                losing_trades: 0,
+                overall_win_rate_percentage: Decimal::ZERO,
+                avg_hold_time_minutes: Decimal::ZERO,
+                tokens_analyzed: 0,
+                events_processed: 0,
+                analysis_timestamp: Utc::now(),
+                total_invested_usd: Decimal::ZERO,
+                total_returned_usd: Decimal::ZERO,
+                current_winning_streak: 0,
+                longest_winning_streak: 0,
+                current_losing_streak: 0,
+                longest_losing_streak: 0,
+                profit_percentage: Decimal::ZERO,
+                unique_tokens_count: 0,
+                active_days_count: 0,
+            });
+        }
+
+        // Step 2a: Extract token transfers from transaction logs
+        info!("🔍 STEP 2a: Extracting token transfers from {} transactions...", transactions.len());
+        let log_parsing_start = std::time::Instant::now();
+        let all_transfers = self.extract_transfers_from_transaction_logs(&transactions, wallet_address)?;
+        let log_parsing_elapsed = log_parsing_start.elapsed();
+        
+        info!("✅ STEP 2a Complete: Extracted {} transfers in {:.3}s", all_transfers.len(), log_parsing_elapsed.as_secs_f64());
+        
+        if all_transfers.is_empty() {
+            warn!("No token transfers found in transaction logs for wallet: {}", wallet_address);
+            return Ok(PortfolioPnLResult {
+                wallet_address: wallet_address.to_string(),
+                token_results: Vec::new(),
+                total_realized_pnl_usd: Decimal::ZERO,
+                total_unrealized_pnl_usd: Decimal::ZERO,
+                total_pnl_usd: Decimal::ZERO,
+                total_trades: 0,
+                winning_trades: 0,
+                losing_trades: 0,
+                overall_win_rate_percentage: Decimal::ZERO,
+                avg_hold_time_minutes: Decimal::ZERO,
+                tokens_analyzed: 0,
+                events_processed: 0,
+                analysis_timestamp: Utc::now(),
+                total_invested_usd: Decimal::ZERO,
+                total_returned_usd: Decimal::ZERO,
+                current_winning_streak: 0,
+                longest_winning_streak: 0,
+                current_losing_streak: 0,
+                longest_losing_streak: 0,
+                profit_percentage: Decimal::ZERO,
+                unique_tokens_count: 0,
+                active_days_count: 0,
+            });
+        }
+
+        // Step 3: Convert transfers to unified financial events with USD prices
+        info!("🔄 STEP 3: Converting {} transfers to financial events with USD prices...", all_transfers.len());
+        let conversion_start = std::time::Instant::now();
+        let converter = GoldRushEventConverter::new(wallet_address.to_string(), chain.to_string());
+        let unified_events = converter.convert_token_transfers(all_transfers);
+        let conversion_elapsed = conversion_start.elapsed();
+
+        info!("✅ Generated {} financial events with USD data in {:.2}s", unified_events.len(), conversion_elapsed.as_secs_f64());
+        
+        // Log event type breakdown
+        let buy_events = unified_events.iter().filter(|e| matches!(e.event_type, goldrush_client::UnifiedEventType::Buy)).count();
+        let sell_events = unified_events.iter().filter(|e| matches!(e.event_type, goldrush_client::UnifiedEventType::Sell)).count();
+        info!("📈 Event breakdown: {} BUY events, {} SELL events", buy_events, sell_events);
+        
+        // Log total USD values
+        let total_usd_value: rust_decimal::Decimal = unified_events.iter()
+            .map(|e| e.usd_value)
+            .sum();
+        info!("💲 Total USD value of all events: ${:.2}", total_usd_value);
+
+        // Step 4: Convert to NewFinancialEvent format for P&L engine
+        info!("🔧 STEP 4: Converting to P&L engine format...");
+        let financial_events: Vec<NewFinancialEvent> = unified_events
+            .into_iter()
+            .map(|event| event.into())
+            .collect();
+
+        info!("✅ Converted {} events to P&L engine format", financial_events.len());
+
+        // Step 5: Calculate P&L using the standard P&L engine
+        info!("🧮 STEP 5: Running P&L calculations...");
+        let pnl_start = std::time::Instant::now();
+        let result = self.calculate_pnl_with_goldrush_events(
+            wallet_address,
+            chain,
+            financial_events,
+        ).await;
+        let pnl_elapsed = pnl_start.elapsed();
+        
+        match &result {
+            Ok(pnl_result) => {
+                info!("✅ P&L calculation completed in {:.2}s", pnl_elapsed.as_secs_f64());
+                info!("💰 Final Results:");
+                info!("  📊 Total P&L: ${:.2}", pnl_result.total_pnl_usd);
+                info!("  📈 Realized P&L: ${:.2}", pnl_result.total_realized_pnl_usd);  
+                info!("  📉 Unrealized P&L: ${:.2}", pnl_result.total_unrealized_pnl_usd);
+                info!("  🔢 Total trades: {}", pnl_result.total_trades);
+                info!("  🪙 Tokens analyzed: {}", pnl_result.tokens_analyzed);
+                info!("  ⚡ Events processed: {}", pnl_result.events_processed);
+            }
+            Err(e) => {
+                error!("❌ P&L calculation failed in {:.2}s: {}", pnl_elapsed.as_secs_f64(), e);
+            }
+        }
+        
+        result
+    }
+
+    /// Calculate P&L using GoldRush financial events
+    async fn calculate_pnl_with_goldrush_events(
+        &self,
+        wallet_address: &str,
+        _chain: &str,
+        events: Vec<NewFinancialEvent>,
+    ) -> Result<PortfolioPnLResult> {
+        if events.is_empty() {
+            warn!("No financial events to process for wallet: {}", wallet_address);
+            return Ok(PortfolioPnLResult {
+                wallet_address: wallet_address.to_string(),
+                token_results: Vec::new(),
+                total_realized_pnl_usd: Decimal::ZERO,
+                total_unrealized_pnl_usd: Decimal::ZERO,
+                total_pnl_usd: Decimal::ZERO,
+                total_trades: 0,
+                winning_trades: 0,
+                losing_trades: 0,
+                overall_win_rate_percentage: Decimal::ZERO,
+                avg_hold_time_minutes: Decimal::ZERO,
+                tokens_analyzed: 0,
+                events_processed: 0,
+                analysis_timestamp: Utc::now(),
+                total_invested_usd: Decimal::ZERO,
+                total_returned_usd: Decimal::ZERO,
+                current_winning_streak: 0,
+                longest_winning_streak: 0,
+                current_losing_streak: 0,
+                longest_losing_streak: 0,
+                profit_percentage: Decimal::ZERO,
+                unique_tokens_count: 0,
+                active_days_count: 0,
+            });
+        }
+
+        info!("🧮 Processing {} financial events for P&L calculation", events.len());
+
+        // Group events by token
+        let mut events_by_token: HashMap<String, Vec<NewFinancialEvent>> = HashMap::new();
+        for event in events {
+            events_by_token
+                .entry(event.token_address.clone())
+                .or_insert_with(Vec::new)
+                .push(event);
+        }
+
+        info!("🪙 Grouped events for {} unique tokens", events_by_token.len());
+        
+        // Log events per token
+        for (_token_address, token_events) in &events_by_token {
+            let unknown = "Unknown".to_string();
+            let symbol = token_events.first().map(|e| &e.token_symbol).unwrap_or(&unknown);
+            let buy_count = token_events.iter().filter(|e| e.event_type == pnl_core::NewEventType::Buy).count();
+            let sell_count = token_events.iter().filter(|e| e.event_type == pnl_core::NewEventType::Sell).count();
+            info!("  📊 {}: {} events ({} BUY, {} SELL)", symbol, token_events.len(), buy_count, sell_count);
+        }
+
+        let mut token_results = Vec::new();
+        let mut total_realized = Decimal::ZERO;
+        let mut total_unrealized = Decimal::ZERO;
+        let mut total_volume = Decimal::ZERO;
+
+        // Calculate P&L for each token
+        for (_token_address, token_events) in events_by_token {
+            let pnl_engine = NewPnLEngine::new(wallet_address.to_string());
+            
+            // For GoldRush events, we already have USD prices embedded
+            // Use a current price of zero since we don't have portfolio API for EVM chains yet
+            let result = pnl_engine.calculate_token_pnl(token_events, Some(Decimal::ZERO)).await?;
+
+            total_realized += result.total_realized_pnl_usd;
+            total_unrealized += result.total_unrealized_pnl_usd;
+            total_volume += result.total_invested_usd;
+
+            token_results.push(result);
+        }
+
+        let total_pnl = total_realized + total_unrealized;
+        let profitable_tokens = token_results
+            .iter()
+            .filter(|result| (result.total_realized_pnl_usd + result.total_unrealized_pnl_usd) > Decimal::ZERO)
+            .count();
+        let losing_tokens = token_results
+            .iter()
+            .filter(|result| (result.total_realized_pnl_usd + result.total_unrealized_pnl_usd) < Decimal::ZERO)
+            .count();
+        
+        let win_rate = if token_results.is_empty() {
+            Decimal::ZERO
+        } else {
+            Decimal::from(profitable_tokens) / Decimal::from(token_results.len()) * Decimal::from(100)
+        };
+
+        let total_trades: u32 = token_results.iter().map(|r| r.total_trades).sum();
+        let total_events: u32 = token_results.iter().map(|r| r.matched_trades.len() as u32).sum();
+        let tokens_count = token_results.len() as u32;
+
+        info!(
+            "P&L calculation complete for wallet {}: Total P&L: ${}, Realized: ${}, Unrealized: ${}, Win Rate: {:.1}%",
+            wallet_address, total_pnl, total_realized, total_unrealized, win_rate
+        );
+
+        Ok(PortfolioPnLResult {
+            wallet_address: wallet_address.to_string(),
+            token_results,
+            total_realized_pnl_usd: total_realized,
+            total_unrealized_pnl_usd: total_unrealized,
+            total_pnl_usd: total_pnl,
+            total_trades,
+            winning_trades: profitable_tokens as u32,
+            losing_trades: losing_tokens as u32,
+            overall_win_rate_percentage: win_rate,
+            avg_hold_time_minutes: Decimal::ZERO, // TODO: Calculate from events
+            tokens_analyzed: tokens_count,
+            events_processed: total_events,
+            analysis_timestamp: Utc::now(),
+            total_invested_usd: total_volume, // Approximation
+            total_returned_usd: total_volume + total_pnl, // Approximation
+            current_winning_streak: 0, // TODO: Calculate
+            longest_winning_streak: 0, // TODO: Calculate
+            current_losing_streak: 0, // TODO: Calculate
+            longest_losing_streak: 0, // TODO: Calculate
+            profit_percentage: if total_volume > Decimal::ZERO { (total_pnl / total_volume) * Decimal::from(100) } else { Decimal::ZERO },
+            unique_tokens_count: tokens_count,
+            active_days_count: 0, // TODO: Calculate from transaction dates
+        })
+    }
+
+    /// Calculate P&L using transaction history with current portfolio prices for accurate unrealized P&L
+    /// This method handles both swaps AND send transactions and uses real-time token prices
+    async fn calculate_pnl_with_history_algorithm_with_prices(
+        &self,
+        wallet_address: &str,
+        _chain: &str,
+        enriched_transactions: Vec<EnrichedTransaction>,
+        current_prices: HashMap<String, Decimal>,
+    ) -> Result<PortfolioPnLResult> {
+        info!("🚀 Starting history P&L algorithm with {} current prices for wallet: {} with {} enriched transactions", 
+              current_prices.len(), wallet_address, enriched_transactions.len());
+        
+        // Step 1: Parse enriched transactions using HistoryTransactionParser
+        let history_parser = HistoryTransactionParser::new(wallet_address.to_string());
+        let financial_events = history_parser.parse_enriched_transactions(enriched_transactions).await
+            .map_err(|e| OrchestratorError::JobExecution(format!("Failed to parse enriched transactions: {}", e)))?;
+        
+        info!("📊 Parsed enriched transactions into {} financial events (including send transactions)", 
+              financial_events.len());
+        
+        // Step 2: Group events by token for P&L processing
+        let events_by_token = HistoryTransactionParser::group_events_by_token(financial_events);
+        
+        info!("📊 Grouped events into {} token groups", events_by_token.len());
+        
+        // Show token breakdown for debugging
+        if !events_by_token.is_empty() {
+            info!("🔍 Token groups breakdown:");
+            for (token_addr, events) in events_by_token.iter().take(5) {
+                info!("   {} events for token: {}", events.len(), token_addr);
+            }
+            if events_by_token.len() > 5 {
+                info!("   ... and {} more tokens", events_by_token.len() - 5);
+            }
+        }
+        
+        // Step 3: Calculate P&L using the new engine with current prices for accurate unrealized P&L
+        info!("🧮 Initializing P&L engine for per-token calculations...");
+        let pnl_engine = NewPnLEngine::new(wallet_address.to_string());
+
+        let mut portfolio_result = PortfolioPnLResult {
+            wallet_address: wallet_address.to_string(),
+            token_results: Vec::new(),
+            total_realized_pnl_usd: Decimal::ZERO,
+            total_unrealized_pnl_usd: Decimal::ZERO,
+            total_pnl_usd: Decimal::ZERO,
+            total_trades: 0,
+            winning_trades: 0,
+            losing_trades: 0,
+            overall_win_rate_percentage: Decimal::ZERO,
+            avg_hold_time_minutes: Decimal::ZERO,
+            tokens_analyzed: 0,
+            events_processed: 0,
+            analysis_timestamp: Utc::now(),
+            total_invested_usd: Decimal::ZERO,
+            total_returned_usd: Decimal::ZERO,
+            current_winning_streak: 0,
+            longest_winning_streak: 0,
+            current_losing_streak: 0,
+            longest_losing_streak: 0,
+            profit_percentage: Decimal::ZERO,
+            unique_tokens_count: events_by_token.len() as u32,
+            active_days_count: 0, // Will be calculated
+        };
+
+        let mut total_events = 0;
+        let total_tokens = events_by_token.len();
+        info!("🔄 Starting per-token P&L calculations for {} tokens...", total_tokens);
+        
+        for (token_index, (token_address, events)) in events_by_token.into_iter().enumerate() {
+            info!("🔍 Processing token {}/{}: {} ({} financial events)", 
+                  token_index + 1, total_tokens, token_address, events.len());
+            total_events += events.len();
+
+            // Get current price for this token from portfolio data
+            let current_price = current_prices.get(&token_address).cloned();
+            
+            if let Some(price) = current_price {
+                info!("💲 Token {} has current price: ${:.6} (will be used for unrealized P&L calculation)", 
+                      token_address, price);
+            } else {
+                info!("⚠️ Token {} has NO current price available - unrealized P&L will be $0.00", token_address);
+            }
+
+            info!("🧮 Calling P&L engine for token {} calculations...", token_address);
+            match pnl_engine.calculate_token_pnl(events, current_price).await {
+                Ok(token_result) => {
+                    info!("✅ Token {}/{} P&L calculated successfully: {}", 
+                          token_index + 1, total_tokens, token_result.token_symbol);
+                    info!("   📊 Realized P&L: ${:.2}", token_result.total_realized_pnl_usd);
+                    info!("   📊 Unrealized P&L: ${:.2}", token_result.total_unrealized_pnl_usd);
+                    info!("   📊 Total P&L: ${:.2}", token_result.total_pnl_usd);
+                    match &token_result.remaining_position {
+                        Some(pos) => info!("   📊 Remaining position: {:.6} tokens", pos.quantity),
+                        None => info!("   📊 Remaining position: 0.000000 tokens"),
+                    }
+                    
+                    // Update portfolio totals
+                    portfolio_result.total_realized_pnl_usd += token_result.total_realized_pnl_usd;
+                    portfolio_result.total_unrealized_pnl_usd += token_result.total_unrealized_pnl_usd;
+                    portfolio_result.total_trades += token_result.total_trades;
+                    portfolio_result.winning_trades += token_result.winning_trades;
+                    portfolio_result.losing_trades += token_result.losing_trades;
+                    portfolio_result.total_invested_usd += token_result.total_invested_usd;
+                    portfolio_result.total_returned_usd += token_result.total_returned_usd;
+                    
+                    // Log unrealized P&L calculation details
+                    if token_result.total_unrealized_pnl_usd != Decimal::ZERO {
+                        if let (Some(price), Some(pos)) = (current_price, &token_result.remaining_position) {
+                            let position_value = pos.quantity * price;
+                            info!("💰 Token {} UNREALIZED P&L CALCULATION:", token_result.token_symbol);
+                            info!("   💲 Current price: ${:.6} per token", price);
+                            info!("   📦 Remaining position: {:.6} tokens", pos.quantity);
+                            info!("   💵 Position value: {:.6} * ${:.6} = ${:.2}", 
+                                  pos.quantity, price, position_value);
+                            info!("   💰 Unrealized P&L: ${:.2}", token_result.total_unrealized_pnl_usd);
+                            info!("   📈 Cost basis: ${:.6} per token (avg cost)", pos.avg_cost_basis_usd);
+                        } else {
+                            warn!("⚠️ Token {} has unrealized P&L ${:.2} but no current price or position - this shouldn't happen!", 
+                                  token_result.token_symbol, token_result.total_unrealized_pnl_usd);
+                        }
+                    } else {
+                        info!("💰 Token {} has NO unrealized P&L (no remaining position or no current price)", 
+                              token_result.token_symbol);
+                    }
+                    
+                    portfolio_result.token_results.push(token_result);
+                }
+                Err(e) => {
+                    warn!("❌ Failed to calculate P&L for token {}: {}. Skipping token.", token_address, e);
+                }
+            }
+        }
+
+        // Calculate final portfolio metrics
+        portfolio_result.total_pnl_usd = portfolio_result.total_realized_pnl_usd + portfolio_result.total_unrealized_pnl_usd;
+        portfolio_result.tokens_analyzed = portfolio_result.token_results.len() as u32;
+        portfolio_result.events_processed = total_events as u32;
+
+        // Calculate win rate
+        if portfolio_result.total_trades > 0 {
+            portfolio_result.overall_win_rate_percentage = 
+                (Decimal::from(portfolio_result.winning_trades) / Decimal::from(portfolio_result.total_trades)) * Decimal::from(100);
+        }
+
+        // Calculate profit percentage
+        if portfolio_result.total_invested_usd > Decimal::ZERO {
+            portfolio_result.profit_percentage = (portfolio_result.total_pnl_usd / portfolio_result.total_invested_usd) * Decimal::from(100);
+        }
+
+        // Calculate average hold time from token results
+        if !portfolio_result.token_results.is_empty() {
+            let total_avg_hold_time: Decimal = portfolio_result.token_results.iter()
+                .map(|token| token.avg_hold_time_minutes)
+                .sum();
+            portfolio_result.avg_hold_time_minutes = total_avg_hold_time / Decimal::from(portfolio_result.token_results.len());
+        }
+
+        // Calculate winning/losing streaks from token results
+        let mut current_win_streak = 0;
+        let mut current_lose_streak = 0;
+        let mut max_win_streak = 0;
+        let mut max_lose_streak = 0;
+        
+        for token in &portfolio_result.token_results {
+            if token.total_pnl_usd > Decimal::ZERO {
+                current_win_streak += 1;
+                current_lose_streak = 0;
+                max_win_streak = max_win_streak.max(current_win_streak);
+            } else if token.total_pnl_usd < Decimal::ZERO {
+                current_lose_streak += 1;
+                current_win_streak = 0;
+                max_lose_streak = max_lose_streak.max(current_lose_streak);
+            }
+        }
+        
+        portfolio_result.current_winning_streak = current_win_streak;
+        portfolio_result.longest_winning_streak = max_win_streak;
+        portfolio_result.current_losing_streak = current_lose_streak;
+        portfolio_result.longest_losing_streak = max_lose_streak;
+
+        info!("✅ P&L calculation completed with {} tokens analyzed. Total P&L: ${:.2} (Realized: ${:.2}, Unrealized: ${:.2})", 
+              portfolio_result.tokens_analyzed, 
+              portfolio_result.total_pnl_usd,
+              portfolio_result.total_realized_pnl_usd,
+              portfolio_result.total_unrealized_pnl_usd);
+
+        Ok(portfolio_result)
+    }
+
+    /// LEGACY: Calculate P&L using the old swap-only algorithm (kept for compatibility)
+    /// This method will be deprecated once all callers are updated to use history algorithm
     async fn calculate_pnl_with_new_algorithm(
         &self,
         wallet_address: &str,
@@ -1379,6 +2306,135 @@ impl JobOrchestrator {
             .map_err(|e| OrchestratorError::Persistence(e.to_string()))
     }
 
+    /// Extract token transfers from transaction logs (optimized approach)
+    /// This replaces the need to make individual API calls for each token
+    fn extract_transfers_from_transaction_logs(
+        &self,
+        transactions: &[GoldRushTransaction],
+        wallet_address: &str,
+    ) -> Result<Vec<TokenTransfer>> {
+        
+        info!("🔍 Extracting transfers from {} transactions...", transactions.len());
+        let start_time = std::time::Instant::now();
+        
+        let mut transfers = Vec::new();
+        let mut transactions_with_logs = 0;
+        let mut total_log_events = 0;
+        let mut erc20_transfers = 0;
+        
+        for tx in transactions {
+            if let Some(ref log_events) = tx.log_events {
+                if !log_events.is_empty() {
+                    transactions_with_logs += 1;
+                    total_log_events += log_events.len();
+                    
+                    // Process each log event looking for token transfers
+                    for log_event in log_events {
+                        // Look for ERC20 Transfer events (topic[0] = Transfer signature)
+                        if !log_event.raw_log_topics.is_empty() && 
+                           log_event.raw_log_topics[0] == "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" {
+                            // This is an ERC20 Transfer event
+                            if let Some(transfer) = self.parse_erc20_transfer_from_log(
+                                log_event, tx, wallet_address
+                            ) {
+                                transfers.push(transfer);
+                                erc20_transfers += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        let elapsed = start_time.elapsed();
+        
+        info!("✅ Transfer extraction complete in {:.3}s:", elapsed.as_secs_f64());
+        info!("  📋 {} transactions with logs processed", transactions_with_logs);
+        info!("  🏷️  {} total log events analyzed", total_log_events);
+        info!("  💰 {} ERC20 transfers extracted", erc20_transfers);
+        info!("  📊 {} transfers relevant to wallet", transfers.len());
+        
+        if transfers.is_empty() {
+            warn!("No relevant token transfers found for wallet {}", wallet_address);
+        }
+        
+        Ok(transfers)
+    }
+
+    /// Parse an ERC20 transfer event from a transaction log
+    fn parse_erc20_transfer_from_log(
+        &self,
+        log_event: &LogEvent,
+        transaction: &GoldRushTransaction,
+        wallet_address: &str,
+    ) -> Option<TokenTransfer> {
+        
+        // ERC20 Transfer event has 3 topics: signature, from, to
+        if log_event.raw_log_topics.len() < 3 {
+            return None;
+        }
+        
+        let from_address_hex = &log_event.raw_log_topics[1];
+        let to_address_hex = &log_event.raw_log_topics[2];
+        
+        // Extract 20-byte addresses from 32-byte topics (remove padding zeros)
+        let from_address = from_address_hex.trim_start_matches("0x000000000000000000000000").to_lowercase();
+        let to_address = to_address_hex.trim_start_matches("0x000000000000000000000000").to_lowercase();
+        let wallet_lower = wallet_address.trim_start_matches("0x").to_lowercase();
+        
+        // Determine if this transfer involves our wallet
+        let transfer_type = if from_address == wallet_lower {
+            "OUT"
+        } else if to_address == wallet_lower {
+            "IN"
+        } else {
+            return None; // Transfer doesn't involve our wallet
+        };
+        
+        // Parse the value from raw log data (first 32 bytes after removing 0x)
+        let raw_log_data = log_event.raw_log_data.as_ref()?;
+        let value_hex = if raw_log_data.len() >= 66 {
+            &raw_log_data[2..66] // Remove 0x and take first 32 bytes (64 hex chars)
+        } else {
+            return None;
+        };
+        
+        // Convert hex to decimal
+        let value_wei = u128::from_str_radix(value_hex, 16).ok()?;
+        
+        // Use simple rate calculation from transaction value if available
+        let (quote_rate, delta_quote) = if let Some(value_quote) = transaction.value_quote {
+            // Convert Decimal to f64 for compatibility with TokenTransfer
+            let rate_f64 = value_quote.to_string().parse::<f64>().unwrap_or(0.0);
+            (Some(rate_f64), Some(rate_f64))
+        } else {
+            (None, None)
+        };
+        
+        Some(TokenTransfer {
+            block_signed_at: log_event.block_signed_at,
+            tx_hash: log_event.tx_hash.clone(),
+            from_address: format!("0x{}", from_address),
+            from_address_label: None,
+            to_address: format!("0x{}", to_address),
+            to_address_label: None,
+            contract_decimals: log_event.sender_contract_decimals,
+            contract_name: log_event.sender_name.clone(),
+            contract_ticker_symbol: log_event.sender_contract_ticker_symbol.clone(),
+            contract_address: log_event.sender_address.clone(),
+            logo_url: log_event.sender_logo_url.clone(),
+            transfer_type: transfer_type.to_string(),
+            delta: Some(value_wei.to_string()),
+            balance: None,
+            quote_rate,
+            delta_quote,
+            pretty_delta_quote: None,
+            balance_quote: None,
+            method_calls: None,
+            explorers: Some(transaction.explorers.clone()),
+        })
+    }
+
 }
 
 // Clone implementation for JobOrchestrator
@@ -1387,6 +2443,7 @@ impl Clone for JobOrchestrator {
         Self {
             config: self.config.clone(),
             birdeye_client: self.birdeye_client.clone(),
+            goldrush_client: self.goldrush_client.clone(),
             persistence_client: self.persistence_client.clone(),
             running_jobs: self.running_jobs.clone(),
             running_token_analysis_jobs: self.running_token_analysis_jobs.clone(),
@@ -1412,7 +2469,7 @@ mod tests {
         let wallet = "test_wallet".to_string();
         let max_transactions = Some(500u32);
 
-        let job = PnLJob::new(wallet.clone(), max_transactions);
+        let job = PnLJob::new(wallet.clone(), "solana".to_string(), max_transactions);
         assert_eq!(job.wallet_address, wallet);
         assert_eq!(job.status, JobStatus::Pending);
     }

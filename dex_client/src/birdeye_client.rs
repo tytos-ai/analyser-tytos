@@ -261,6 +261,213 @@ pub struct ConsolidatedTokenChange {
     pub price_per_token: f64,
 }
 
+/// Wallet transaction history response from BirdEye
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTransactionHistoryResponse {
+    pub success: bool,
+    pub data: WalletTransactionData,
+}
+
+/// Transaction history data containing list of transactions per chain
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTransactionData {
+    pub solana: Vec<WalletTransaction>,
+}
+
+/// Individual wallet transaction from transaction history API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTransaction {
+    /// Transaction hash
+    #[serde(rename = "txHash")]
+    pub tx_hash: String,
+    
+    /// Block number
+    #[serde(rename = "blockNumber")]
+    pub block_number: u64,
+    
+    /// Block timestamp in ISO format
+    #[serde(rename = "blockTime")]
+    pub block_time: String,
+    
+    /// Transaction status (true = successful)
+    pub status: bool,
+    
+    /// From address
+    pub from: String,
+    
+    /// To address
+    pub to: String,
+    
+    /// Transaction fee in lamports
+    pub fee: u64,
+    
+    /// Main action type (send, swap, received, etc.)
+    #[serde(rename = "mainAction")]
+    pub main_action: String,
+    
+    /// Balance changes for all affected tokens
+    #[serde(rename = "balanceChange")]
+    pub balance_change: Vec<BalanceChange>,
+    
+    /// Detailed token transfer information
+    #[serde(rename = "tokenTransfers")]
+    pub token_transfers: Vec<TokenTransfer>,
+    
+    /// Contract label information
+    #[serde(rename = "contractLabel")]
+    pub contract_label: Option<ContractLabel>,
+}
+
+/// Balance change for a specific token in a transaction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceChange {
+    /// Amount change (negative = outgoing, positive = incoming)
+    pub amount: i128,
+    
+    /// Token symbol
+    pub symbol: String,
+    
+    /// Token name
+    pub name: String,
+    
+    /// Token decimals
+    pub decimals: u32,
+    
+    /// Token mint address
+    pub address: String,
+    
+    /// Token logo URI
+    #[serde(rename = "logoURI")]
+    pub logo_uri: Option<String>,
+    
+    /// Whether token uses scaled UI amounts
+    #[serde(rename = "isScaledUiToken")]
+    pub is_scaled_ui_token: bool,
+    
+    /// Multiplier for scaled tokens
+    pub multiplier: Option<f64>,
+}
+
+/// Detailed token transfer within a transaction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenTransfer {
+    /// Source token account
+    #[serde(rename = "fromTokenAccount")]
+    pub from_token_account: String,
+    
+    /// Destination token account  
+    #[serde(rename = "toTokenAccount")]
+    pub to_token_account: String,
+    
+    /// Source user account
+    #[serde(rename = "fromUserAccount")]
+    pub from_user_account: Option<String>,
+    
+    /// Destination user account
+    #[serde(rename = "toUserAccount")]
+    pub to_user_account: Option<String>,
+    
+    /// Token amount transferred (UI amount)
+    #[serde(rename = "tokenAmount")]
+    pub token_amount: f64,
+    
+    /// Token mint address
+    pub mint: String,
+    
+    /// Whether this is a native SOL transfer
+    #[serde(rename = "transferNative")]
+    pub transfer_native: bool,
+    
+    /// Whether token uses scaled UI amounts
+    #[serde(rename = "isScaledUiToken")]
+    pub is_scaled_ui_token: bool,
+    
+    /// Multiplier for scaled tokens
+    pub multiplier: Option<f64>,
+}
+
+/// Contract label information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractLabel {
+    /// Contract address
+    pub address: String,
+    
+    /// Contract name
+    pub name: String,
+    
+    /// Additional metadata
+    pub metadata: Option<ContractMetadata>,
+}
+
+/// Contract metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractMetadata {
+    /// Contract icon
+    pub icon: String,
+}
+
+/// Wallet portfolio response from BirdEye
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletPortfolioResponse {
+    pub success: bool,
+    pub data: WalletPortfolioData,
+}
+
+/// Portfolio data containing list of token balances
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletPortfolioData {
+    pub items: Vec<WalletTokenBalance>,
+}
+
+/// Individual token balance in a wallet portfolio
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTokenBalance {
+    /// Token mint address
+    pub address: String,
+    
+    /// Token decimals
+    pub decimals: u32,
+    
+    /// Raw balance (with decimals)
+    pub balance: u64,
+    
+    /// UI amount (scaled by decimals)
+    #[serde(rename = "uiAmount")]
+    pub ui_amount: f64,
+    
+    /// Chain ID
+    #[serde(rename = "chainId")]
+    pub chain_id: String,
+    
+    /// Token name
+    pub name: Option<String>,
+    
+    /// Token symbol
+    pub symbol: Option<String>,
+    
+    /// Token icon URL
+    pub icon: Option<String>,
+    
+    /// Token logo URI
+    #[serde(rename = "logoURI")]
+    pub logo_uri: Option<String>,
+    
+    /// Current USD price per token
+    #[serde(rename = "priceUsd")]
+    pub price_usd: f64,
+    
+    /// Current USD value of this balance
+    #[serde(rename = "valueUsd")]
+    pub value_usd: f64,
+    
+    /// Whether token uses scaled UI amounts
+    #[serde(rename = "isScaledUiToken")]
+    pub is_scaled_ui_token: bool,
+    
+    /// Multiplier for scaled tokens
+    pub multiplier: Option<f64>,
+}
+
 /// BirdEye API client
 #[derive(Debug, Clone)]
 pub struct BirdEyeClient {
@@ -1610,6 +1817,303 @@ impl BirdEyeClient {
     // LEGACY FUNCTION REMOVED - consolidated_to_financial_events()
     // This function converted transactions to legacy FinancialEvents
     // Now we use NewTransactionParser with GeneralTraderTransaction directly
+
+    /// Get wallet transaction history from BirdEye transaction history API
+    /// This replaces the old swap-only API and captures both swaps and send transactions
+    pub async fn get_wallet_transaction_history(
+        &self,
+        wallet: &str,
+        chain: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
+        let url = format!("{}/v1/wallet/tx_list", self.config.api_base_url);
+        let chain = chain.unwrap_or("solana");
+        let limit = limit.unwrap_or(1000); // Default limit
+
+        debug!("Fetching transaction history for wallet: {} on chain: {}", wallet, chain);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .query(&[
+                ("wallet", wallet),
+                ("chain", chain),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(BirdEyeError::Api(format!("HTTP {}: {}", status, error_text)));
+        }
+
+        let history_response: WalletTransactionHistoryResponse = response.json().await?;
+
+        if !history_response.success {
+            return Err(BirdEyeError::Api(
+                "Transaction history API returned success=false".to_string(),
+            ));
+        }
+
+        let transactions = history_response.data.solana;
+        info!(
+            "Retrieved {} transactions for wallet {} on chain {}",
+            transactions.len(),
+            wallet,
+            chain
+        );
+
+        Ok(transactions)
+    }
+
+    /// Get wallet transaction history with pagination support
+    pub async fn get_wallet_transaction_history_paginated(
+        &self,
+        wallet: &str,
+        chain: Option<&str>,
+        limit: Option<u32>,
+        before: Option<&str>,
+    ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
+        let url = format!("{}/v1/wallet/tx_list", self.config.api_base_url);
+        let chain = chain.unwrap_or("solana");
+        let limit = limit.unwrap_or(100); // Smaller default for paginated requests
+
+        debug!(
+            "Fetching paginated transaction history for wallet: {} on chain: {} (limit: {}, before: {:?})",
+            wallet, chain, limit, before
+        );
+
+        let limit_string = limit.to_string();
+        let mut query_params = vec![
+            ("wallet", wallet),
+            ("chain", chain),
+            ("limit", &limit_string),
+        ];
+
+        let before_string;
+        if let Some(before_cursor) = before {
+            before_string = before_cursor.to_string();
+            query_params.push(("before", &before_string));
+        }
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .query(&query_params)
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(BirdEyeError::Api(format!("HTTP {}: {}", status, error_text)));
+        }
+
+        let history_response: WalletTransactionHistoryResponse = response.json().await?;
+
+        if !history_response.success {
+            return Err(BirdEyeError::Api(
+                "Paginated transaction history API returned success=false".to_string(),
+            ));
+        }
+
+        let transactions = history_response.data.solana;
+        debug!(
+            "Retrieved {} paginated transactions for wallet {} on chain {}",
+            transactions.len(),
+            wallet,
+            chain
+        );
+
+        Ok(transactions)
+    }
+
+    /// Get current portfolio (token balances with prices) for a wallet
+    /// This provides real-time token balances and current USD values for accurate unrealized P&L calculation
+    pub async fn get_wallet_portfolio(
+        &self,
+        wallet: &str,
+        chain: Option<&str>,
+    ) -> Result<Vec<WalletTokenBalance>, BirdEyeError> {
+        let url = format!("{}/v1/wallet/token_list", self.config.api_base_url);
+        let chain = chain.unwrap_or("solana");
+
+        debug!("Fetching current portfolio for wallet: {} on chain: {}", wallet, chain);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", chain)
+            .query(&[
+                ("wallet", wallet),
+                ("ui_amount_mode", "scaled"),
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(BirdEyeError::Api(format!("HTTP {}: {}", status, error_text)));
+        }
+
+        let portfolio_response: WalletPortfolioResponse = response.json().await?;
+
+        if !portfolio_response.success {
+            return Err(BirdEyeError::Api(
+                "Portfolio API returned success=false".to_string(),
+            ));
+        }
+
+        let portfolio_tokens = portfolio_response.data.items;
+        
+        info!(
+            "📊 Fetched portfolio for wallet {}: {} tokens with total value ${:.2}",
+            wallet,
+            portfolio_tokens.len(),
+            portfolio_tokens.iter().map(|t| t.value_usd).sum::<f64>()
+        );
+
+        Ok(portfolio_tokens)
+    }
+
+    /// Get historical price for a token at a specific Unix timestamp
+    pub async fn get_historical_price_unix(
+        &self,
+        token_address: &str,
+        unix_time: i64,
+        chain: Option<&str>,
+    ) -> Result<f64, BirdEyeError> {
+        let url = format!("{}/defi/historical_price_unix", self.config.api_base_url);
+        let chain = chain.unwrap_or("solana");
+
+        debug!(
+            "Fetching historical price for token: {} at unix time: {} on chain: {}",
+            token_address, unix_time, chain
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .query(&[
+                ("address", token_address),
+                ("unixtime", &unix_time.to_string()),
+                ("chain", chain),
+            ])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(BirdEyeError::Api(format!(
+                "Historical price API HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let price_response: HistoricalPriceResponse = response.json().await?;
+
+        if !price_response.success {
+            return Err(BirdEyeError::Api(
+                "Historical price API returned success=false".to_string(),
+            ));
+        }
+
+        let price = price_response.data.value;
+        debug!(
+            "Retrieved historical price for token {}: ${} at unix time {}",
+            token_address, price, unix_time
+        );
+
+        Ok(price)
+    }
+
+    /// Get current prices for multiple tokens in a single batch request
+    pub async fn get_multi_price(
+        &self,
+        token_addresses: &[String],
+        chain: Option<&str>,
+    ) -> Result<HashMap<String, f64>, BirdEyeError> {
+        if token_addresses.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let url = format!("{}/defi/multi_price", self.config.api_base_url);
+        let chain = chain.unwrap_or("solana");
+        let addresses_param = token_addresses.join(",");
+
+        debug!(
+            "Fetching current prices for {} tokens on chain: {}",
+            token_addresses.len(),
+            chain
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("X-API-KEY", &self.config.api_key)
+            .query(&[("list_address", addresses_param.as_str()), ("chain", chain)])
+            .send()
+            .await?;
+
+        if response.status() == 429 {
+            return Err(BirdEyeError::RateLimit);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(BirdEyeError::Api(format!(
+                "Multi-price API HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let multi_price_response: MultiPriceResponse = response.json().await?;
+
+        if !multi_price_response.success {
+            return Err(BirdEyeError::Api(
+                "Multi-price API returned success=false".to_string(),
+            ));
+        }
+
+        let mut prices = HashMap::new();
+        for (address, price_data) in multi_price_response.data {
+            prices.insert(address, price_data.value);
+        }
+
+        info!(
+            "Retrieved current prices for {}/{} tokens on chain {}",
+            prices.len(),
+            token_addresses.len(),
+            chain
+        );
+
+        Ok(prices)
+    }
 }
 
 /// Quality criteria for filtering trending tokens
