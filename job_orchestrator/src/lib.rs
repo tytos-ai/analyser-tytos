@@ -889,14 +889,14 @@ impl JobOrchestrator {
 
         // Step 2: Enrich transactions with price data
         info!("💰 Step 2/4: Enriching {} transactions with historical price data...", history_transactions.len());
-        info!("🔧 Using PriceStrategy::HistoricalWithFallback for optimal price accuracy");
+        info!("🔧 Using PriceStrategy::Historical for accurate historical pricing (no fallbacks)");
         
         let enrich_start = std::time::Instant::now();
         let birdeye_client_for_enricher = BirdEyeClient::new(self.config.birdeye.clone())?;
         let mut price_enricher = PriceEnricher::new(birdeye_client_for_enricher);
         
         let enriched_transactions = price_enricher
-            .enrich_transactions_batch(history_transactions, PriceStrategy::HistoricalWithFallback)
+            .enrich_transactions_batch(history_transactions, PriceStrategy::Historical)
             .await?;
         let enrich_elapsed = enrich_start.elapsed();
 

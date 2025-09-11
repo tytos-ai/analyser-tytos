@@ -173,8 +173,11 @@ pub struct HistoricalPriceData {
     pub value: f64,
     #[serde(rename = "updateUnixTime")]
     pub update_unix_time: i64,
-    #[serde(rename = "updateHumanTime")]
-    pub update_human_time: String,
+    #[serde(rename = "isScaledUiToken")]
+    pub is_scaled_ui_token: bool,
+    pub address: String,
+    #[serde(rename = "priceChange24h")]
+    pub price_change_24h: Option<f64>,
 }
 
 /// Current price response from BirdEye
@@ -346,6 +349,17 @@ pub struct BalanceChange {
     
     /// Multiplier for scaled tokens
     pub multiplier: Option<f64>,
+    
+    /// Token account address (for createAssociatedAccount transactions)
+    #[serde(rename = "tokenAccount")]
+    pub token_account: Option<String>,
+    
+    /// Owner wallet address (for createAssociatedAccount transactions)
+    pub owner: Option<String>,
+    
+    /// Program ID (for createAssociatedAccount transactions) 
+    #[serde(rename = "programId")]
+    pub program_id: Option<String>,
 }
 
 /// Detailed token transfer within a transaction

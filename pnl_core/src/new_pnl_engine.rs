@@ -206,7 +206,7 @@ impl NewPnLEngine {
         // Also check for known exchange currency addresses across chains
         let is_known_exchange_currency = matches!(token_result.token_address.as_str(),
             // Solana
-            "So11111111111111111111111111111111111111112" | // SOL
+            // "So11111111111111111111111111111111111111112" | // SOL - Removed to align with Universal Token Treatment principle
             "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" | // USDT on Solana
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" | // USDC on Solana
             

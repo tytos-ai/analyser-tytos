@@ -141,9 +141,17 @@ impl HistoryTransactionParser {
         
         let events = match main_action.as_str() {
             "swap" => self.parse_swap_transaction(&priced_changes, &timestamp, tx_hash)?,
+            "createAssociatedAccount" | "createassociatedaccount" => {
+                debug!("Processing createAssociatedAccount transaction {} as swap", tx_hash);
+                self.parse_swap_transaction(&priced_changes, &timestamp, tx_hash)?
+            }
             "send" => self.parse_send_transaction(&priced_changes, &timestamp, tx_hash)?,
             "received" => {
                 debug!("Skipping 'received' transaction {} - no P&L impact", tx_hash);
+                Vec::new()
+            }
+            "unknown" => {
+                debug!("Skipping 'unknown' transaction {} - no meaningful balance changes", tx_hash);
                 Vec::new()
             }
             _ => {
