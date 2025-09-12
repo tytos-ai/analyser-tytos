@@ -175,7 +175,7 @@ pub struct HistoricalPriceData {
     pub update_unix_time: i64,
     #[serde(rename = "isScaledUiToken")]
     pub is_scaled_ui_token: bool,
-    pub address: String,
+    pub address: Option<String>,
     #[serde(rename = "priceChange24h")]
     pub price_change_24h: Option<f64>,
 }

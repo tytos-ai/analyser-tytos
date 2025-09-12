@@ -786,22 +786,14 @@ impl JobOrchestrator {
         pair: &DiscoveredWalletToken,
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
-        debug!("Starting targeted P&L analysis for wallet: {} on token: {} ({})", 
+        debug!("🎯 Starting targeted P&L analysis for wallet: {} on token: {} ({})", 
                pair.wallet_address, pair.token_symbol, pair.token_address);
 
-        // Use BirdEye for token-pair P&L analysis
-        debug!("Using BirdEye for token-pair P&L analysis of wallet: {}", pair.wallet_address);
-        let transactions = self.process_wallet_token_pair_with_birdeye(pair, max_transactions).await?;
-
-        if transactions.is_empty() {
-            return Err(OrchestratorError::JobExecution(format!(
-                "No transactions found for wallet: {} on token: {}",
-                pair.wallet_address, pair.token_symbol
-            )));
-        }
-
-        // Calculate P&L using the new algorithm (for continuous analysis)
-        let report = self.calculate_pnl_with_new_algorithm(&pair.wallet_address, &pair.chain, transactions).await?;
+        // Use the same proven 4-step algorithm as batch jobs for consistency
+        info!("🐦 Using BirdEye history algorithm with prices for continuous analysis of wallet: {}", pair.wallet_address);
+        
+        // Call the same working method used by batch jobs
+        let report = self.process_single_wallet_with_birdeye(&pair.wallet_address, &pair.chain, max_transactions).await?;
 
         debug!("✅ Targeted P&L analysis completed for wallet: {} on token: {}", 
                pair.wallet_address, pair.token_symbol);

@@ -69,7 +69,8 @@ pub struct TokenTransactionSide {
     #[serde(rename = "nearest_price")]
     pub nearest_price: Option<f64>,
     #[serde(rename = "change_amount")]
-    #[serde(deserialize_with = "deserialize_signed_amount")]
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_optional_signed_amount")]
     pub change_amount: i128,
     #[serde(rename = "ui_change_amount")]
     #[serde(default)]
@@ -427,6 +428,93 @@ where
     }
 
     deserializer.deserialize_any(OptionalNullableF64Visitor)
+}
+
+/// Deserialize an optional signed amount that might be missing
+fn deserialize_optional_signed_amount<'de, D>(deserializer: D) -> std::result::Result<i128, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct OptionalSignedAmountVisitor;
+
+    impl Visitor<'_> for OptionalSignedAmountVisitor {
+        type Value = i128;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or number representing a signed amount, or missing field")
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0 for missing values
+            Ok(0)
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            // Return 0 for null values
+            Ok(0)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as i128)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(value as i128)
+        }
+
+        fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            if value.is_finite() {
+                let truncated = if value >= 0.0 { value.floor() } else { value.ceil() };
+                if truncated >= (i128::MIN as f64) && truncated <= (i128::MAX as f64) {
+                    Ok(truncated as i128)
+                } else {
+                    // If the number is too large for i128, use appropriate limit
+                    if value > 0.0 {
+                        debug!("Large positive amount {} truncated to i128::MAX", value);
+                        Ok(i128::MAX)
+                    } else {
+                        debug!("Large negative amount {} truncated to i128::MIN", value);
+                        Ok(i128::MIN)
+                    }
+                }
+            } else {
+                Err(Error::invalid_value(Unexpected::Float(value), &self))
+            }
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            match value.parse::<i128>() {
+                Ok(parsed) => Ok(parsed),
+                Err(_) => {
+                    warn!("Could not parse '{}' as i128, using 0", value);
+                    Ok(0)
+                }
+            }
+        }
+    }
+
+    deserializer.deserialize_any(OptionalSignedAmountVisitor)
 }
 
 
