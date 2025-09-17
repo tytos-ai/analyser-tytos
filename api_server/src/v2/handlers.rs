@@ -112,7 +112,7 @@ pub async fn get_wallet_analysis_v2(
     };
     
     // Calculate P&L using new engine with balance API integration (direct PortfolioPnLResult)
-    let balance_fetcher = if state.config.birdeye.balance_api_enabled {
+    let balance_fetcher = if true { // Always enabled for hybrid mode
         BalanceFetcher::new(
             state.config.birdeye.api_key.clone(),
             Some(state.config.birdeye.api_base_url.clone())
@@ -121,7 +121,7 @@ pub async fn get_wallet_analysis_v2(
         BalanceFetcher::new("disabled".to_string(), None)
     };
     
-    let pnl_engine = if state.config.birdeye.balance_api_enabled {
+    let pnl_engine = if true { // Always enabled for hybrid mode
         NewPnLEngine::with_balance_fetcher(wallet_address.clone(), balance_fetcher)
     } else {
         NewPnLEngine::new(wallet_address.clone())
@@ -169,7 +169,7 @@ pub async fn get_wallet_analysis_v2(
     
     let metadata = AnalysisMetadata {
         analyzed_at: Utc::now(),
-        data_source: format!("{:?}", state.config.data_source),
+        data_source: "Zerion+BirdEye Hybrid".to_string(),
         tokens_processed: portfolio_result.tokens_analyzed,
         events_processed: portfolio_result.events_processed,
         analysis_duration_ms: analysis_duration.as_millis() as u64,

@@ -42,7 +42,8 @@ pub async fn get_system_status(
 
     let config_summary = ConfigSummary {
         birdeye_api_configured: !state.config.birdeye.api_key.is_empty(),
-        data_source: state.config.data_source.clone(),
+        zerion_api_configured: !state.config.zerion.api_key.is_empty(),
+        architecture: "Zerion+BirdEye Hybrid".to_string(),
         parallel_batch_size: state.config.system.pnl_parallel_batch_size.unwrap_or(10),
     };
 

@@ -274,6 +274,7 @@ pub struct WalletTransactionHistoryResponse {
 /// Transaction history data containing list of transactions per chain
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletTransactionData {
+    #[serde(default)]
     pub solana: Vec<WalletTransaction>,
 }
 
@@ -433,6 +434,7 @@ pub struct WalletPortfolioData {
     pub items: Vec<WalletTokenBalance>,
 }
 
+
 /// Individual token balance in a wallet portfolio
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletTokenBalance {
@@ -467,11 +469,11 @@ pub struct WalletTokenBalance {
     pub logo_uri: Option<String>,
     
     /// Current USD price per token
-    #[serde(rename = "priceUsd")]
+    #[serde(rename = "priceUsd", alias = "price", default)]
     pub price_usd: f64,
     
     /// Current USD value of this balance
-    #[serde(rename = "valueUsd")]
+    #[serde(rename = "valueUsd", alias = "value", default)]
     pub value_usd: f64,
     
     /// Whether token uses scaled UI amounts
@@ -506,36 +508,6 @@ impl BirdEyeClient {
         &self.config
     }
 
-    /// Get trending tokens from BirdEye (legacy method using default sorting)
-    pub async fn get_trending_tokens(&self, chain: &str) -> Result<Vec<TrendingToken>, BirdEyeError> {
-        let url = format!("{}/defi/token_trending", self.config.api_base_url);
-        
-        debug!("Fetching trending tokens from BirdEye for chain: {}", chain);
-        
-        let response = self.http_client
-            .get(&url)
-            .header("X-API-KEY", &self.config.api_key)
-            .query(&[("chain", chain)])
-            .send()
-            .await?;
-
-        if response.status() == 429 {
-            return Err(BirdEyeError::RateLimit);
-        }
-
-        if !response.status().is_success() {
-            return Err(BirdEyeError::Api(format!("HTTP {}", response.status())));
-        }
-
-        let trending_response: TrendingTokenResponse = response.json().await?;
-        
-        if !trending_response.success {
-            return Err(BirdEyeError::Api("API returned success=false".to_string()));
-        }
-
-        info!("Retrieved {} trending tokens from BirdEye", trending_response.data.tokens.len());
-        Ok(trending_response.data.tokens)
-    }
 
     /// Get trending tokens from BirdEye using multiple sorting criteria for enhanced discovery
     pub async fn get_trending_tokens_multi_sort(&self, chain: &str) -> Result<Vec<TrendingToken>, BirdEyeError> {
@@ -1840,49 +1812,30 @@ impl BirdEyeClient {
         chain: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
-        let url = format!("{}/v1/wallet/tx_list", self.config.api_base_url);
         let chain = chain.unwrap_or("solana");
         let limit = limit.unwrap_or(1000); // Default limit
 
         debug!("Fetching transaction history for wallet: {} on chain: {}", wallet, chain);
 
-        let response = self
-            .http_client
-            .get(&url)
-            .header("X-API-KEY", &self.config.api_key)
-            .query(&[
-                ("wallet", wallet),
-                ("chain", chain),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await?;
-
-        if response.status() == 429 {
-            return Err(BirdEyeError::RateLimit);
+        // Use the new fallback helper method
+        let transactions = self.try_fetch_transactions_with_fallback(
+            wallet, chain, limit, None
+        ).await?;
+        
+        if transactions.is_empty() {
+            info!(
+                "📭 No transactions found for wallet {} on chain {} (tried both ui_amount_mode options)",
+                wallet,
+                chain
+            );
+        } else {
+            info!(
+                "Retrieved {} transactions for wallet {} on chain {}",
+                transactions.len(),
+                wallet,
+                chain
+            );
         }
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(BirdEyeError::Api(format!("HTTP {}: {}", status, error_text)));
-        }
-
-        let history_response: WalletTransactionHistoryResponse = response.json().await?;
-
-        if !history_response.success {
-            return Err(BirdEyeError::Api(
-                "Transaction history API returned success=false".to_string(),
-            ));
-        }
-
-        let transactions = history_response.data.solana;
-        info!(
-            "Retrieved {} transactions for wallet {} on chain {}",
-            transactions.len(),
-            wallet,
-            chain
-        );
 
         Ok(transactions)
     }
@@ -1895,20 +1848,121 @@ impl BirdEyeClient {
         limit: Option<u32>,
         before: Option<&str>,
     ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
-        let url = format!("{}/v1/wallet/tx_list", self.config.api_base_url);
         let chain = chain.unwrap_or("solana");
         let limit = limit.unwrap_or(100); // Smaller default for paginated requests
 
-        debug!(
-            "Fetching paginated transaction history for wallet: {} on chain: {} (limit: {}, before: {:?})",
+        info!(
+            "🔄 Fetching paginated transaction history for wallet: {} on chain: {} (limit: {}, before: {:?})",
             wallet, chain, limit, before
         );
 
+        // Use the new fallback helper method
+        let transactions = self.try_fetch_transactions_with_fallback(
+            wallet, chain, limit, before
+        ).await?;
+        
+        if transactions.is_empty() {
+            info!(
+                "📭 No transactions found for wallet {} on chain {} (tried both ui_amount_mode options)",
+                wallet,
+                chain
+            );
+        } else {
+            info!(
+                "✅ Successfully retrieved {} paginated transactions for wallet {} on chain {}",
+                transactions.len(),
+                wallet,
+                chain
+            );
+        }
+
+        Ok(transactions)
+    }
+
+    /// Private helper method to try fetching transactions with ui_amount_mode fallback
+    /// Tries 'scaled' first, then 'raw' if no transactions are returned
+    async fn try_fetch_transactions_with_fallback(
+        &self,
+        wallet: &str,
+        chain: &str,
+        limit: u32,
+        before: Option<&str>,
+    ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
+        let url = format!("{}/v1/wallet/tx_list", self.config.api_base_url);
         let limit_string = limit.to_string();
+        
+        // Try 'scaled' mode first (most common)
+        let result = self.try_fetch_with_ui_mode(
+            &url, wallet, chain, &limit_string, before, "scaled"
+        ).await;
+        
+        match result {
+            Ok(transactions) if !transactions.is_empty() => {
+                info!("✅ Found {} transactions using ui_amount_mode=scaled for wallet {}", 
+                      transactions.len(), wallet);
+                Ok(transactions)
+            },
+            Ok(_empty_transactions) => {
+                info!("📭 ui_amount_mode=scaled returned empty, trying ui_amount_mode=raw for wallet {}", wallet);
+                
+                // Try 'raw' mode as fallback
+                let fallback_result = self.try_fetch_with_ui_mode(
+                    &url, wallet, chain, &limit_string, before, "raw"
+                ).await;
+                
+                match fallback_result {
+                    Ok(transactions) if !transactions.is_empty() => {
+                        info!("✅ Found {} transactions using ui_amount_mode=raw (fallback) for wallet {}", 
+                              transactions.len(), wallet);
+                        Ok(transactions)
+                    },
+                    Ok(_empty_transactions) => {
+                        info!("📭 Both ui_amount_mode modes returned empty for wallet {}", wallet);
+                        Ok(vec![]) // Return empty vector, not an error
+                    },
+                    Err(e) => {
+                        warn!("❌ ui_amount_mode=raw fallback failed for wallet {}: {}", wallet, e);
+                        Err(e)
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("❌ ui_amount_mode=scaled failed for wallet {}, trying raw mode: {}", wallet, e);
+                
+                // Try 'raw' mode as fallback even on error
+                let fallback_result = self.try_fetch_with_ui_mode(
+                    &url, wallet, chain, &limit_string, before, "raw"
+                ).await;
+                
+                match fallback_result {
+                    Ok(transactions) => {
+                        info!("✅ Found {} transactions using ui_amount_mode=raw (error fallback) for wallet {}", 
+                              transactions.len(), wallet);
+                        Ok(transactions)
+                    },
+                    Err(_) => {
+                        error!("💥 Both ui_amount_mode modes failed for wallet {}", wallet);
+                        Err(e) // Return original error
+                    }
+                }
+            }
+        }
+    }
+
+    /// Private helper to make a single API request with specific ui_amount_mode
+    async fn try_fetch_with_ui_mode(
+        &self,
+        url: &str,
+        wallet: &str,
+        chain: &str,
+        limit_string: &str,
+        before: Option<&str>,
+        ui_amount_mode: &str,
+    ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
         let mut query_params = vec![
             ("wallet", wallet),
-            ("chain", chain),
-            ("limit", &limit_string),
+            ("ui_amount_mode", ui_amount_mode),
+            ("limit", limit_string),
         ];
 
         let before_string;
@@ -1917,40 +1971,52 @@ impl BirdEyeClient {
             query_params.push(("before", &before_string));
         }
 
+        debug!("🔍 Trying BirdEye API request with ui_amount_mode={}:", ui_amount_mode);
+        debug!("  📡 URL: {}", url);
+        debug!("  📋 Query params: {:?}", query_params);
+        
+        let request_start = std::time::Instant::now();
         let response = self
             .http_client
-            .get(&url)
+            .get(url)
             .header("X-API-KEY", &self.config.api_key)
+            .header("x-chain", chain)
+            .header("accept", "application/json")
             .query(&query_params)
             .send()
             .await?;
+            
+        let _request_duration = request_start.elapsed();
 
         if response.status() == 429 {
+            error!("🚫 Rate limit hit (429) for wallet {} with ui_amount_mode={}", wallet, ui_amount_mode);
             return Err(BirdEyeError::RateLimit);
         }
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(BirdEyeError::Api(format!("HTTP {}: {}", status, error_text)));
+            debug!("❌ BirdEye API error with ui_amount_mode={}: HTTP {} - {}", ui_amount_mode, status, error_text);
+            return Err(BirdEyeError::Api(format!("HTTP {} - {}", status, error_text)));
         }
 
-        let history_response: WalletTransactionHistoryResponse = response.json().await?;
+        let response_text = response.text().await?;
+        debug!("📏 Response body length: {} bytes (ui_amount_mode={})", response_text.len(), ui_amount_mode);
+        
+        let history_response: WalletTransactionHistoryResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                debug!("💥 JSON deserialization failed with ui_amount_mode={}: {}", ui_amount_mode, e);
+                BirdEyeError::InvalidResponse(format!("JSON parse error for wallet {} (mode={}): {}", wallet, ui_amount_mode, e))
+            })?;
 
         if !history_response.success {
-            return Err(BirdEyeError::Api(
-                "Paginated transaction history API returned success=false".to_string(),
-            ));
+            debug!("❌ BirdEye API returned success=false for wallet {} with ui_amount_mode={}", wallet, ui_amount_mode);
+            return Err(BirdEyeError::Api(format!("API returned success=false (mode={})", ui_amount_mode)));
         }
 
         let transactions = history_response.data.solana;
-        debug!(
-            "Retrieved {} paginated transactions for wallet {} on chain {}",
-            transactions.len(),
-            wallet,
-            chain
-        );
-
+        debug!("📊 Parsed {} transactions with ui_amount_mode={} for wallet {}", transactions.len(), ui_amount_mode, wallet);
+        
         Ok(transactions)
     }
 
@@ -2127,6 +2193,135 @@ impl BirdEyeClient {
         );
 
         Ok(prices)
+    }
+
+    /// Get wallet transaction history with full pagination support
+    /// Fetches complete transaction history by chaining requests using transaction hashes
+    pub async fn get_wallet_transaction_history_with_full_pagination(
+        &self,
+        wallet: &str,
+        chain: Option<&str>,
+        max_transactions: u32,
+    ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
+        let chain = chain.unwrap_or("solana");
+        let page_size = 100u32; // BirdEye API limit per request
+        let pagination_delay_ms = 150; // Rate limiting delay between requests
+        
+        info!("🔄 Starting paginated fetch for wallet {} (max: {} transactions)", wallet, max_transactions);
+        
+        let mut all_transactions = Vec::new();
+        let mut before_hash: Option<String> = None;
+        let mut page_number = 1;
+        
+        while all_transactions.len() < max_transactions as usize {
+            // Calculate remaining transactions needed
+            let remaining = max_transactions.saturating_sub(all_transactions.len() as u32);
+            let current_limit = std::cmp::min(page_size, remaining);
+            
+            info!("📄 Fetching page {} for wallet {} (limit: {}, before: {:?})", 
+                   page_number, wallet, current_limit, before_hash);
+            
+            // Enhanced request comparison logging
+            debug!("🔄 Making paginated request comparison:");
+            debug!("  🎯 Target wallet: {}", wallet);
+            debug!("  📊 Requested limit: {}", current_limit);
+            debug!("  ⬅️ Before cursor: {:?}", before_hash);
+            debug!("  📈 Page number: {}", page_number);
+            debug!("  📦 Total fetched so far: {}", all_transactions.len());
+            
+            // Make the API request with retry logic
+            let page_transactions = match self.fetch_transaction_page_with_retry(
+                wallet, 
+                chain, 
+                current_limit, 
+                before_hash.as_deref()
+            ).await {
+                Ok(transactions) => transactions,
+                Err(e) => {
+                    warn!("❌ Failed to fetch page {} for wallet {}: {}", page_number, wallet, e);
+                    // Return what we have so far instead of failing completely
+                    break;
+                }
+            };
+            
+            let page_size_actual = page_transactions.len();
+            info!("✅ Page {} completed: {} transactions fetched for wallet {}", 
+                  page_number, page_size_actual, wallet);
+            
+            // If no transactions returned, we've reached the end
+            if page_size_actual == 0 {
+                info!("🏁 No more transactions available for wallet {} (reached end)", wallet);
+                break;
+            }
+            
+            // Get the hash from the last transaction for next page
+            if let Some(last_transaction) = page_transactions.last() {
+                before_hash = Some(last_transaction.tx_hash.clone());
+            }
+            
+            // Add transactions to our collection
+            all_transactions.extend(page_transactions);
+            
+            // If we got fewer transactions than requested, we've reached the end
+            if page_size_actual < current_limit as usize {
+                info!("🏁 Received fewer transactions than requested for wallet {} ({}  < {}), reached end", 
+                      wallet, page_size_actual, current_limit);
+                break;
+            }
+            
+            page_number += 1;
+            
+            // Rate limiting delay (except for the last iteration)
+            if all_transactions.len() < max_transactions as usize {
+                tokio::time::sleep(Duration::from_millis(pagination_delay_ms)).await;
+            }
+        }
+        
+        // Truncate to max_transactions if we exceeded it
+        if all_transactions.len() > max_transactions as usize {
+            all_transactions.truncate(max_transactions as usize);
+        }
+        
+        info!("🎯 Pagination completed for wallet {}: fetched {} transactions across {} pages", 
+              wallet, all_transactions.len(), page_number - 1);
+        
+        Ok(all_transactions)
+    }
+    
+    /// Helper method to fetch a single page with retry logic for rate limiting
+    async fn fetch_transaction_page_with_retry(
+        &self,
+        wallet: &str,
+        chain: &str,
+        limit: u32,
+        before_hash: Option<&str>,
+    ) -> Result<Vec<WalletTransaction>, BirdEyeError> {
+        let max_retries = 3u32;
+        let mut attempt = 1u32;
+        
+        loop {
+            match self.get_wallet_transaction_history_paginated(
+                wallet,
+                Some(chain),
+                Some(limit),
+                before_hash,
+            ).await {
+                Ok(transactions) => return Ok(transactions),
+                Err(BirdEyeError::RateLimit) if attempt <= max_retries => {
+                    let delay_ms = 1000 * attempt.pow(2); // Exponential backoff: 1s, 4s, 9s
+                    warn!("🚫 Rate limit hit for wallet {} page (attempt {}), retrying in {}ms", 
+                          wallet, attempt, delay_ms);
+                    tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    if attempt > max_retries {
+                        error!("💥 Max retries exceeded for wallet {} page: {}", wallet, e);
+                    }
+                    return Err(e);
+                }
+            }
+        }
     }
 }
 

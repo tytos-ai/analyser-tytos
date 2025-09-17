@@ -707,63 +707,6 @@ impl NewPnLEngine {
         Ok(Some(position))
     }
 
-    /// Calculate remaining position from REAL (non-phantom) buy events only
-    /// This excludes phantom buys from position calculation, fixing the core bug
-    fn calculate_real_remaining_position(
-        &self,
-        remaining_buys: &[NewFinancialEvent],
-        matched_trades: &[MatchedTrade],
-        token_address: &str,
-        token_symbol: &str,
-    ) -> Result<Option<RemainingPosition>, String> {
-        // Filter out phantom buy events from remaining_buys
-        // Phantom buys have specific characteristics that were added during FIFO matching
-        let real_remaining_buys: Vec<&NewFinancialEvent> = remaining_buys
-            .iter()
-            .filter(|buy| {
-                // Check if this buy event was created as a phantom buy
-                // Phantom buys are not part of the original transactions, so they should be filtered out
-                // However, since we don't have a direct flag, we need to identify them by their characteristics
-                
-                // For now, include all remaining buys as "real" since phantom buys are typically
-                // fully consumed during FIFO matching and shouldn't appear in remaining_buys
-                // The real filtering happens by excluding phantom buy matches from cost basis calculation
-                true
-            })
-            .collect();
-
-        if real_remaining_buys.is_empty() {
-            debug!("No real remaining buy events for {}", token_symbol);
-            return Ok(None);
-        }
-        
-        let total_quantity: Decimal = real_remaining_buys.iter().map(|b| b.quantity).sum();
-        let total_cost: Decimal = real_remaining_buys.iter().map(|b| b.usd_value).sum();
-        
-        if total_quantity <= Decimal::ZERO {
-            return Ok(None);
-        }
-        
-        let avg_cost_basis = total_cost / total_quantity;
-        
-        let position = RemainingPosition {
-            token_address: token_address.to_string(),
-            token_symbol: token_symbol.to_string(),
-            quantity: total_quantity,
-            avg_cost_basis_usd: avg_cost_basis,
-            total_cost_basis_usd: total_cost,
-        };
-        
-        debug!(
-            "REAL remaining position (excludes phantom buys): {} {} @ avg cost ${} (total cost: ${})",
-            position.quantity,
-            position.token_symbol,
-            position.avg_cost_basis_usd,
-            position.total_cost_basis_usd
-        );
-        
-        Ok(Some(position))
-    }
     
     /// Calculate unrealized P&L for remaining positions
     /// Following documentation specification: (current_price - weighted_avg_cost_basis) × remaining_quantity

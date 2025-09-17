@@ -162,8 +162,9 @@ impl BirdEyeTrendingOrchestrator {
         drop(is_running);
 
         info!("🚀 Starting Enhanced Multi-Sort BirdEye Discovery Orchestrator");
-        info!("📋 Enhanced Discovery: 3 sorting strategies (rank + volume + liquidity), unlimited tokens, max_traders_per_token={}, cycle_interval={}s", 
-              self.config.birdeye.max_traders_per_token, 60);
+        let max_traders_per_token = 100; // Default limit for discovery
+        info!("📋 Enhanced Discovery: 3 sorting strategies (rank + volume + liquidity), unlimited tokens, max_traders_per_token={}, cycle_interval={}s",
+              max_traders_per_token, 60);
 
         loop {
             // Check if we should stop
@@ -411,9 +412,10 @@ impl BirdEyeTrendingOrchestrator {
                     converted_tokens.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
                     
                     // Apply max trending tokens limit (0 = unlimited)
-                    if self.config.birdeye.max_trending_tokens > 0 && converted_tokens.len() > self.config.birdeye.max_trending_tokens {
-                        converted_tokens.truncate(self.config.birdeye.max_trending_tokens);
-                        info!("📈 Processing trending tokens: {} tokens (limited to {}) for chain {}", converted_tokens.len(), self.config.birdeye.max_trending_tokens, chain);
+                    let max_trending_tokens = 25; // Default limit for quality filtering
+                    if max_trending_tokens > 0 && converted_tokens.len() > max_trending_tokens {
+                        converted_tokens.truncate(max_trending_tokens);
+                        info!("📈 Processing trending tokens: {} tokens (limited to {}) for chain {}", converted_tokens.len(), max_trending_tokens, chain);
                     } else {
                         info!("📈 Processing all discovered trending tokens: {} tokens for chain {}", converted_tokens.len(), chain);
                     }
@@ -461,8 +463,9 @@ impl BirdEyeTrendingOrchestrator {
 
                 // Limit to max traders per token
                 let mut filtered_traders = quality_traders;
-                if filtered_traders.len() > self.config.birdeye.max_traders_per_token as usize {
-                    filtered_traders.truncate(self.config.birdeye.max_traders_per_token as usize);
+                let max_traders_per_token = 100; // Default limit for discovery
+                if filtered_traders.len() > max_traders_per_token as usize {
+                    filtered_traders.truncate(max_traders_per_token as usize);
                 }
 
                 debug!("✅ Filtered to {} quality traders for token {} on chain {}", 

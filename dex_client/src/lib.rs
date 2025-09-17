@@ -183,20 +183,34 @@ pub fn extract_current_prices_from_portfolio(portfolio: &[WalletTokenBalance]) -
     use rust_decimal::Decimal;
     
     let mut price_map = HashMap::new();
-    
+    let mut skipped_count = 0;
+
     for token in portfolio {
         // Only include tokens with positive balances and valid prices
-        if token.ui_amount > 0.0 && token.price_usd > 0.0 {
-            // Convert f64 price to Decimal for precision
-            if let Ok(price_decimal) = Decimal::from_str(&token.price_usd.to_string()) {
-                price_map.insert(token.address.clone(), price_decimal);
+        if token.ui_amount > 0.0 {
+            if token.price_usd > 0.0 {
+                // Convert f64 price to Decimal for precision
+                if let Ok(price_decimal) = Decimal::from_str(&token.price_usd.to_string()) {
+                    price_map.insert(token.address.clone(), price_decimal);
+                } else {
+                    tracing::warn!("⚠️ Failed to convert price ${:.6} to Decimal for token {} ({})",
+                                  token.price_usd, token.symbol.as_deref().unwrap_or("Unknown"), token.address);
+                    skipped_count += 1;
+                }
             } else {
-                tracing::warn!("Failed to convert price {} to Decimal for token {}", token.price_usd, token.address);
+                tracing::warn!("⚠️ Skipping token {} ({}) due to missing/zero price data (BirdEye API): ${:.6}",
+                              token.symbol.as_deref().unwrap_or("Unknown"), token.address, token.price_usd);
+                skipped_count += 1;
             }
         }
     }
     
-    tracing::debug!("Extracted {} current prices from portfolio", price_map.len());
+    if skipped_count > 0 {
+        tracing::info!("📊 Portfolio summary: {} tokens with valid prices, {} tokens skipped due to missing/invalid price data",
+                       price_map.len(), skipped_count);
+    } else {
+        tracing::debug!("📊 Extracted {} current prices from portfolio", price_map.len());
+    }
     price_map
 }
 

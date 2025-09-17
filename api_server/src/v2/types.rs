@@ -117,7 +117,7 @@ pub struct AnalysisMetadata {
     /// Analysis timestamp
     pub analyzed_at: DateTime<Utc>,
     
-    /// Data source used (Helius, BirdEye, etc.)
+    /// Data source architecture used
     pub data_source: String,
     
     /// Number of tokens analyzed

@@ -3,8 +3,7 @@ debug_mode = true
 process_loop_ms = 30000
 pnl_parallel_batch_size = 20
 
-# Data source for transaction data (currently only "BirdEye" is supported)
-data_source = "BirdEye"
+# Using Zerion+BirdEye hybrid: Zerion for transactions, BirdEye for current portfolio
 
 [multichain]
 enabled_chains = ["solana"]
@@ -25,24 +24,25 @@ enabled = true
 min_boost_amount = 100.0    # Minimum boost amount to consider
 max_boosted_tokens = 25     # Limit boosted tokens for quality filtering
 
+# BirdEye configuration - used only for current portfolio fetching in hybrid mode
 [birdeye]
 api_key = "5ff313b239ac42e297b830b10ea1871d"
 api_base_url = "https://public-api.birdeye.so"
 request_timeout_seconds = 30
-max_traders_per_token = 100  # Increased from 20 for maximum coverage (doesn't affect BirdEye API limits)
-max_transactions_per_trader = 100  # API limit - DO NOT CHANGE
-default_max_transactions = 1000  # Default maximum transactions to fetch/analyze per wallet
-new_listing_enabled = true
-new_listing_min_liquidity = 1000.0
-new_listing_max_age_hours = 24
-new_listing_max_tokens = 25  # Limit new listings for quality filtering
-max_trending_tokens = 25  # Limit trending tokens for quality filtering
 
-# Balance API configuration for real-time wallet balance fetching (fixes phantom buy unrealized P&L bug)
-balance_api_enabled = true  # Enable real balance fetching for accurate unrealized P&L
-balance_api_timeout_seconds = 15  # Shorter timeout for balance calls
-balance_cache_ttl_seconds = 60  # Cache balance data for 1 minute to avoid excessive API calls
-
+# Zerion API configuration (alternative to BirdEye)
+[zerion]
+api_key = "zk_dev_69a0a2c7a84b433787f44efe5d1d6082"
+api_base_url = "https://api.zerion.io/v1"
+request_timeout_seconds = 30
+enabled = true
+default_currency = "usd"
+default_max_transactions = 1000
+rate_limit_delay_ms = 200
+page_size = 100
+operation_types = "trade,send"
+chain_ids = "solana"
+trash_filter = "only_non_trash"
 
 # PnL filtering configuration section removed - these were never used in actual P&L processing
 # All P&L calculations are performed without filtering based on capital, hold time, trades, or win rate

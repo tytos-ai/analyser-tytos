@@ -21,10 +21,7 @@ pub type Result<T> = std::result::Result<T, ConfigurationError>;
 pub struct SystemConfig {
     /// General system settings
     pub system: SystemSettings,
-    
-    /// Data source for transaction data (currently only "BirdEye" is supported)
-    pub data_source: String,
-    
+
     /// Multichain configuration
     pub multichain: MultichainConfig,
     
@@ -33,9 +30,10 @@ pub struct SystemConfig {
     
     /// BirdEye API configuration
     pub birdeye: BirdEyeConfig,
-    
-    /// GoldRush API configuration for EVM chains
-    pub goldrush: GoldRushConfig,
+
+    /// Zerion API configuration
+    pub zerion: ZerionConfig,
+
     
     /// DexScreener API configuration
     pub dexscreener: DexScreenerConfig,
@@ -97,73 +95,50 @@ pub struct RedisConfig {
 pub struct BirdEyeConfig {
     /// BirdEye API key
     pub api_key: String,
-    
-    /// BirdEye API base URL  
+
+    /// BirdEye API base URL
     pub api_base_url: String,
-    
+
     /// Request timeout in seconds
     pub request_timeout_seconds: u64,
-    
-    /// Maximum traders to fetch per token (API supports max 100)
-    pub max_traders_per_token: u32,
-    
-    /// Maximum transactions per trader (API supports max 100)
-    pub max_transactions_per_trader: u32,
-    
-    /// Default maximum transactions to fetch/analyze per trader (across all paginated calls)
-    pub default_max_transactions: u32,
-    
-    /// New listing token discovery enabled
-    pub new_listing_enabled: bool,
-    
-    /// Minimum liquidity for new listing tokens
-    pub new_listing_min_liquidity: f64,
-    
-    /// Maximum age in hours for new listing tokens
-    pub new_listing_max_age_hours: u32,
-    
-    /// Maximum number of new listing tokens to process
-    pub new_listing_max_tokens: usize,
-    
-    /// Maximum number of trending tokens to process (0 = unlimited)
-    pub max_trending_tokens: usize,
-    
-    /// Enable balance API for real-time wallet balance fetching (fixes phantom buy unrealized P&L bug)
-    #[serde(default = "default_balance_api_enabled")]
-    pub balance_api_enabled: bool,
-    
-    /// Timeout for balance API calls in seconds
-    #[serde(default = "default_balance_api_timeout")]
-    pub balance_api_timeout_seconds: u64,
-    
-    /// Cache TTL for balance data in seconds
-    #[serde(default = "default_balance_cache_ttl")]
-    pub balance_cache_ttl_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GoldRushConfig {
-    /// GoldRush API key
+pub struct ZerionConfig {
+    /// Zerion API key
     pub api_key: String,
-    
-    /// GoldRush API base URL
+
+    /// Zerion API base URL
     pub api_base_url: String,
-    
+
     /// Request timeout in seconds
     pub request_timeout_seconds: u64,
-    
-    /// Enable GoldRush for EVM chains
+
+    /// Enable Zerion as data source
     pub enabled: bool,
-    
-    /// Supported chains
-    pub supported_chains: Vec<String>,
-    
+
+    /// Default currency for transaction data (e.g., "usd")
+    pub default_currency: String,
+
     /// Default maximum transactions per wallet
     pub default_max_transactions: u32,
-    
+
     /// Rate limit delay between requests in milliseconds
     pub rate_limit_delay_ms: u64,
+
+    /// Page size for transaction requests (default: 100)
+    pub page_size: u32,
+
+    /// Operation types to filter (e.g., "trade,send")
+    pub operation_types: String,
+
+    /// Chain IDs to filter (e.g., "solana")
+    pub chain_ids: String,
+
+    /// Trash filter setting ("only_non_trash", "no_filter", "only_trash")
+    pub trash_filter: String,
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DexScreenerConfig {
@@ -241,7 +216,6 @@ impl Default for SystemConfig {
                 process_loop_ms: 60000,
                 pnl_parallel_batch_size: Some(10),
             },
-            data_source: "BirdEye".to_string(),
             multichain: MultichainConfig {
                 enabled_chains: vec![
                     "solana".to_string(),
@@ -255,34 +229,23 @@ impl Default for SystemConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 default_lock_ttl_seconds: 600,
             },
+            zerion: ZerionConfig {
+                api_key: "".to_string(), // Must be set in .env or config file
+                api_base_url: "https://api.zerion.io/v1".to_string(),
+                request_timeout_seconds: 30,
+                enabled: false, // Disabled by default until API key is provided
+                default_currency: "usd".to_string(),
+                default_max_transactions: 1000,
+                rate_limit_delay_ms: 200, // Conservative rate limiting
+                page_size: 100,
+                operation_types: "trade,send".to_string(),
+                chain_ids: "solana".to_string(),
+                trash_filter: "only_non_trash".to_string(),
+            },
             birdeye: BirdEyeConfig {
                 api_key: "".to_string(), // Must be set in .env or config file
                 api_base_url: "https://public-api.birdeye.so".to_string(),
                 request_timeout_seconds: 30,
-                max_traders_per_token: 10,        // Default to 10 traders per token
-                max_transactions_per_trader: 100, // BirdEye API limit is 100
-                default_max_transactions: 1000, // Default to 1000 total transactions
-                new_listing_enabled: true,        // Enable new listing discovery by default
-                new_listing_min_liquidity: 1000.0, // $1k minimum liquidity
-                new_listing_max_age_hours: 24,   // Last 24 hours
-                new_listing_max_tokens: 25,      // Top 25 tokens max
-                max_trending_tokens: 500,        // Default to 500 trending tokens
-                balance_api_enabled: default_balance_api_enabled(),   // Enable balance API by default
-                balance_api_timeout_seconds: default_balance_api_timeout(),  // 15 second timeout
-                balance_cache_ttl_seconds: default_balance_cache_ttl(), // 1 minute cache
-            },
-            goldrush: GoldRushConfig {
-                api_key: "cqt_rQqPrvKMbyqJmTV7WVMMrGh9XKqt".to_string(),
-                api_base_url: "https://api.covalenthq.com/v1".to_string(),
-                request_timeout_seconds: 30,
-                enabled: true,
-                supported_chains: vec![
-                    "eth-mainnet".to_string(),
-                    "base-mainnet".to_string(),
-                    "bsc-mainnet".to_string(),
-                ],
-                default_max_transactions: 1000,
-                rate_limit_delay_ms: 200, // 5 requests per second
             },
             dexscreener: DexScreenerConfig {
                 api_base_url: "https://api.dexscreener.com".to_string(),
@@ -318,52 +281,44 @@ impl Default for SystemConfig {
     }
 }
 
-// Default functions for balance API configuration
-fn default_balance_api_enabled() -> bool { true }
-fn default_balance_api_timeout() -> u64 { 15 }
-fn default_balance_cache_ttl() -> u64 { 60 }
-
 impl BirdEyeConfig {
-    /// Validate BirdEye configuration values against API limits
+    /// Validate BirdEye configuration - simplified for portfolio-only usage
     pub fn validate(&self) -> Result<()> {
-        if self.max_traders_per_token > 100 {
-            return Err(ConfigurationError::InvalidValue("max_traders_per_token cannot exceed 100 (BirdEye API limit)".to_string()));
+        if self.api_key.is_empty() {
+            return Err(ConfigurationError::InvalidValue(
+                "BirdEye API key is required".to_string()
+            ));
         }
-        if self.max_transactions_per_trader > 100 {
-            return Err(ConfigurationError::InvalidValue("max_transactions_per_trader cannot exceed 100 (BirdEye API limit)".to_string()));
+
+        if self.request_timeout_seconds == 0 {
+            return Err(ConfigurationError::InvalidValue(
+                "Request timeout must be greater than 0".to_string()
+            ));
         }
+
         Ok(())
     }
 }
 
-impl GoldRushConfig {
-    /// Validate GoldRush configuration
+impl ZerionConfig {
+    /// Validate Zerion configuration
     pub fn validate(&self) -> Result<()> {
         if self.enabled && self.api_key.is_empty() {
             return Err(ConfigurationError::InvalidValue(
-                "GoldRush API key is required when GoldRush is enabled".to_string()
+                "Zerion API key is required when Zerion is enabled".to_string()
             ));
         }
-        
-        if self.supported_chains.is_empty() {
+
+        if self.request_timeout_seconds == 0 {
             return Err(ConfigurationError::InvalidValue(
-                "At least one supported chain must be specified for GoldRush".to_string()
+                "Request timeout must be greater than 0".to_string()
             ));
         }
-        
-        // Validate supported chains
-        let valid_chains = ["eth-mainnet", "base-mainnet", "bsc-mainnet"];
-        for chain in &self.supported_chains {
-            if !valid_chains.contains(&chain.as_str()) {
-                return Err(ConfigurationError::InvalidValue(
-                    format!("Unsupported GoldRush chain: {}. Valid chains: {:?}", chain, valid_chains)
-                ));
-            }
-        }
-        
+
         Ok(())
     }
 }
+
 
 
 
@@ -416,26 +371,18 @@ impl SystemConfig {
     pub fn validate(&self) -> Result<()> {
         // Validate individual components
         self.birdeye.validate()?;
-        self.goldrush.validate()?;
-        
-        // Validate data source
-        if self.data_source != "BirdEye" {
-            return Err(ConfigurationError::InvalidValue(
-                format!("Invalid data_source: {}. Only 'BirdEye' is currently supported", self.data_source)
-            ));
-        }
+        self.zerion.validate()?;
         
         if self.api.port == 0 {
             return Err(ConfigurationError::InvalidValue(
                 "API port cannot be 0".to_string()
             ));
         }
-        
-        // Validate BirdEye API key if not default config
-        let is_default_config = self.birdeye.api_key.is_empty();
-        if !is_default_config && self.data_source == "BirdEye" && self.birdeye.api_key.is_empty() {
+
+        // Validate required API keys
+        if self.zerion.api_key.is_empty() {
             return Err(ConfigurationError::InvalidValue(
-                "BirdEye API key is required when BirdEye is used as a data source".to_string()
+                "Zerion API key is required".to_string()
             ));
         }
         

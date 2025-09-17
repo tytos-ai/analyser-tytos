@@ -60,7 +60,8 @@ pub struct DexClientStatus {
 #[derive(Debug, Serialize)]
 pub struct ConfigSummary {
     pub birdeye_api_configured: bool,
-    pub data_source: String,
+    pub zerion_api_configured: bool,
+    pub architecture: String, // "Zerion+BirdEye Hybrid"
     pub parallel_batch_size: usize,
 }
 
