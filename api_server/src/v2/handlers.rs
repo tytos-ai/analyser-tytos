@@ -6,16 +6,16 @@ use axum::{
 };
 use chrono::Utc;
 use job_orchestrator::JobOrchestrator;
-use pnl_core::{NewPnLEngine, NewTransactionParser, PortfolioPnLResult, BalanceFetcher};
+use pnl_core::{BalanceFetcher, NewPnLEngine, NewTransactionParser, PortfolioPnLResult};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::types::{validate_chain, SuccessResponse};
 use crate::v2::types::*;
 use crate::{ApiError, AppState};
-use crate::types::{SuccessResponse, validate_chain};
 
 /// Get comprehensive wallet analysis with full P&L engine data
 pub async fn get_wallet_analysis_v2(
@@ -24,84 +24,125 @@ pub async fn get_wallet_analysis_v2(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<SuccessResponse<WalletAnalysisV2>>, ApiError> {
     info!("Starting v2 wallet analysis for: {}", wallet_address);
-    
+
     let start_time = std::time::Instant::now();
-    
+
     // Validate wallet address
     if wallet_address.len() < 32 || wallet_address.len() > 44 {
-        return Err(ApiError::BadRequest("Invalid wallet address format".to_string()));
+        return Err(ApiError::BadRequest(
+            "Invalid wallet address format".to_string(),
+        ));
     }
-    
+
     // Parse optional parameters
-    let include_copy_metrics = params.get("include_copy_metrics")
+    let include_copy_metrics = params
+        .get("include_copy_metrics")
         .and_then(|v| v.parse::<bool>().ok())
         .unwrap_or(true);
-    
-    let max_transactions = params.get("max_transactions")
+
+    let max_transactions = params
+        .get("max_transactions")
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(500);
-    
+
     // Get chain parameter or use default
-    let chain = params.get("chain")
+    let chain = params
+        .get("chain")
         .map(|s| s.as_str())
         .unwrap_or(&state.config.multichain.default_chain);
-    
+
     // Validate chain is enabled
     validate_chain(chain, &state.config.multichain.enabled_chains)
         .map_err(|e| ApiError::BadRequest(e))?;
-    
+
     // Fetch transaction data using BirdEye data source
     let transactions = {
-        debug!("Using BirdEye data source for wallet analysis on chain: {}", chain);
-        state.birdeye_client
-            .get_all_trader_transactions_paginated(&wallet_address, chain, None, None, max_transactions)
+        debug!(
+            "Using BirdEye data source for wallet analysis on chain: {}",
+            chain
+        );
+        state
+            .birdeye_client
+            .get_all_trader_transactions_paginated(
+                &wallet_address,
+                chain,
+                None,
+                None,
+                max_transactions,
+            )
             .await
             .map_err(|e| ApiError::InternalServerError(format!("BirdEye error: {}", e)))?
     };
-    
-    debug!("Fetched {} transactions for wallet {}", transactions.len(), wallet_address);
-    
+
+    debug!(
+        "Fetched {} transactions for wallet {}",
+        transactions.len(),
+        wallet_address
+    );
+
     // Step 0: Preprocessing - Consolidate duplicate transaction hashes (DEX aggregation fix)
     let original_count = transactions.len();
     let consolidated_transactions = JobOrchestrator::consolidate_duplicate_hashes(transactions);
     let consolidated_count = consolidated_transactions.len();
-    
+
     if original_count != consolidated_count {
-        info!("🔄 API preprocessing: {} transactions → {} consolidated transactions", 
-              original_count, consolidated_count);
+        info!(
+            "🔄 API preprocessing: {} transactions → {} consolidated transactions",
+            original_count, consolidated_count
+        );
     }
-    
+
     // Parse consolidated transactions into financial events using new parser
     let parser = NewTransactionParser::new(wallet_address.clone());
-    
+
     let events = parser
         .parse_transactions(consolidated_transactions)
         .await
         .map_err(|e| ApiError::InternalServerError(format!("Transaction parsing error: {}", e)))?;
-    
-    debug!("Parsed {} events for wallet {}", events.len(), wallet_address);
-    
+
+    debug!(
+        "Parsed {} events for wallet {}",
+        events.len(),
+        wallet_address
+    );
+
     // Group events by token
-    let mut events_by_token: std::collections::HashMap<String, Vec<pnl_core::NewFinancialEvent>> = std::collections::HashMap::new();
+    let mut events_by_token: std::collections::HashMap<String, Vec<pnl_core::NewFinancialEvent>> =
+        std::collections::HashMap::new();
     for event in events {
-        events_by_token.entry(event.token_address.clone()).or_insert_with(Vec::new).push(event);
+        events_by_token
+            .entry(event.token_address.clone())
+            .or_insert_with(Vec::new)
+            .push(event);
     }
-    
+
     let total_events: usize = events_by_token.values().map(|events| events.len()).sum();
-    debug!("Grouped {} events across {} tokens", total_events, events_by_token.len());
-    
+    debug!(
+        "Grouped {} events across {} tokens",
+        total_events,
+        events_by_token.len()
+    );
+
     // Get current prices for unrealized P&L calculation using BirdEye client directly
     let token_addresses: Vec<String> = events_by_token.keys().cloned().collect();
     let current_prices = if !token_addresses.is_empty() {
-        match state.birdeye_client.get_current_prices(&token_addresses, chain).await {
+        match state
+            .birdeye_client
+            .get_current_prices(&token_addresses, chain)
+            .await
+        {
             Ok(birdeye_prices) => {
                 // Convert f64 prices to Decimal
                 let mut decimal_prices = HashMap::new();
                 for (token, price) in birdeye_prices {
-                    decimal_prices.insert(token, rust_decimal::Decimal::from_f64_retain(price).unwrap_or(rust_decimal::Decimal::ZERO));
+                    decimal_prices.insert(
+                        token,
+                        rust_decimal::Decimal::from_f64_retain(price)
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                    );
                 }
                 Some(decimal_prices)
-            },
+            }
             Err(e) => {
                 warn!("Failed to fetch current prices from BirdEye: {}", e);
                 None
@@ -110,18 +151,20 @@ pub async fn get_wallet_analysis_v2(
     } else {
         None
     };
-    
+
     // Calculate P&L using new engine with balance API integration (direct PortfolioPnLResult)
-    let balance_fetcher = if true { // Always enabled for hybrid mode
+    let balance_fetcher = if true {
+        // Always enabled for hybrid mode
         BalanceFetcher::new(
             state.config.birdeye.api_key.clone(),
-            Some(state.config.birdeye.api_base_url.clone())
+            Some(state.config.birdeye.api_base_url.clone()),
         )
     } else {
         BalanceFetcher::new("disabled".to_string(), None)
     };
-    
-    let pnl_engine = if true { // Always enabled for hybrid mode
+
+    let pnl_engine = if true {
+        // Always enabled for hybrid mode
         NewPnLEngine::with_balance_fetcher(wallet_address.clone(), balance_fetcher)
     } else {
         NewPnLEngine::new(wallet_address.clone())
@@ -130,14 +173,16 @@ pub async fn get_wallet_analysis_v2(
         .calculate_portfolio_pnl(events_by_token, current_prices)
         .await
         .map_err(|e| ApiError::InternalServerError(format!("P&L calculation error: {}", e)))?;
-    
+
     // Calculate copy trading metrics if requested
     let copy_trading_metrics = if include_copy_metrics {
         calculate_copy_trading_metrics(&portfolio_result)
     } else {
         CopyTradingMetrics {
-            trading_style: TradingStyle::Mixed { 
-                predominant_style: Box::new(TradingStyle::LongTerm { avg_hold_days: Decimal::ZERO }) 
+            trading_style: TradingStyle::Mixed {
+                predominant_style: Box::new(TradingStyle::LongTerm {
+                    avg_hold_days: Decimal::ZERO,
+                }),
             },
             consistency_score: Decimal::ZERO,
             risk_metrics: RiskMetrics {
@@ -164,9 +209,9 @@ pub async fn get_wallet_analysis_v2(
             },
         }
     };
-    
+
     let analysis_duration = start_time.elapsed();
-    
+
     let metadata = AnalysisMetadata {
         analyzed_at: Utc::now(),
         data_source: "Zerion+BirdEye Hybrid".to_string(),
@@ -176,16 +221,19 @@ pub async fn get_wallet_analysis_v2(
         algorithm_version: "new_pnl_engine_v1.0".to_string(),
         quality_score: calculate_quality_score(&portfolio_result),
     };
-    
+
     let analysis = WalletAnalysisV2 {
         wallet_address,
         portfolio_result,
         copy_trading_metrics,
         metadata,
     };
-    
-    info!("Completed v2 wallet analysis in {}ms", analysis_duration.as_millis());
-    
+
+    info!(
+        "Completed v2 wallet analysis in {}ms",
+        analysis_duration.as_millis()
+    );
+
     Ok(Json(SuccessResponse::new(analysis)))
 }
 
@@ -196,14 +244,15 @@ pub async fn get_wallet_trades_v2(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<SuccessResponse<TradeDetailsV2>>, ApiError> {
     info!("Getting trade details v2 for wallet: {}", wallet_address);
-    
+
     // First get the wallet analysis to extract trade data
-    let analysis_result = get_wallet_analysis_v2(State(state), Path(wallet_address), Query(params)).await?;
+    let analysis_result =
+        get_wallet_analysis_v2(State(state), Path(wallet_address), Query(params)).await?;
     let portfolio_result = &analysis_result.0.data.portfolio_result;
-    
+
     let mut matched_trades = Vec::new();
     let unmatched_sells = Vec::new();
-    
+
     // Extract and enhance all trades from all tokens
     for token_result in &portfolio_result.token_results {
         for trade in &token_result.matched_trades {
@@ -211,23 +260,26 @@ pub async fn get_wallet_trades_v2(
                 trade: trade.clone(),
                 performance_category: classify_trade_performance(&trade.realized_pnl_usd),
                 hold_time_category: classify_hold_time(trade.hold_time_seconds),
-                position_size_percentage: calculate_position_size_percentage(&trade, &portfolio_result),
+                position_size_percentage: calculate_position_size_percentage(
+                    &trade,
+                    &portfolio_result,
+                ),
                 timing_score: calculate_timing_score(&trade),
             };
             matched_trades.push(enhanced_trade);
         }
-        
+
         // Note: No unmatched sells anymore - all sells are matched against phantom buys if needed
     }
-    
+
     let statistics = calculate_trade_statistics(&matched_trades, &unmatched_sells);
-    
+
     let trade_details = TradeDetailsV2 {
         matched_trades,
         unmatched_sells,
         statistics,
     };
-    
+
     Ok(Json(SuccessResponse::new(trade_details)))
 }
 
@@ -238,27 +290,30 @@ pub async fn get_wallet_positions_v2(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<SuccessResponse<PositionsV2>>, ApiError> {
     info!("Getting positions v2 for wallet: {}", wallet_address);
-    
+
     // Get wallet analysis to extract position data
-    let analysis_result = get_wallet_analysis_v2(State(state), Path(wallet_address), Query(params)).await?;
+    let analysis_result =
+        get_wallet_analysis_v2(State(state), Path(wallet_address), Query(params)).await?;
     let portfolio_result = &analysis_result.0.data.portfolio_result;
-    
+
     let mut enhanced_positions = Vec::new();
     let mut total_portfolio_value = Decimal::ZERO;
-    
+
     // Extract and enhance all positions from all tokens
     for token_result in &portfolio_result.token_results {
         if let Some(ref position) = token_result.remaining_position {
             // Calculate current market value (would need current prices)
-            let current_value = position.total_cost_basis_usd + token_result.total_unrealized_pnl_usd;
+            let current_value =
+                position.total_cost_basis_usd + token_result.total_unrealized_pnl_usd;
             total_portfolio_value += current_value;
-            
+
             let enhanced_position = EnhancedPosition {
                 position: position.clone(),
                 current_value_usd: current_value,
                 unrealized_pnl_usd: token_result.total_unrealized_pnl_usd,
                 unrealized_pnl_percentage: if position.total_cost_basis_usd > Decimal::ZERO {
-                    (token_result.total_unrealized_pnl_usd / position.total_cost_basis_usd) * Decimal::from(100)
+                    (token_result.total_unrealized_pnl_usd / position.total_cost_basis_usd)
+                        * Decimal::from(100)
                 } else {
                     Decimal::ZERO
                 },
@@ -269,24 +324,26 @@ pub async fn get_wallet_positions_v2(
             enhanced_positions.push(enhanced_position);
         }
     }
-    
+
     // Calculate portfolio percentages and risk levels
     for position in &mut enhanced_positions {
         if total_portfolio_value > Decimal::ZERO {
-            position.portfolio_percentage = (position.current_value_usd / total_portfolio_value) * Decimal::from(100);
+            position.portfolio_percentage =
+                (position.current_value_usd / total_portfolio_value) * Decimal::from(100);
             position.risk_level = classify_position_risk(position.portfolio_percentage);
         }
     }
-    
+
     let allocation = calculate_portfolio_allocation(&enhanced_positions);
-    let management_metrics = calculate_position_management_metrics(&enhanced_positions, &portfolio_result);
-    
+    let management_metrics =
+        calculate_position_management_metrics(&enhanced_positions, &portfolio_result);
+
     let positions = PositionsV2 {
         positions: enhanced_positions,
         allocation,
         management_metrics,
     };
-    
+
     Ok(Json(SuccessResponse::new(positions)))
 }
 
@@ -295,21 +352,28 @@ pub async fn submit_batch_analysis_v2(
     State(_state): State<AppState>,
     Json(request): Json<BatchAnalysisV2Request>,
 ) -> Result<Json<SuccessResponse<Value>>, ApiError> {
-    info!("Submitting batch analysis v2 for {} wallets", request.wallet_addresses.len());
-    
+    info!(
+        "Submitting batch analysis v2 for {} wallets",
+        request.wallet_addresses.len()
+    );
+
     if request.wallet_addresses.is_empty() {
-        return Err(ApiError::BadRequest("No wallet addresses provided".to_string()));
+        return Err(ApiError::BadRequest(
+            "No wallet addresses provided".to_string(),
+        ));
     }
-    
+
     if request.wallet_addresses.len() > 100 {
-        return Err(ApiError::BadRequest("Maximum 100 wallets per batch".to_string()));
+        return Err(ApiError::BadRequest(
+            "Maximum 100 wallets per batch".to_string(),
+        ));
     }
-    
+
     let job_id = Uuid::new_v4();
-    
+
     // TODO: Implement actual batch processing with enhanced features
     // For now, return a job ID that can be used to retrieve results
-    
+
     Ok(Json(SuccessResponse::new(json!({
         "job_id": job_id,
         "status": "pending",
@@ -327,32 +391,39 @@ pub async fn submit_batch_analysis_v2(
 fn calculate_copy_trading_metrics(portfolio_result: &PortfolioPnLResult) -> CopyTradingMetrics {
     // Analyze trading style based on average hold times
     let trading_style = if portfolio_result.avg_hold_time_minutes < Decimal::from(60) {
-        TradingStyle::Scalper { avg_hold_minutes: portfolio_result.avg_hold_time_minutes }
+        TradingStyle::Scalper {
+            avg_hold_minutes: portfolio_result.avg_hold_time_minutes,
+        }
     } else if portfolio_result.avg_hold_time_minutes < Decimal::from(24 * 60) {
-        TradingStyle::SwingTrader { avg_hold_hours: portfolio_result.avg_hold_time_minutes / Decimal::from(60) }
+        TradingStyle::SwingTrader {
+            avg_hold_hours: portfolio_result.avg_hold_time_minutes / Decimal::from(60),
+        }
     } else {
-        TradingStyle::LongTerm { avg_hold_days: portfolio_result.avg_hold_time_minutes / Decimal::from(24 * 60) }
+        TradingStyle::LongTerm {
+            avg_hold_days: portfolio_result.avg_hold_time_minutes / Decimal::from(24 * 60),
+        }
     };
-    
+
     // Calculate risk metrics (simplified)
     let risk_metrics = RiskMetrics {
         max_position_percentage: Decimal::from(25), // TODO: Calculate from actual positions
-        diversification_score: Decimal::from(portfolio_result.tokens_analyzed * 10).min(Decimal::from(100)),
+        diversification_score: Decimal::from(portfolio_result.tokens_analyzed * 10)
+            .min(Decimal::from(100)),
         max_consecutive_losses: 0, // TODO: Calculate from trade sequence
         avg_loss_per_trade: Decimal::ZERO, // TODO: Calculate from losing trades
-        max_win_streak: 0, // TODO: Calculate from trade sequence
+        max_win_streak: 0,         // TODO: Calculate from trade sequence
         risk_adjusted_return: Decimal::ZERO, // TODO: Calculate Sharpe-like ratio
     };
-    
+
     // Position patterns (simplified)
     let position_patterns = PositionPatterns {
         avg_hold_time_minutes: portfolio_result.avg_hold_time_minutes,
         position_size_consistency: Decimal::ZERO, // TODO: Calculate from position sizes
-        winner_hold_ratio: Decimal::ZERO, // TODO: Calculate hold time ratio
+        winner_hold_ratio: Decimal::ZERO,         // TODO: Calculate hold time ratio
         partial_exit_frequency: rust_decimal_macros::dec!(0.1), // TODO: Calculate from partial sales
-        dca_frequency: Decimal::ZERO, // TODO: Calculate DCA patterns
+        dca_frequency: Decimal::ZERO,                           // TODO: Calculate DCA patterns
     };
-    
+
     // Profit distribution (simplified)
     let profit_distribution = ProfitDistribution {
         high_profit_trades_pct: Decimal::ZERO, // TODO: Calculate high profit percentage
@@ -365,7 +436,7 @@ fn calculate_copy_trading_metrics(portfolio_result: &PortfolioPnLResult) -> Copy
             Decimal::ZERO
         },
     };
-    
+
     CopyTradingMetrics {
         trading_style,
         consistency_score: Decimal::ZERO, // TODO: Calculate consistency score
@@ -377,32 +448,32 @@ fn calculate_copy_trading_metrics(portfolio_result: &PortfolioPnLResult) -> Copy
 
 fn calculate_quality_score(portfolio_result: &PortfolioPnLResult) -> Decimal {
     let mut score = Decimal::from(50); // Base score
-    
+
     // Bonus for more trades
     if portfolio_result.total_trades >= 10 {
         score += Decimal::from(20);
     } else if portfolio_result.total_trades >= 5 {
         score += Decimal::from(10);
     }
-    
+
     // Bonus for profitability
     if portfolio_result.total_pnl_usd > Decimal::ZERO {
         score += Decimal::from(15);
     }
-    
+
     // Bonus for good win rate
     if portfolio_result.overall_win_rate_percentage > Decimal::from(60) {
         score += Decimal::from(15);
     } else if portfolio_result.overall_win_rate_percentage > Decimal::from(40) {
         score += Decimal::from(10);
     }
-    
+
     score.min(Decimal::from(100)).max(Decimal::from(0))
 }
 
 fn classify_trade_performance(pnl: &Decimal) -> TradePerformance {
     let pnl_pct = *pnl; // Assuming this is already in percentage terms
-    
+
     if pnl_pct > Decimal::from(50) {
         TradePerformance::HighlyProfitable
     } else if pnl_pct > Decimal::from(10) {
@@ -422,7 +493,7 @@ fn classify_trade_performance(pnl: &Decimal) -> TradePerformance {
 
 fn classify_hold_time(hold_time_seconds: i64) -> HoldTimeCategory {
     let minutes = hold_time_seconds / 60;
-    
+
     if minutes < 60 {
         HoldTimeCategory::Scalp
     } else if minutes < 24 * 60 {
@@ -452,8 +523,8 @@ fn classify_position_risk(percentage: Decimal) -> PositionRisk {
 // These are simplified stubs for compilation
 
 fn calculate_position_size_percentage(
-    _trade: &pnl_core::MatchedTrade, 
-    _portfolio: &PortfolioPnLResult
+    _trade: &pnl_core::MatchedTrade,
+    _portfolio: &PortfolioPnLResult,
 ) -> Decimal {
     Decimal::from(5) // Simplified
 }
@@ -462,10 +533,9 @@ fn calculate_timing_score(_trade: &pnl_core::MatchedTrade) -> Decimal {
     Decimal::from(75) // Simplified
 }
 
-
 fn calculate_trade_statistics(
-    _matched_trades: &[EnhancedMatchedTrade], 
-    _unmatched_sells: &[EnhancedUnmatchedSell]
+    _matched_trades: &[EnhancedMatchedTrade],
+    _unmatched_sells: &[EnhancedUnmatchedSell],
 ) -> TradeStatistics {
     // Simplified implementation
     TradeStatistics {
@@ -486,7 +556,7 @@ fn calculate_trade_statistics(
 
 fn calculate_portfolio_allocation(positions: &[EnhancedPosition]) -> PortfolioAllocation {
     let position_count = positions.len() as u32;
-    
+
     if position_count == 0 {
         return PortfolioAllocation {
             position_count: 0,
@@ -496,16 +566,14 @@ fn calculate_portfolio_allocation(positions: &[EnhancedPosition]) -> PortfolioAl
             concentration_score: Decimal::ZERO,
         };
     }
-    
-    let percentages: Vec<Decimal> = positions.iter()
-        .map(|p| p.portfolio_percentage)
-        .collect();
-    
+
+    let percentages: Vec<Decimal> = positions.iter().map(|p| p.portfolio_percentage).collect();
+
     let largest = percentages.iter().copied().max().unwrap_or(Decimal::ZERO);
     let smallest = percentages.iter().copied().min().unwrap_or(Decimal::ZERO);
     let sum: Decimal = percentages.iter().sum();
     let avg = sum / Decimal::from(position_count);
-    
+
     // Concentration score based on largest position
     let concentration_score = if largest > Decimal::from(30) {
         Decimal::from(20) // High concentration
@@ -514,7 +582,7 @@ fn calculate_portfolio_allocation(positions: &[EnhancedPosition]) -> PortfolioAl
     } else {
         Decimal::from(80) // Well diversified
     };
-    
+
     PortfolioAllocation {
         position_count,
         largest_position_pct: largest,
@@ -525,14 +593,15 @@ fn calculate_portfolio_allocation(positions: &[EnhancedPosition]) -> PortfolioAl
 }
 
 fn calculate_position_management_metrics(
-    _positions: &[EnhancedPosition], 
-    portfolio: &PortfolioPnLResult
+    _positions: &[EnhancedPosition],
+    portfolio: &PortfolioPnLResult,
 ) -> PositionManagementMetrics {
     // Simplified implementation based on available portfolio data
     PositionManagementMetrics {
         avg_hold_time_days: portfolio.avg_hold_time_minutes / Decimal::from(24 * 60),
         sizing_consistency_score: Decimal::from(75), // TODO: Calculate actual consistency
-        diversification_score: Decimal::from(portfolio.tokens_analyzed * 15).min(Decimal::from(100)),
+        diversification_score: Decimal::from(portfolio.tokens_analyzed * 15)
+            .min(Decimal::from(100)),
         risk_management_score: if portfolio.overall_win_rate_percentage > Decimal::from(50) {
             Decimal::from(80)
         } else {

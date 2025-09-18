@@ -1,12 +1,14 @@
-use sqlx::{PgPool, Row};
-use sqlx::postgres::PgPoolOptions;
-use serde_json;
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
+use serde_json;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, Row};
 use std::time::Duration;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
-use crate::{PersistenceError, Result, BatchJob, JobStatus, TokenAnalysisJob, TokenAnalysisJobStats};
+use crate::{
+    BatchJob, JobStatus, PersistenceError, Result, TokenAnalysisJob, TokenAnalysisJobStats,
+};
 
 /// PostgreSQL client for persistent storage of P&L results and batch jobs
 #[derive(Debug, Clone)]
@@ -19,14 +21,16 @@ impl PostgresClient {
     pub async fn new(database_url: &str) -> Result<Self> {
         // Configure connection pool with production settings
         let pool = PgPoolOptions::new()
-            .max_connections(20)              // Limit per app instance
-            .min_connections(5)               // Keep warm connections
-            .acquire_timeout(Duration::from_secs(30))  // How long to wait for a connection
-            .idle_timeout(Duration::from_secs(600))    // Close idle connections after 10 minutes
-            .max_lifetime(Duration::from_secs(1800))   // Force refresh connections after 30 minutes
+            .max_connections(20) // Limit per app instance
+            .min_connections(5) // Keep warm connections
+            .acquire_timeout(Duration::from_secs(30)) // How long to wait for a connection
+            .idle_timeout(Duration::from_secs(600)) // Close idle connections after 10 minutes
+            .max_lifetime(Duration::from_secs(1800)) // Force refresh connections after 30 minutes
             .connect(database_url)
             .await
-            .map_err(|e| PersistenceError::PoolCreation(format!("PostgreSQL connection error: {}", e)))?;
+            .map_err(|e| {
+                PersistenceError::PoolCreation(format!("PostgreSQL connection error: {}", e))
+            })?;
 
         info!("PostgreSQL pool initialized: max_connections=20, min_connections=5, acquire_timeout=30s");
         Ok(Self { pool })
@@ -52,7 +56,8 @@ impl PostgresClient {
         chain: &str,
         portfolio_result: &pnl_core::PortfolioPnLResult,
     ) -> Result<()> {
-        self.store_pnl_result_with_source(wallet_address, chain, portfolio_result, "continuous").await
+        self.store_pnl_result_with_source(wallet_address, chain, portfolio_result, "continuous")
+            .await
     }
 
     /// Store a P&L result for a wallet with specific analysis source
@@ -64,21 +69,41 @@ impl PostgresClient {
         analysis_source: &str,
     ) -> Result<()> {
         // Store with chain field for multichain support
-        let portfolio_json = serde_json::to_string(portfolio_result)
-            .map_err(PersistenceError::Serialization)?;
+        let portfolio_json =
+            serde_json::to_string(portfolio_result).map_err(PersistenceError::Serialization)?;
 
         // Extract key metrics for fast queries from rich format
-        let total_pnl_usd = portfolio_result.total_pnl_usd.to_string().parse::<f64>().unwrap_or(0.0);
-        let realized_pnl_usd = portfolio_result.total_realized_pnl_usd.to_string().parse::<f64>().unwrap_or(0.0);
-        let unrealized_pnl_usd = portfolio_result.total_unrealized_pnl_usd.to_string().parse::<f64>().unwrap_or(0.0);
+        let total_pnl_usd = portfolio_result
+            .total_pnl_usd
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+        let realized_pnl_usd = portfolio_result
+            .total_realized_pnl_usd
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+        let unrealized_pnl_usd = portfolio_result
+            .total_unrealized_pnl_usd
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
         let total_trades = portfolio_result.total_trades as i32;
-        let win_rate = portfolio_result.overall_win_rate_percentage.to_string().parse::<f64>().unwrap_or(0.0);
+        let win_rate = portfolio_result
+            .overall_win_rate_percentage
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
         let tokens_analyzed = portfolio_result.tokens_analyzed as i32;
-        let avg_hold_time = portfolio_result.avg_hold_time_minutes.to_string().parse::<f64>().unwrap_or(0.0);
+        let avg_hold_time = portfolio_result
+            .avg_hold_time_minutes
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
 
         // Calculate advanced filtering metrics
         let unique_tokens_count = portfolio_result.token_results.len() as i32;
-        
+
         // Calculate active days from all trades
         let mut trading_days = std::collections::HashSet::new();
         for token_result in &portfolio_result.token_results {
@@ -95,10 +120,12 @@ impl PostgresClient {
             .bind(chain)
             .execute(&self.pool)
             .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL error clearing old data: {}", e)
-            ))))?;
+            .map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL error clearing old data: {}", e),
+                )))
+            })?;
 
         // Insert new rich format data
         sqlx::query(
@@ -130,8 +157,10 @@ impl PostgresClient {
             format!("PostgreSQL error: {}", e)
         ))))?;
 
-        debug!("Stored rich P&L portfolio result for wallet {} with {} tokens", 
-               wallet_address, portfolio_result.tokens_analyzed);
+        debug!(
+            "Stored rich P&L portfolio result for wallet {} with {} tokens",
+            wallet_address, portfolio_result.tokens_analyzed
+        );
         Ok(())
     }
 
@@ -147,16 +176,18 @@ impl PostgresClient {
                    unique_tokens_count, active_days_count
             FROM pnl_results 
             WHERE wallet_address = $1 AND chain = $2
-            "#
+            "#,
         )
         .bind(wallet_address)
         .bind(chain)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error: {}", e)
-        ))))?;
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
 
         match row {
             Some(row) => {
@@ -169,8 +200,9 @@ impl PostgresClient {
                 let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
                 let active_days_count: Option<i32> = row.get("active_days_count");
 
-                let portfolio_result: pnl_core::PortfolioPnLResult = serde_json::from_str(&portfolio_json)
-                    .map_err(PersistenceError::Serialization)?;
+                let portfolio_result: pnl_core::PortfolioPnLResult =
+                    serde_json::from_str(&portfolio_json)
+                        .map_err(PersistenceError::Serialization)?;
 
                 let stored_result = crate::StoredPortfolioPnLResult {
                     wallet_address,
@@ -210,18 +242,16 @@ impl PostgresClient {
     ) -> Result<(Vec<crate::StoredPortfolioPnLResult>, usize)> {
         // Get total count with optional chain filtering
         let count_query = if let Some(chain) = chain_filter {
-            sqlx::query("SELECT COUNT(*) as count FROM pnl_results WHERE chain = $1")
-                .bind(chain)
+            sqlx::query("SELECT COUNT(*) as count FROM pnl_results WHERE chain = $1").bind(chain)
         } else {
             sqlx::query("SELECT COUNT(*) as count FROM pnl_results")
         };
-        let count_row = count_query
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+        let count_row = count_query.fetch_one(&self.pool).await.map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                format!("PostgreSQL error: {}", e)
-            ))))?;
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
 
         let total_count: i64 = count_row.get("count");
 
@@ -257,13 +287,12 @@ impl PostgresClient {
             .bind(limit as i64)
             .bind(offset as i64)
         };
-        let rows = rows
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error: {}", e)
-        ))))?;
+        let rows = rows.fetch_all(&self.pool).await.map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -291,13 +320,20 @@ impl PostgresClient {
                     results.push(stored_result);
                 }
                 Err(e) => {
-                    warn!("Failed to deserialize portfolio P&L result for {}: {}", 
-                          wallet_address, e);
+                    warn!(
+                        "Failed to deserialize portfolio P&L result for {}: {}",
+                        wallet_address, e
+                    );
                 }
             }
         }
 
-        debug!("Retrieved {} rich P&L portfolio results (offset: {}, limit: {})", results.len(), offset, limit);
+        debug!(
+            "Retrieved {} rich P&L portfolio results (offset: {}, limit: {})",
+            results.len(),
+            offset,
+            limit
+        );
         Ok((results, total_count as usize))
     }
 
@@ -309,8 +345,8 @@ impl PostgresClient {
     pub async fn store_batch_job(&self, job: &BatchJob) -> Result<()> {
         let wallet_addresses_json = serde_json::to_string(&job.wallet_addresses)
             .map_err(PersistenceError::Serialization)?;
-        let filters_json = serde_json::to_string(&job.filters)
-            .map_err(PersistenceError::Serialization)?;
+        let filters_json =
+            serde_json::to_string(&job.filters).map_err(PersistenceError::Serialization)?;
         let status_str = format!("{:?}", job.status);
 
         sqlx::query(
@@ -378,8 +414,8 @@ impl PostgresClient {
 
                 let wallet_addresses: Vec<String> = serde_json::from_str(&wallet_addresses_json)
                     .map_err(PersistenceError::Serialization)?;
-                let filters: serde_json::Value = serde_json::from_str(&filters_json)
-                    .map_err(PersistenceError::Serialization)?;
+                let filters: serde_json::Value =
+                    serde_json::from_str(&filters_json).map_err(PersistenceError::Serialization)?;
 
                 let status = match status_str.as_str() {
                     "Pending" => JobStatus::Pending,
@@ -391,11 +427,12 @@ impl PostgresClient {
                 };
 
                 let job = BatchJob {
-                    id: Uuid::parse_str(&id)
-                        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    id: Uuid::parse_str(&id).map_err(|e| {
+                        PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
-                            format!("UUID parsing error: {}", e)
-                        ))))?,
+                            format!("UUID parsing error: {}", e),
+                        )))
+                    })?,
                     wallet_addresses,
                     chain,
                     status,
@@ -412,7 +449,7 @@ impl PostgresClient {
         }
     }
 
-    // Note: store_batch_job_results method removed - batch results are now stored 
+    // Note: store_batch_job_results method removed - batch results are now stored
     // directly in pnl_results table, eliminating duplicate storage
 
     // Note: get_batch_job_results method removed - batch results are now fetched
@@ -424,16 +461,16 @@ impl PostgresClient {
 
     /// Store a token analysis job
     pub async fn store_token_analysis_job(&self, job: &TokenAnalysisJob) -> Result<()> {
-        let token_addresses_json = serde_json::to_string(&job.token_addresses)
-            .map_err(PersistenceError::Serialization)?;
-        let filters_json = serde_json::to_string(&job.filters)
-            .map_err(PersistenceError::Serialization)?;
+        let token_addresses_json =
+            serde_json::to_string(&job.token_addresses).map_err(PersistenceError::Serialization)?;
+        let filters_json =
+            serde_json::to_string(&job.filters).map_err(PersistenceError::Serialization)?;
         let discovered_wallets_json = serde_json::to_string(&job.discovered_wallets)
             .map_err(PersistenceError::Serialization)?;
         let analyzed_wallets_json = serde_json::to_string(&job.analyzed_wallets)
             .map_err(PersistenceError::Serialization)?;
-        let failed_wallets_json = serde_json::to_string(&job.failed_wallets)
-            .map_err(PersistenceError::Serialization)?;
+        let failed_wallets_json =
+            serde_json::to_string(&job.failed_wallets).map_err(PersistenceError::Serialization)?;
         let status_str = job.status.to_string();
 
         sqlx::query(
@@ -490,15 +527,17 @@ impl PostgresClient {
                    filters_json, discovered_wallets, analyzed_wallets, failed_wallets
             FROM token_analysis_jobs 
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(job_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error: {}", e)
-        ))))?;
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
 
         match row {
             Some(row) => {
@@ -506,10 +545,12 @@ impl PostgresClient {
                     .map_err(PersistenceError::Serialization)?;
                 let filters: serde_json::Value = serde_json::from_str(row.get("filters_json"))
                     .map_err(PersistenceError::Serialization)?;
-                let discovered_wallets: Vec<String> = serde_json::from_str(row.get("discovered_wallets"))
-                    .map_err(PersistenceError::Serialization)?;
-                let analyzed_wallets: Vec<String> = serde_json::from_str(row.get("analyzed_wallets"))
-                    .map_err(PersistenceError::Serialization)?;
+                let discovered_wallets: Vec<String> =
+                    serde_json::from_str(row.get("discovered_wallets"))
+                        .map_err(PersistenceError::Serialization)?;
+                let analyzed_wallets: Vec<String> =
+                    serde_json::from_str(row.get("analyzed_wallets"))
+                        .map_err(PersistenceError::Serialization)?;
                 let failed_wallets: Vec<String> = serde_json::from_str(row.get("failed_wallets"))
                     .map_err(PersistenceError::Serialization)?;
 
@@ -525,11 +566,12 @@ impl PostgresClient {
                 };
 
                 let id_str: String = row.get("id");
-                let id = uuid::Uuid::parse_str(&id_str)
-                    .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                let id = uuid::Uuid::parse_str(&id_str).map_err(|e| {
+                    PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Invalid UUID: {}", e)
-                    ))))?;
+                        format!("Invalid UUID: {}", e),
+                    )))
+                })?;
 
                 let job = TokenAnalysisJob {
                     id,
@@ -552,15 +594,21 @@ impl PostgresClient {
     }
 
     /// Get all token analysis jobs with pagination
-    pub async fn get_all_token_analysis_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<TokenAnalysisJob>, usize)> {
+    pub async fn get_all_token_analysis_jobs(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<TokenAnalysisJob>, usize)> {
         // Get total count
         let count_row = sqlx::query("SELECT COUNT(*) as count FROM token_analysis_jobs")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL error: {}", e)
-            ))))?;
+            .map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL error: {}", e),
+                )))
+            })?;
         let total_count: i64 = count_row.get("count");
 
         // Get jobs with pagination, ordered by created_at DESC (newest first)
@@ -571,16 +619,18 @@ impl PostgresClient {
             FROM token_analysis_jobs 
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
-            "#
+            "#,
         )
         .bind(limit as i64)
         .bind(offset as i64)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error: {}", e)
-        ))))?;
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
 
         let mut jobs = Vec::new();
         for row in rows {
@@ -588,8 +638,9 @@ impl PostgresClient {
                 .map_err(PersistenceError::Serialization)?;
             let filters: serde_json::Value = serde_json::from_str(row.get("filters_json"))
                 .map_err(PersistenceError::Serialization)?;
-            let discovered_wallets: Vec<String> = serde_json::from_str(row.get("discovered_wallets"))
-                .map_err(PersistenceError::Serialization)?;
+            let discovered_wallets: Vec<String> =
+                serde_json::from_str(row.get("discovered_wallets"))
+                    .map_err(PersistenceError::Serialization)?;
             let analyzed_wallets: Vec<String> = serde_json::from_str(row.get("analyzed_wallets"))
                 .map_err(PersistenceError::Serialization)?;
             let failed_wallets: Vec<String> = serde_json::from_str(row.get("failed_wallets"))
@@ -607,11 +658,12 @@ impl PostgresClient {
             };
 
             let id_str: String = row.get("id");
-            let id = uuid::Uuid::parse_str(&id_str)
-                .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+            let id = uuid::Uuid::parse_str(&id_str).map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("Invalid UUID: {}", e)
-                ))))?;
+                    format!("Invalid UUID: {}", e),
+                )))
+            })?;
 
             let job = TokenAnalysisJob {
                 id,
@@ -630,7 +682,12 @@ impl PostgresClient {
             jobs.push(job);
         }
 
-        debug!("Retrieved {} token analysis jobs (offset: {}, limit: {})", jobs.len(), offset, limit);
+        debug!(
+            "Retrieved {} token analysis jobs (offset: {}, limit: {})",
+            jobs.len(),
+            offset,
+            limit
+        );
         Ok((jobs, total_count as usize))
     }
 
@@ -646,14 +703,16 @@ impl PostgresClient {
                 COUNT(CASE WHEN status = 'Pending' THEN 1 END) as pending_jobs,
                 COUNT(CASE WHEN status = 'Cancelled' THEN 1 END) as cancelled_jobs
             FROM token_analysis_jobs
-            "#
+            "#,
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error: {}", e)
-        ))))?;
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
 
         Ok(TokenAnalysisJobStats {
             total_jobs: row.get::<i64, _>("total_jobs") as u64,
@@ -674,10 +733,12 @@ impl PostgresClient {
         sqlx::query("SELECT 1 as test")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL health check failed: {}", e)
-            ))))?;
+            .map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL health check failed: {}", e),
+                )))
+            })?;
 
         Ok(())
     }
@@ -728,7 +789,10 @@ impl PostgresClient {
             format!("PostgreSQL error: {}", e)
         ))))?;
 
-        debug!("Stored legacy P&L result for wallet {} token {}", wallet_address, token_symbol);
+        debug!(
+            "Stored legacy P&L result for wallet {} token {}",
+            wallet_address, token_symbol
+        );
         Ok(())
     }
 
@@ -737,19 +801,23 @@ impl PostgresClient {
         let pnl_count = sqlx::query("SELECT COUNT(*) as count FROM pnl_results")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL error: {}", e)
-            ))))?;
+            .map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL error: {}", e),
+                )))
+            })?;
         let pnl_count: i64 = pnl_count.get("count");
 
         let batch_count = sqlx::query("SELECT COUNT(*) as count FROM batch_jobs")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL error: {}", e)
-            ))))?;
+            .map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL error: {}", e),
+                )))
+            })?;
         let batch_count: i64 = batch_count.get("count");
 
         Ok((pnl_count as usize, batch_count as usize))
@@ -767,20 +835,24 @@ impl PostgresClient {
             UPDATE pnl_results 
             SET is_favorited = $1
             WHERE wallet_address = $2 AND chain = $3
-            "#
+            "#,
         )
         .bind(is_favorited)
         .bind(wallet_address)
         .bind(chain)
         .execute(&self.pool)
         .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error updating favorite status: {}", e)
-        ))))?;
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error updating favorite status: {}", e),
+            )))
+        })?;
 
-        debug!("Updated favorite status for wallet {} on chain {} to {}", 
-               wallet_address, chain, is_favorited);
+        debug!(
+            "Updated favorite status for wallet {} on chain {} to {}",
+            wallet_address, chain, is_favorited
+        );
         Ok(())
     }
 
@@ -796,20 +868,24 @@ impl PostgresClient {
             UPDATE pnl_results 
             SET is_archived = $1
             WHERE wallet_address = $2 AND chain = $3
-            "#
+            "#,
         )
         .bind(is_archived)
         .bind(wallet_address)
         .bind(chain)
         .execute(&self.pool)
         .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error updating archive status: {}", e)
-        ))))?;
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error updating archive status: {}", e),
+            )))
+        })?;
 
-        debug!("Updated archive status for wallet {} on chain {} to {}", 
-               wallet_address, chain, is_archived);
+        debug!(
+            "Updated archive status for wallet {} on chain {} to {}",
+            wallet_address, chain, is_archived
+        );
         Ok(())
     }
 
@@ -824,13 +900,17 @@ impl PostgresClient {
                 format!("PostgreSQL error adding unique_tokens_count column: {}", e)
             ))))?;
 
-        sqlx::query("ALTER TABLE pnl_results ADD COLUMN IF NOT EXISTS active_days_count INTEGER DEFAULT 0")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+        sqlx::query(
+            "ALTER TABLE pnl_results ADD COLUMN IF NOT EXISTS active_days_count INTEGER DEFAULT 0",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                format!("PostgreSQL error adding active_days_count column: {}", e)
-            ))))?;
+                format!("PostgreSQL error adding active_days_count column: {}", e),
+            )))
+        })?;
 
         // Create indexes for performance
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_pnl_results_unique_tokens ON pnl_results(unique_tokens_count)")
@@ -856,40 +936,44 @@ impl PostgresClient {
     /// Backfill metrics for existing P&L results that have zero values
     pub async fn backfill_advanced_filtering_metrics(&self) -> Result<()> {
         info!("Starting backfill of advanced filtering metrics for existing records");
-        
+
         // Find records with zero values for the new metrics
         let rows = sqlx::query(
             r#"
             SELECT wallet_address, chain, portfolio_json 
             FROM pnl_results 
             WHERE (unique_tokens_count = 0 OR active_days_count = 0) AND portfolio_json IS NOT NULL
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("PostgreSQL error: {}", e)
-        ))))?;
+        .map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
 
         let mut updated_count = 0;
-        
+
         for row in rows {
             let wallet_address: String = row.get("wallet_address");
             let chain: String = row.get("chain");
             let portfolio_json_str: String = row.get("portfolio_json");
             let portfolio_json: serde_json::Value = serde_json::from_str(&portfolio_json_str)
-                .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("JSON parsing error: {}", e)
-                ))))?;
+                .map_err(|e| {
+                    PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("JSON parsing error: {}", e),
+                    )))
+                })?;
 
             // Parse the portfolio result to calculate metrics
             match serde_json::from_value::<pnl_core::PortfolioPnLResult>(portfolio_json) {
                 Ok(portfolio_result) => {
                     // Calculate metrics from portfolio data
                     let unique_tokens_count = portfolio_result.token_results.len() as i32;
-                    
+
                     let mut trading_days = std::collections::HashSet::new();
                     for token_result in &portfolio_result.token_results {
                         for trade in &token_result.matched_trades {
@@ -905,7 +989,7 @@ impl PostgresClient {
                         UPDATE pnl_results 
                         SET unique_tokens_count = $1, active_days_count = $2
                         WHERE wallet_address = $3 AND chain = $4
-                        "#
+                        "#,
                     )
                     .bind(unique_tokens_count)
                     .bind(active_days_count)
@@ -913,24 +997,32 @@ impl PostgresClient {
                     .bind(&chain)
                     .execute(&self.pool)
                     .await
-                    .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("PostgreSQL error updating metrics: {}", e)
-                    ))))?;
+                    .map_err(|e| {
+                        PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("PostgreSQL error updating metrics: {}", e),
+                        )))
+                    })?;
 
                     updated_count += 1;
-                    
+
                     if updated_count % 100 == 0 {
                         info!("Backfilled metrics for {} records so far...", updated_count);
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to parse portfolio JSON for wallet {} on {}: {}", wallet_address, chain, e);
+                    warn!(
+                        "Failed to parse portfolio JSON for wallet {} on {}: {}",
+                        wallet_address, chain, e
+                    );
                 }
             }
         }
 
-        info!("Backfill completed: updated metrics for {} existing records", updated_count);
+        info!(
+            "Backfill completed: updated metrics for {} existing records",
+            updated_count
+        );
         Ok(())
     }
 
@@ -946,7 +1038,8 @@ impl PostgresClient {
     ) -> Result<(Vec<crate::StoredPortfolioPnLResult>, usize)> {
         // Build WHERE clauses
         let mut where_clauses = Vec::new();
-        let mut bind_params: Vec<Box<dyn sqlx::Encode<'_, sqlx::Postgres> + Send + Sync>> = Vec::new();
+        let mut bind_params: Vec<Box<dyn sqlx::Encode<'_, sqlx::Postgres> + Send + Sync>> =
+            Vec::new();
         let mut param_count = 0;
 
         if let Some(chain) = chain_filter {
@@ -982,7 +1075,7 @@ impl PostgresClient {
         // Get total count with filtering
         let count_query = format!("SELECT COUNT(*) as count FROM pnl_results {}", where_clause);
         let mut count_query_builder = sqlx::query(&count_query);
-        
+
         // Bind parameters for count query
         if let Some(chain) = chain_filter {
             count_query_builder = count_query_builder.bind(chain);
@@ -1000,10 +1093,12 @@ impl PostgresClient {
         let count_row = count_query_builder
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL error: {}", e)
-            ))))?;
+            .map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL error: {}", e),
+                )))
+            })?;
 
         let total_count: i64 = count_row.get("count");
 
@@ -1027,7 +1122,7 @@ impl PostgresClient {
         );
 
         let mut results_query_builder = sqlx::query(&results_query);
-        
+
         // Bind parameters for results query
         if let Some(chain) = chain_filter {
             results_query_builder = results_query_builder.bind(chain);
@@ -1041,17 +1136,19 @@ impl PostgresClient {
         if let Some(analysis_source) = analysis_source_filter {
             results_query_builder = results_query_builder.bind(analysis_source);
         }
-        
+
         // Add limit and offset
         results_query_builder = results_query_builder.bind(limit as i64).bind(offset as i64);
 
         let rows = results_query_builder
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL error: {}", e)
-            ))))?;
+            .map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL error: {}", e),
+                )))
+            })?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -1080,13 +1177,20 @@ impl PostgresClient {
                     results.push(stored_result);
                 }
                 Err(e) => {
-                    warn!("Failed to parse portfolio JSON for wallet {}: {}", wallet_address, e);
+                    warn!(
+                        "Failed to parse portfolio JSON for wallet {}: {}",
+                        wallet_address, e
+                    );
                     continue;
                 }
             }
         }
 
-        info!("Retrieved {} P&L results with advanced filtering (total: {})", results.len(), total_count);
+        info!(
+            "Retrieved {} P&L results with advanced filtering (total: {})",
+            results.len(),
+            total_count
+        );
         Ok((results, total_count as usize))
     }
 
@@ -1100,10 +1204,11 @@ impl PostgresClient {
         self.get_all_pnl_results_with_filters(
             offset,
             limit,
-            None,     // chain_filter
-            None,     // min_unique_tokens
-            None,     // min_active_days
+            None, // chain_filter
+            None, // min_unique_tokens
+            None, // min_active_days
             Some(analysis_source),
-        ).await
+        )
+        .await
     }
 }

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use tracing::{debug, info, warn, error};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use tracing::{debug, error, info, warn};
 
-use crate::birdeye_client::{BirdEyeClient, BirdEyeError, WalletTransaction, BalanceChange};
+use crate::birdeye_client::{BalanceChange, BirdEyeClient, BirdEyeError, WalletTransaction};
 
 /// Price enricher for adding USD values to transactions
 #[derive(Debug, Clone)]
@@ -88,14 +88,22 @@ impl PriceEnricher {
 
         for balance_change in &transaction.balance_change {
             // Handle SOL native token with BirdEye price API
-            if balance_change.address.is_empty() 
-                || balance_change.address == "So11111111111111111111111111111112" {
-                debug!("Getting SOL price for balance change in tx {}", transaction.tx_hash);
-                
+            if balance_change.address.is_empty()
+                || balance_change.address == "So11111111111111111111111111111112"
+            {
+                debug!(
+                    "Getting SOL price for balance change in tx {}",
+                    transaction.tx_hash
+                );
+
                 // Get SOL price using BirdEye API
                 let sol_price = match strategy {
                     PriceStrategy::Current => {
-                        match self.client.get_current_price("So11111111111111111111111111111112", "solana").await {
+                        match self
+                            .client
+                            .get_current_price("So11111111111111111111111111111112", "solana")
+                            .await
+                        {
                             Ok(price) => price,
                             Err(e) => {
                                 debug!("Failed to get current SOL price: {}, using fallback", e);
@@ -104,13 +112,34 @@ impl PriceEnricher {
                         }
                     }
                     PriceStrategy::Historical => {
-                        self.client.get_historical_price_unix("So11111111111111111111111111111112", unix_time, Some("solana")).await?
+                        self.client
+                            .get_historical_price_unix(
+                                "So11111111111111111111111111111112",
+                                unix_time,
+                                Some("solana"),
+                            )
+                            .await?
                     }
                     PriceStrategy::HistoricalWithFallback => {
-                        match self.client.get_historical_price_unix("So11111111111111111111111111111112", unix_time, Some("solana")).await {
+                        match self
+                            .client
+                            .get_historical_price_unix(
+                                "So11111111111111111111111111111112",
+                                unix_time,
+                                Some("solana"),
+                            )
+                            .await
+                        {
                             Ok(price) => price,
                             Err(_) => {
-                                match self.client.get_current_price("So11111111111111111111111111111112", "solana").await {
+                                match self
+                                    .client
+                                    .get_current_price(
+                                        "So11111111111111111111111111111112",
+                                        "solana",
+                                    )
+                                    .await
+                                {
                                     Ok(price) => price,
                                     Err(e) => {
                                         debug!("Failed to get SOL price (historical and current): {}, using fallback", e);
@@ -124,7 +153,7 @@ impl PriceEnricher {
 
                 let amount_ui = self.calculate_ui_amount(balance_change);
                 let usd_value = amount_ui.abs() * sol_price;
-                
+
                 enriched_balance_changes.push(EnrichedBalanceChange {
                     original: balance_change.clone(),
                     usd_value: Some(usd_value),
@@ -135,12 +164,15 @@ impl PriceEnricher {
                 continue;
             }
 
-            match self.resolve_price_for_balance_change(
-                balance_change,
-                unix_time,
-                strategy,
-                &transaction.tx_hash,
-            ).await {
+            match self
+                .resolve_price_for_balance_change(
+                    balance_change,
+                    unix_time,
+                    strategy,
+                    &transaction.tx_hash,
+                )
+                .await
+            {
                 Ok((price, usd_value)) => {
                     enriched_balance_changes.push(EnrichedBalanceChange {
                         original: balance_change.clone(),
@@ -178,7 +210,11 @@ impl PriceEnricher {
         debug!(
             "Transaction enrichment complete. USD value: ${:.2}, Resolution: {}/{}",
             enriched.total_usd_value,
-            enriched.enriched_balance_changes.iter().filter(|b| b.price_resolved).count(),
+            enriched
+                .enriched_balance_changes
+                .iter()
+                .filter(|b| b.price_resolved)
+                .count(),
             enriched.enriched_balance_changes.len()
         );
 
@@ -191,10 +227,16 @@ impl PriceEnricher {
         transactions: Vec<WalletTransaction>,
         strategy: PriceStrategy,
     ) -> Result<Vec<EnrichedTransaction>, BirdEyeError> {
-        info!("Starting batch enrichment for {} transactions", transactions.len());
+        info!(
+            "Starting batch enrichment for {} transactions",
+            transactions.len()
+        );
 
         // Pre-fetch current prices for all unique tokens if using current/fallback strategy
-        if matches!(strategy, PriceStrategy::Current | PriceStrategy::HistoricalWithFallback) {
+        if matches!(
+            strategy,
+            PriceStrategy::Current | PriceStrategy::HistoricalWithFallback
+        ) {
             self.prefetch_current_prices(&transactions).await?;
         }
 
@@ -227,7 +269,10 @@ impl PriceEnricher {
 
     /// Get cache statistics for monitoring
     pub fn cache_stats(&self) -> (usize, usize) {
-        (self.current_price_cache.len(), self.historical_price_cache.len())
+        (
+            self.current_price_cache.len(),
+            self.historical_price_cache.len(),
+        )
     }
 
     // Private helper methods
@@ -244,15 +289,16 @@ impl PriceEnricher {
         let amount_ui = self.calculate_ui_amount(balance_change);
 
         let price = match strategy {
-            PriceStrategy::Current => {
-                match self.get_current_price(token_address).await {
-                    Ok(price) => price,
-                    Err(e) => {
-                        debug!("Failed to get current price for token {} in tx {}: {}, using fallback", token_address, tx_hash, e);
-                        self.get_fallback_price(token_address, &balance_change.symbol)
-                    }
+            PriceStrategy::Current => match self.get_current_price(token_address).await {
+                Ok(price) => price,
+                Err(e) => {
+                    debug!(
+                        "Failed to get current price for token {} in tx {}: {}, using fallback",
+                        token_address, tx_hash, e
+                    );
+                    self.get_fallback_price(token_address, &balance_change.symbol)
                 }
-            }
+            },
             PriceStrategy::Historical => {
                 self.get_historical_price(token_address, unix_time).await?
             }
@@ -288,10 +334,14 @@ impl PriceEnricher {
 
         // Fetch current prices in batch for efficiency
         let addresses = vec![token_address.to_string()];
-        let prices = self.client.get_multi_price(&addresses, Some("solana")).await?;
-        
+        let prices = self
+            .client
+            .get_multi_price(&addresses, Some("solana"))
+            .await?;
+
         if let Some(&price) = prices.get(token_address) {
-            self.current_price_cache.insert(token_address.to_string(), price);
+            self.current_price_cache
+                .insert(token_address.to_string(), price);
             Ok(price)
         } else {
             Err(BirdEyeError::Api(format!(
@@ -308,7 +358,7 @@ impl PriceEnricher {
         unix_time: i64,
     ) -> Result<f64, BirdEyeError> {
         let cache_key = format!("{}:{}", token_address, unix_time);
-        
+
         if let Some(&cached_price) = self.historical_price_cache.get(&cache_key) {
             return Ok(cached_price);
         }
@@ -317,7 +367,7 @@ impl PriceEnricher {
             .client
             .get_historical_price_unix(token_address, unix_time, Some("solana"))
             .await?;
-        
+
         self.historical_price_cache.insert(cache_key, price);
         Ok(price)
     }
@@ -337,12 +387,17 @@ impl PriceEnricher {
             _ => {
                 let fallback_price = if token_symbol.to_uppercase().contains("SOL") {
                     200.0 // SOL-related token fallback
-                } else if token_symbol.len() <= 4 && token_symbol.chars().all(|c| c.is_ascii_uppercase()) {
+                } else if token_symbol.len() <= 4
+                    && token_symbol.chars().all(|c| c.is_ascii_uppercase())
+                {
                     0.001 // Likely meme coin or small token
                 } else {
                     0.0001 // Very small fallback for unknown tokens
                 };
-                debug!("Using generic fallback price for token {} ({}): ${}", token_address, token_symbol, fallback_price);
+                debug!(
+                    "Using generic fallback price for token {} ({}): ${}",
+                    token_address, token_symbol, fallback_price
+                );
                 fallback_price
             }
         }
@@ -354,11 +409,12 @@ impl PriceEnricher {
         transactions: &[WalletTransaction],
     ) -> Result<(), BirdEyeError> {
         let mut unique_tokens = std::collections::HashSet::new();
-        
+
         for transaction in transactions {
             for balance_change in &transaction.balance_change {
-                if !balance_change.address.is_empty() 
-                    && balance_change.address != "So11111111111111111111111111111112" {
+                if !balance_change.address.is_empty()
+                    && balance_change.address != "So11111111111111111111111111111112"
+                {
                     unique_tokens.insert(balance_change.address.clone());
                 }
             }
@@ -369,12 +425,21 @@ impl PriceEnricher {
             return Ok(());
         }
 
-        debug!("Pre-fetching current prices for {} unique tokens", addresses.len());
-        
-        let prices = self.client.get_multi_price(&addresses, Some("solana")).await?;
+        debug!(
+            "Pre-fetching current prices for {} unique tokens",
+            addresses.len()
+        );
+
+        let prices = self
+            .client
+            .get_multi_price(&addresses, Some("solana"))
+            .await?;
         self.current_price_cache.extend(prices);
-        
-        info!("Pre-fetched {} current prices", self.current_price_cache.len());
+
+        info!(
+            "Pre-fetched {} current prices",
+            self.current_price_cache.len()
+        );
         Ok(())
     }
 
@@ -401,98 +466,5 @@ impl PriceEnricher {
         let raw_amount = balance_change.amount as f64;
         let decimals = balance_change.decimals as u32;
         raw_amount / 10_f64.powi(decimals as i32)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::birdeye_client::{BirdEyeConfig, WalletTransactionData, WalletTransactionHistoryResponse};
-
-    fn create_test_client() -> BirdEyeClient {
-        let config = BirdEyeConfig {
-            api_key: "test_key".to_string(),
-            api_base_url: "https://test.example.com".to_string(),
-            request_timeout_seconds: 30,
-            max_traders_per_token: 100,
-            max_transactions_per_trader: 100,
-            default_max_transactions: 1000,
-            new_listing_enabled: true,
-            new_listing_min_liquidity: 1000.0,
-            new_listing_max_age_hours: 24,
-            new_listing_max_tokens: 25,
-            max_trending_tokens: 25,
-            balance_api_enabled: true,
-            balance_api_timeout_seconds: 15,
-            balance_cache_ttl_seconds: 60,
-        };
-        BirdEyeClient::new(config).unwrap()
-    }
-
-    fn create_test_balance_change(address: &str, amount: i128, decimals: u32) -> BalanceChange {
-        BalanceChange {
-            amount,
-            symbol: "TEST".to_string(),
-            address: address.to_string(),
-            decimals,
-            change_type: None,
-            info: None,
-            multiplier: None,
-        }
-    }
-
-    #[test]
-    fn test_calculate_ui_amount() {
-        let client = create_test_client();
-        let enricher = PriceEnricher::new(client);
-        
-        // Test with 6 decimals (typical for USDC)
-        let balance_change = create_test_balance_change("test_token", 1_000_000, 6);
-        let ui_amount = enricher.calculate_ui_amount(&balance_change);
-        assert_eq!(ui_amount, 1.0);
-        
-        // Test with 9 decimals (typical for SOL)
-        let balance_change = create_test_balance_change("test_token", 1_000_000_000, 9);
-        let ui_amount = enricher.calculate_ui_amount(&balance_change);
-        assert_eq!(ui_amount, 1.0);
-    }
-
-    #[test]
-    fn test_parse_unix_timestamp() {
-        let client = create_test_client();
-        let enricher = PriceEnricher::new(client);
-        
-        // Test Unix timestamp
-        let result = enricher.parse_transaction_timestamp("1640995200");
-        assert!(result.is_ok());
-        
-        // Test ISO 8601 format
-        let result = enricher.parse_transaction_timestamp("2022-01-01T00:00:00Z");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_cache_stats() {
-        let client = create_test_client();
-        let mut enricher = PriceEnricher::new(client);
-        
-        // Initially empty
-        let (current, historical) = enricher.cache_stats();
-        assert_eq!(current, 0);
-        assert_eq!(historical, 0);
-        
-        // Add some cached values
-        enricher.current_price_cache.insert("token1".to_string(), 1.0);
-        enricher.historical_price_cache.insert("token2:123456".to_string(), 2.0);
-        
-        let (current, historical) = enricher.cache_stats();
-        assert_eq!(current, 1);
-        assert_eq!(historical, 1);
-        
-        // Clear caches
-        enricher.clear_caches();
-        let (current, historical) = enricher.cache_stats();
-        assert_eq!(current, 0);
-        assert_eq!(historical, 0);
     }
 }

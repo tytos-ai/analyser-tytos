@@ -1,9 +1,9 @@
 //! Critical test to verify our parsing logic against actual BirdEye data
 
-use serde_json;
-use std::collections::HashMap;
 use dex_client::{GeneralTraderTransaction, GeneralTraderTransactionsResponse};
 use job_orchestrator::ProcessedSwap;
+use serde_json;
+use std::collections::HashMap;
 
 #[tokio::test]
 async fn test_birdeye_parsing_accuracy() {
@@ -54,59 +54,82 @@ async fn test_birdeye_parsing_accuracy() {
         ]
       }
     }"#;
-    
+
     println!("🚨 CRITICAL RUST PARSING VERIFICATION");
     println!("=====================================");
-    
+
     // Parse using our actual Rust structs
-    let response: GeneralTraderTransactionsResponse = serde_json::from_str(json_data)
-        .expect("Failed to parse transaction data");
-    
+    let response: GeneralTraderTransactionsResponse =
+        serde_json::from_str(json_data).expect("Failed to parse transaction data");
+
     assert!(response.success, "Response should be successful");
-    assert_eq!(response.data.items.len(), 1, "Should have exactly 1 transaction");
-    
+    assert_eq!(
+        response.data.items.len(),
+        1,
+        "Should have exactly 1 transaction"
+    );
+
     let tx = &response.data.items[0];
-    
+
     println!("\n📊 TESTING TRANSACTION PARSING:");
     println!("TX Hash: {}...", &tx.tx_hash[..12]);
-    
+
     // Test our aggregation logic using ProcessedSwap
     let processed_swaps = ProcessedSwap::from_birdeye_transactions(&response.data.items)
         .expect("Failed to process swaps");
-    
-    assert_eq!(processed_swaps.len(), 1, "Should produce exactly 1 processed swap");
-    
+
+    assert_eq!(
+        processed_swaps.len(),
+        1,
+        "Should produce exactly 1 processed swap"
+    );
+
     let swap = &processed_swaps[0];
-    
+
     println!("\n🔍 PROCESSED SWAP RESULT:");
-    println!("  token_in: {}... ({})", &swap.token_in[..8], swap.amount_in);
-    println!("  token_out: {}... ({})", &swap.token_out[..8], swap.amount_out);
+    println!(
+        "  token_in: {}... ({})",
+        &swap.token_in[..8],
+        swap.amount_in
+    );
+    println!(
+        "  token_out: {}... ({})",
+        &swap.token_out[..8],
+        swap.amount_out
+    );
     println!("  sol_equivalent: {}", swap.sol_equivalent);
     println!("  price_per_token: ${:.6}", swap.price_per_token);
-    
+
     // Verify the aggregation logic
     let sol_mint = "So11111111111111111111111111111111111111112";
     let bnsol_mint = "BNso1VUJnh4zcfpZa6986Ea66P6TCp59hvtNJ8b1X85";
-    
+
     // This should be a SOL → BNSOL swap (BUY BNSOL)
     assert_eq!(swap.token_in, sol_mint, "token_in should be SOL");
     assert_eq!(swap.token_out, bnsol_mint, "token_out should be BNSOL");
-    
+
     // Verify amounts match exactly
     let expected_sol_spent = 8879.0253005;
     let expected_bnsol_received = 8369.439226307;
     let expected_price = 155.5613863476638;
-    
-    assert!((swap.amount_in.to_string().parse::<f64>().unwrap() - expected_sol_spent).abs() < 0.001, 
-            "SOL amount should match exactly");
-    assert!((swap.amount_out.to_string().parse::<f64>().unwrap() - expected_bnsol_received).abs() < 0.001, 
-            "BNSOL amount should match exactly");
-    assert!((swap.price_per_token.to_string().parse::<f64>().unwrap() - expected_price).abs() < 0.001, 
-            "Price should match exactly");
-    
+
+    assert!(
+        (swap.amount_in.to_string().parse::<f64>().unwrap() - expected_sol_spent).abs() < 0.001,
+        "SOL amount should match exactly"
+    );
+    assert!(
+        (swap.amount_out.to_string().parse::<f64>().unwrap() - expected_bnsol_received).abs()
+            < 0.001,
+        "BNSOL amount should match exactly"
+    );
+    assert!(
+        (swap.price_per_token.to_string().parse::<f64>().unwrap() - expected_price).abs() < 0.001,
+        "Price should match exactly"
+    );
+
     // Test FinancialEvent creation
     let financial_event = swap.to_financial_event("GBJ4MZe8fqpA6UVgjh19BwJPMb79KDfMv78XnFVxgH2Q");
-    
+
     println!("\n🎯 FINANCIAL EVENT:");
     println!("  event_type: {:?}", financial_event.event_type);
     println!("  token_mint: {}...", &financial_event.token_mint[..8]);
@@ -115,27 +138,54 @@ async fn test_birdeye_parsing_accuracy() {
     if let Some(price) = &financial_event.metadata.price_per_token {
         println!("  price_per_token: ${:.6}", price);
     }
-    
+
     // Verify FinancialEvent is correct
     use pnl_core::EventType;
-    assert_eq!(financial_event.event_type, EventType::Buy, "Should be a Buy event");
-    assert_eq!(financial_event.token_mint, bnsol_mint, "Should be buying BNSOL");
-    
+    assert_eq!(
+        financial_event.event_type,
+        EventType::Buy,
+        "Should be a Buy event"
+    );
+    assert_eq!(
+        financial_event.token_mint, bnsol_mint,
+        "Should be buying BNSOL"
+    );
+
     // Amounts should match our expectations
-    assert!((financial_event.token_amount.to_string().parse::<f64>().unwrap() - expected_bnsol_received).abs() < 0.001,
-            "FinancialEvent token_amount should match");
-    assert!((financial_event.sol_amount.to_string().parse::<f64>().unwrap() - expected_sol_spent).abs() < 0.001,
-            "FinancialEvent sol_amount should match");
-    
+    assert!(
+        (financial_event
+            .token_amount
+            .to_string()
+            .parse::<f64>()
+            .unwrap()
+            - expected_bnsol_received)
+            .abs()
+            < 0.001,
+        "FinancialEvent token_amount should match"
+    );
+    assert!(
+        (financial_event
+            .sol_amount
+            .to_string()
+            .parse::<f64>()
+            .unwrap()
+            - expected_sol_spent)
+            .abs()
+            < 0.001,
+        "FinancialEvent sol_amount should match"
+    );
+
     if let Some(price) = &financial_event.metadata.price_per_token {
-        assert!((price.to_string().parse::<f64>().unwrap() - expected_price).abs() < 0.001,
-                "FinancialEvent price should match");
+        assert!(
+            (price.to_string().parse::<f64>().unwrap() - expected_price).abs() < 0.001,
+            "FinancialEvent price should match"
+        );
     }
-    
+
     println!("\n✅ VERIFICATION COMPLETE:");
     println!("✅ Our Rust parsing logic produces correct results!");
     println!("✅ Transaction aggregation works correctly");
-    println!("✅ FinancialEvent creation is accurate"); 
+    println!("✅ FinancialEvent creation is accurate");
     println!("✅ All amounts and prices match expected values");
 }
 
@@ -188,31 +238,38 @@ async fn test_sell_transaction_parsing() {
         ]
       }
     }"#;
-    
+
     println!("\n🚨 TESTING SELL TRANSACTION");
     println!("===========================");
-    
-    let response: GeneralTraderTransactionsResponse = serde_json::from_str(json_data)
-        .expect("Failed to parse sell transaction");
-    
+
+    let response: GeneralTraderTransactionsResponse =
+        serde_json::from_str(json_data).expect("Failed to parse sell transaction");
+
     let processed_swaps = ProcessedSwap::from_birdeye_transactions(&response.data.items)
         .expect("Failed to process sell swap");
-    
+
     assert_eq!(processed_swaps.len(), 1);
     let swap = &processed_swaps[0];
-    
+
     let sol_mint = "So11111111111111111111111111111111111111112";
     let bnsol_mint = "BNso1VUJnh4zcfpZa6986Ea66P6TCp59hvtNJ8b1X85";
-    
+
     // This should be a BNSOL → SOL swap (SELL BNSOL)
     assert_eq!(swap.token_in, bnsol_mint, "token_in should be BNSOL");
     assert_eq!(swap.token_out, sol_mint, "token_out should be SOL");
-    
+
     let financial_event = swap.to_financial_event("GBJ4MZe8fqpA6UVgjh19BwJPMb79KDfMv78XnFVxgH2Q");
-    
+
     use pnl_core::EventType;
-    assert_eq!(financial_event.event_type, EventType::Sell, "Should be a Sell event");
-    assert_eq!(financial_event.token_mint, bnsol_mint, "Should be selling BNSOL");
-    
+    assert_eq!(
+        financial_event.event_type,
+        EventType::Sell,
+        "Should be a Sell event"
+    );
+    assert_eq!(
+        financial_event.token_mint, bnsol_mint,
+        "Should be selling BNSOL"
+    );
+
     println!("✅ SELL transaction parsing works correctly!");
 }

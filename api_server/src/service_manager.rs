@@ -1,13 +1,13 @@
 use anyhow::Result;
-use job_orchestrator::{JobOrchestrator, BirdEyeTrendingOrchestrator};
 use config_manager::SystemConfig;
+use job_orchestrator::{BirdEyeTrendingOrchestrator, JobOrchestrator};
 use persistence_layer::RedisClient;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tracing::{info, error, debug};
-use serde::{Serialize, Deserialize};
+use tracing::{debug, error, info};
 
 /// Service states
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,18 +72,18 @@ pub struct ServiceManager {
     config: Arc<RwLock<ServiceConfig>>,
     system_config: SystemConfig,
     orchestrator: Arc<JobOrchestrator>,
-    
+
     // Service states
     wallet_discovery_state: Arc<RwLock<ServiceState>>,
     pnl_analysis_state: Arc<RwLock<ServiceState>>,
-    
+
     // Service handles
     wallet_discovery_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     pnl_analysis_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-    
+
     // Service instances
     birdeye_orchestrator: Arc<Mutex<Option<BirdEyeTrendingOrchestrator>>>,
-    
+
     // Statistics
     stats: Arc<RwLock<ServiceStats>>,
 }
@@ -139,16 +139,16 @@ impl ServiceManager {
     /// Get current service statistics
     pub async fn get_stats(&self) -> ServiceStats {
         let mut stats = self.stats.write().await;
-        
+
         // Update current states
         stats.wallet_discovery.state = self.wallet_discovery_state.read().await.clone();
         stats.pnl_analysis.state = self.pnl_analysis_state.read().await.clone();
-        
+
         // Update queue size from orchestrator
         if let Ok(orchestrator_status) = self.orchestrator.get_status().await {
             stats.wallet_discovery.queue_size = orchestrator_status.discovery_queue_size;
         }
-        
+
         stats.clone()
     }
 
@@ -158,15 +158,22 @@ impl ServiceManager {
     }
 
     /// Start wallet discovery service with optional runtime configuration
-    pub async fn start_wallet_discovery_with_config(&self, runtime_config: Option<serde_json::Value>) -> Result<()> {
+    pub async fn start_wallet_discovery_with_config(
+        &self,
+        runtime_config: Option<serde_json::Value>,
+    ) -> Result<()> {
         let config = self.config.read().await;
         if !config.enable_wallet_discovery {
-            return Err(anyhow::anyhow!("Wallet discovery service is disabled in configuration"));
+            return Err(anyhow::anyhow!(
+                "Wallet discovery service is disabled in configuration"
+            ));
         }
 
         let mut state = self.wallet_discovery_state.write().await;
         if *state == ServiceState::Running {
-            return Err(anyhow::anyhow!("Wallet discovery service is already running"));
+            return Err(anyhow::anyhow!(
+                "Wallet discovery service is already running"
+            ));
         }
 
         *state = ServiceState::Starting;
@@ -181,7 +188,8 @@ impl ServiceManager {
 
         // Create BirdEye trending orchestrator using SystemConfig directly
         let redis_client = RedisClient::new(&self.system_config.redis.url).await?;
-        let orchestrator = BirdEyeTrendingOrchestrator::new(self.system_config.clone(), Some(redis_client))?;
+        let orchestrator =
+            BirdEyeTrendingOrchestrator::new(self.system_config.clone(), Some(redis_client))?;
 
         // Store the orchestrator instance
         {
@@ -193,7 +201,11 @@ impl ServiceManager {
         let birdeye_orch_clone = self.birdeye_orchestrator.clone();
         let state_clone = self.wallet_discovery_state.clone();
         let _stats_clone = self.stats.clone();
-        let cycle_interval = self.system_config.discovery.cycle_interval_seconds.unwrap_or(60);
+        let cycle_interval = self
+            .system_config
+            .discovery
+            .cycle_interval_seconds
+            .unwrap_or(60);
 
         let handle = tokio::spawn(async move {
             // Update state to running
@@ -213,9 +225,14 @@ impl ServiceManager {
                         match orch.execute_discovery_cycle().await {
                             Ok(discovered_count) => {
                                 if discovered_count > 0 {
-                                    info!("🔍 Discovery cycle completed: {} wallets discovered", discovered_count);
+                                    info!(
+                                        "🔍 Discovery cycle completed: {} wallets discovered",
+                                        discovered_count
+                                    );
                                 } else {
-                                    debug!("🔍 Discovery cycle completed: no new wallets discovered");
+                                    debug!(
+                                        "🔍 Discovery cycle completed: no new wallets discovered"
+                                    );
                                 }
                                 true // Continue running
                             }
@@ -244,7 +261,7 @@ impl ServiceManager {
                 let mut state = state_clone.write().await;
                 *state = ServiceState::Stopped;
             }
-            
+
             debug!("🛑 Discovery loop exited gracefully");
         });
 
@@ -290,7 +307,7 @@ impl ServiceManager {
             let mut handle_guard = self.wallet_discovery_handle.lock().await;
             if let Some(mut handle) = handle_guard.take() {
                 info!("🛑 Waiting for discovery task to finish gracefully (10s timeout)");
-                
+
                 // Give the task 10 seconds to stop gracefully, then abort
                 match tokio::time::timeout(Duration::from_secs(10), &mut handle).await {
                     Ok(_) => {
@@ -326,7 +343,9 @@ impl ServiceManager {
     pub async fn start_pnl_analysis(&self) -> Result<()> {
         let config = self.config.read().await;
         if !config.enable_pnl_analysis {
-            return Err(anyhow::anyhow!("P&L analysis service is disabled in configuration"));
+            return Err(anyhow::anyhow!(
+                "P&L analysis service is disabled in configuration"
+            ));
         }
 
         let mut state = self.pnl_analysis_state.write().await;
@@ -414,7 +433,7 @@ impl ServiceManager {
         let guard = self.birdeye_orchestrator.lock().await;
         if let Some(ref orchestrator) = *guard {
             let discovered = orchestrator.execute_discovery_cycle().await?;
-            
+
             // Update stats
             {
                 let mut stats = self.stats.write().await;
@@ -423,7 +442,7 @@ impl ServiceManager {
                 stats.wallet_discovery.discovered_wallets_total += discovered as u64;
                 stats.wallet_discovery.last_activity = Some(chrono::Utc::now());
             }
-            
+
             Ok(discovered as u64)
         } else {
             Err(anyhow::anyhow!("Wallet discovery service is not running"))

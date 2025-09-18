@@ -93,56 +93,23 @@ curl -X POST http://localhost:8080/api/services/control \
   }'
 ```
 
-#### Start Wallet Discovery with Custom Configuration
+#### Start P&L Analysis Service
 ```bash
 curl -X POST http://localhost:8080/api/services/control \
   -H "Content-Type: application/json" \
   -d '{
     "action": "start",
-    "service": "wallet_discovery",
-    "config_override": {
-      "min_capital_sol": 10.0,
-      "min_trades": 5,
-      "max_transactions_to_fetch": 200,
-      "timeframe_filter": {
-        "start_time": "2024-12-01T00:00:00Z",
-        "mode": "specific"
-      }
-    }
+    "service": "pnl_analysis"
   }'
 ```
 
-#### Start P&L Analysis with Time-Filtered Configuration
-```bash
-curl -X POST http://localhost:8080/api/services/control \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action": "start",
-    "service": "pnl_analysis",
-    "config_override": {
-      "max_transactions_to_fetch": 1000,
-      "min_capital_sol": 5.0,
-      "min_win_rate": 60.0,
-      "timeframe_filter": {
-        "start_time": "2024-12-01T00:00:00Z",
-        "end_time": "2024-12-31T23:59:59Z",
-        "mode": "specific"
-      }
-    }
-  }'
-```
-
-#### Restart Service with New Configuration
+#### Restart Wallet Discovery Service
 ```bash
 curl -X POST http://localhost:8080/api/services/control \
   -H "Content-Type: application/json" \
   -d '{
     "action": "restart",
-    "service": "wallet_discovery",
-    "config_override": {
-      "max_transactions_to_fetch": 500,
-      "min_trades": 3
-    }
+    "service": "wallet_discovery"
   }'
 ```
 
@@ -236,19 +203,7 @@ curl -s http://localhost:8080/health
 
 ## 4. Batch P&L Analysis
 
-### Submit Batch Job (Basic - Use Config Defaults)
-```bash
-curl -X POST http://localhost:8080/api/pnl/batch/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "wallet_addresses": [
-      "ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy",
-      "MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"
-    ]
-  }'
-```
-
-### Submit Batch Job (Custom Parameters Override)
+### Submit Batch Job (Basic)
 ```bash
 curl -X POST http://localhost:8080/api/pnl/batch/run \
   -H "Content-Type: application/json" \
@@ -257,17 +212,11 @@ curl -X POST http://localhost:8080/api/pnl/batch/run \
       "ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy",
       "MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"
     ],
-    "filters": {
-      "min_capital_sol": 0.1,
-      "min_hold_minutes": 5,
-      "min_trades": 1,
-      "min_win_rate": 0,
-      "max_transactions_to_fetch": 200
-    }
+    "chain": "solana"
   }'
 ```
 
-### Submit Batch Job (Time-Filtered Analysis)
+### Submit Batch Job (With Transaction Limit)
 ```bash
 curl -X POST http://localhost:8080/api/pnl/batch/run \
   -H "Content-Type: application/json" \
@@ -276,39 +225,12 @@ curl -X POST http://localhost:8080/api/pnl/batch/run \
       "ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy",
       "MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"
     ],
-    "filters": {
-      "min_capital_sol": 1.0,
-      "min_trades": 5,
-      "max_transactions_to_fetch": 500,
-      "timeframe_filter": {
-        "start_time": "2024-12-01T00:00:00Z",
-        "end_time": "2024-12-31T23:59:59Z",
-        "mode": "specific"
-      }
-    }
+    "chain": "solana",
+    "max_transactions": 200
   }'
 ```
 
-### Submit Batch Job (Recent Activity - Last 7 Days)
-```bash
-curl -X POST http://localhost:8080/api/pnl/batch/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "wallet_addresses": [
-      "ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy",
-      "MfDuWeqSHEqTFVYZ7LoexgAK9dxk7cy4DFJWjWMGVWa"
-    ],
-    "filters": {
-      "max_transactions_to_fetch": 100,
-      "timeframe_filter": {
-        "start_time": "2024-12-23T00:00:00Z",
-        "mode": "specific"
-      }
-    }
-  }'
-```
-
-### Submit Batch Job (High-Performance Traders)
+### Submit Batch Job (Multiple Wallets)
 ```bash
 curl -X POST http://localhost:8080/api/pnl/batch/run \
   -H "Content-Type: application/json" \
@@ -319,15 +241,11 @@ curl -X POST http://localhost:8080/api/pnl/batch/run \
       "APv9a1L4kLzeZERNAthAHTmjprJHCsio7NteRsp1D77Q",
       "87Hnwjwp28WPBLrc1JcuxWxQJenknT2zdN3atbNgtN7t"
     ],
-    "filters": {
-      "min_capital_sol": 10.0,
-      "min_hold_minutes": 60,
-      "min_trades": 20,
-      "min_win_rate": 70.0,
-      "max_transactions_to_fetch": 1000
-    }
+    "chain": "solana",
+    "max_transactions": 500
   }'
 ```
+
 
 ### Check Batch Job Status (Replace JOB_ID)
 ```bash
@@ -504,48 +422,16 @@ done
 curl -s http://localhost:8080/api/results | jq '.data.summary'
 ```
 
-### Scenario 3: Batch Analysis Test (NEW Runtime Configuration)
+### Scenario 3: Batch Analysis Test
 ```bash
-# 1. Submit batch job with time-filtered runtime configuration
+# 1. Submit batch job
 BATCH_RESPONSE=$(curl -X POST http://localhost:8080/api/pnl/batch/run \
   -H "Content-Type: application/json" \
   -d '{
     "wallet_addresses": ["ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy"],
-    "filters": {
-      "min_capital_sol": 0.1,
-      "min_trades": 1,
-      "max_transactions_to_fetch": 200,
-      "timeframe_filter": {
-        "start_time": "2024-12-01T00:00:00Z",
-        "mode": "specific"
-      }
-    }
+    "chain": "solana",
+    "max_transactions": 200
   }')
-
-# 2. Extract job ID
-JOB_ID=$(echo $BATCH_RESPONSE | jq -r '.data.job_id')
-echo "Job ID: $JOB_ID"
-
-# 3. Monitor job status
-for i in {1..20}; do
-  STATUS=$(curl -s "http://localhost:8080/api/pnl/batch/status/$JOB_ID" | jq -r '.data.status')
-  echo "Check $i: $STATUS"
-  if [ "$STATUS" = "Completed" ]; then
-    break
-  fi
-  sleep 5
-done
-
-# 4. Get results
-curl -s "http://localhost:8080/api/pnl/batch/results/$JOB_ID" | jq
-```
-
-### Scenario 3b: Legacy Batch Analysis Test
-```bash
-# 1. Submit batch job (legacy approach)
-BATCH_RESPONSE=$(curl -X POST http://localhost:8080/api/pnl/batch/run \
-  -H "Content-Type: application/json" \
-  -d '{"wallet_addresses": ["ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy"], "filters": {"min_capital_sol": 0.1, "min_hold_minutes": 5, "min_trades": 1, "min_win_rate": 0, "max_signatures": 1000}}')
 
 # 2. Extract job ID
 JOB_ID=$(echo $BATCH_RESPONSE | jq -r '.data.job_id')
@@ -625,87 +511,41 @@ curl -s http://localhost:8080/api/services/status | jq '{
 
 ---
 
-## 10. Configuration Architecture & Smart Parameter Handling
+## 10. API Configuration
 
-### Key Features (NEW in Latest Version)
+### Supported Parameters
 
-#### 1. Runtime Configuration Override
-- **User parameters override config defaults**: All API endpoints now support optional `filters` parameter that overrides `config.toml` defaults
-- **Smart parameter merging**: User values take precedence, fallback to config defaults
-- **Time filtering optimization**: BirdEye API calls are optimized with time bounds when timeframe is specified
+The batch P&L analysis API supports the following parameters:
 
-#### 2. Automatic Parameter Validation & Correction
-The system automatically validates and fixes parameter conflicts:
+| Parameter | Type | Required | Purpose | Example |
+|-----------|------|----------|---------|---------|
+| `wallet_addresses` | Array<String> | Yes | Wallet addresses to analyze | `["ARZfRQg..."]` |
+| `chain` | String | Yes | Blockchain network | `"solana"` |
+| `max_transactions` | u32 | No | Limit transactions per wallet | `200` |
 
-```bash
-# Example: If max_signatures > max_transactions_to_fetch, system auto-corrects
-curl -X POST http://localhost:8080/api/pnl/batch/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "wallet_addresses": ["ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy"],
-    "filters": {
-      "max_transactions_to_fetch": 100,
-      "max_signatures": 500
-    }
-  }'
-# System automatically adjusts max_signatures to 100 and logs a warning
-```
+### System Configuration
 
-#### 3. Time Filtering Benefits
-```bash
-# Without time filtering (inefficient - fetches all transactions)
-curl -X POST http://localhost:8080/api/pnl/batch/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "wallet_addresses": ["ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy"],
-    "filters": {
-      "max_transactions_to_fetch": 1000
-    }
-  }'
+The system uses configuration from `config.toml` for:
+- Service intervals and timeouts
+- API keys for BirdEye and Zerion
+- Redis and PostgreSQL connections
+- Trader filtering (for discovery service only)
 
-# With time filtering (efficient - fetches only relevant transactions)
-curl -X POST http://localhost:8080/api/pnl/batch/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "wallet_addresses": ["ARZfRQgaoVjbHqg7p6M4uFPcJwEqwgUPT5hvfMkV8JNy"],
-    "filters": {
-      "max_transactions_to_fetch": 200,
-      "timeframe_filter": {
-        "start_time": "2024-12-01T00:00:00Z",
-        "mode": "specific"
-      }
-    }
-  }'
-```
-
-### Parameter Priority Order
-1. **User-provided parameters** (via API `filters` field) - **HIGHEST PRIORITY**
-2. **Config.toml defaults** - **FALLBACK**
-3. **System hardcoded defaults** - **LAST RESORT**
-
-### Configuration Fields Reference
-
-| Field Name | Type | Purpose | Default (config.toml) |
-|------------|------|---------|----------------------|
-| `max_transactions_to_fetch` | u32 | BirdEye API limit | 500 |
-| `min_capital_sol` | f64 | Minimum wallet capital | 0.0 |
-| `min_hold_minutes` | f64 | Minimum hold time | 0.0 |
-| `min_trades` | u32 | Minimum trade count | 0 |
-| `min_win_rate` | f64 | Minimum win rate % | 0.0 |
-| `timeframe_filter` | Object | Time bounds | None |
+Discovery service trader filtering (not used in batch analysis):
+- `min_capital_deployed_sol`: Minimum capital in SOL
+- `min_total_trades`: Minimum number of trades
+- `min_win_rate`: Minimum win rate percentage
 
 ---
 
 ## Notes
 
 - **Rate Limiting**: BirdEye has rate limits. The system automatically handles retries.
-- **Parallel Processing**: System processes 20 wallets simultaneously by default.
-- **Configuration**: Batch size can be adjusted in `config.toml` (`pnl_parallel_batch_size = 20`).
-- **Runtime Override**: All API endpoints support runtime parameter overrides via `filters` field.
-- **Parameter Validation**: System automatically validates and fixes conflicts (e.g., max_signatures vs max_transactions_to_fetch).
-- **Time Optimization**: Use `timeframe_filter` for efficient BirdEye API usage.
-- **Logs**: Check server logs for detailed processing information and parameter validation warnings.
-- **Results**: All P&L results are stored and can be retrieved via API.
+- **Parallel Processing**: System processes wallets in parallel (configurable in `config.toml`).
+- **Data Sources**: System uses hybrid Zerion+BirdEye architecture for transaction data.
+- **Storage**: All P&L results are stored in PostgreSQL and can be retrieved via API.
+- **Chains**: Currently supports Solana blockchain.
+- **Logs**: Check server logs for detailed processing information.
 
 ## Common Issues
 

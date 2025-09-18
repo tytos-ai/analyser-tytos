@@ -4,10 +4,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use config_manager::{SystemConfig, ConfigurationError};
+use config_manager::{ConfigurationError, SystemConfig};
+use dex_client::BirdEyeClient;
 use job_orchestrator::{JobOrchestrator, OrchestratorError};
 use pnl_core::PnLError;
-use dex_client::BirdEyeClient;
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -15,13 +15,13 @@ use tracing::info;
 
 mod handlers;
 mod middleware;
-mod types;
 mod service_manager;
+mod types;
 mod v2;
 
 use handlers::*;
-use types::*;
 use service_manager::ServiceManager;
+use types::*;
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -67,7 +67,9 @@ impl IntoResponse for ApiError {
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
-            ApiError::InternalServerError(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            ApiError::InternalServerError(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+            }
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 
@@ -98,15 +100,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize persistence client for shared database access
     let persistence_client = Arc::new(
-        persistence_layer::PersistenceClient::new(
-            &config.redis.url,
-            &config.database.postgres_url
-        ).await?
+        persistence_layer::PersistenceClient::new(&config.redis.url, &config.database.postgres_url)
+            .await?,
     );
     info!("Persistence client initialized with connection pool");
 
     // Initialize job orchestrator with shared persistence client
-    let orchestrator = Arc::new(JobOrchestrator::new(config.clone(), persistence_client.clone()).await?);
+    let orchestrator =
+        Arc::new(JobOrchestrator::new(config.clone(), persistence_client.clone()).await?);
     info!("Job orchestrator initialized");
 
     // Initialize service manager (but don't start any services yet)
@@ -128,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the application router
     let app = create_router(app_state.clone()).await;
-    
+
     info!("🎯 API Server ready - services can be controlled via API endpoints");
     info!("📋 Available endpoints:");
     info!("   • POST /api/services/control - Universal service control with optional config");
@@ -167,54 +168,81 @@ async fn create_router(state: AppState) -> Router {
         // Health check
         .route("/health", get(health_check))
         .route("/health/detailed", get(enhanced_health_check))
-        
         // Service management endpoints
         .route("/api/services/status", get(get_services_status))
         .route("/api/services/config", get(get_services_config))
         .route("/api/services/config", post(update_services_config))
-        .route("/api/services/control", post(control_service))  // NEW: Universal service control with optional config
-        .route("/api/services/discovery/start", post(start_wallet_discovery))
+        .route("/api/services/control", post(control_service)) // NEW: Universal service control with optional config
+        .route(
+            "/api/services/discovery/start",
+            post(start_wallet_discovery),
+        )
         .route("/api/services/discovery/stop", post(stop_wallet_discovery))
-        .route("/api/services/discovery/trigger", post(trigger_discovery_cycle))
+        .route(
+            "/api/services/discovery/trigger",
+            post(trigger_discovery_cycle),
+        )
         .route("/api/services/pnl/start", post(start_pnl_analysis))
         .route("/api/services/pnl/stop", post(stop_pnl_analysis))
-        
         // Results retrieval endpoints
         .route("/api/results", get(get_all_results))
-        .route("/api/results/:wallet_address/:token_address", get(get_detailed_result))
-        .route("/api/results/:wallet_address/favorite", post(toggle_wallet_favorite))
-        .route("/api/results/:wallet_address/archive", post(toggle_wallet_archive))
-        .route("/api/results/backfill-metrics", post(backfill_advanced_filtering_metrics))
-        
+        .route(
+            "/api/results/:wallet_address/:token_address",
+            get(get_detailed_result),
+        )
+        .route(
+            "/api/results/:wallet_address/favorite",
+            post(toggle_wallet_favorite),
+        )
+        .route(
+            "/api/results/:wallet_address/archive",
+            post(toggle_wallet_archive),
+        )
+        .route(
+            "/api/results/backfill-metrics",
+            post(backfill_advanced_filtering_metrics),
+        )
         // Legacy system endpoints (kept for compatibility)
         .route("/api/status", get(get_system_status))
         .route("/api/logs", get(get_system_logs))
-        
         // Configuration endpoints (legacy)
         .route("/api/config", get(get_config))
         .route("/api/config", post(update_config))
-        
         // Batch P&L analysis endpoints
         .route("/api/pnl/batch/run", post(submit_batch_job))
         .route("/api/pnl/batch/status/:job_id", get(get_batch_job_status))
         .route("/api/pnl/batch/results/:job_id", get(get_batch_job_results))
-        .route("/api/pnl/batch/results/:job_id/export.csv", get(export_batch_results_csv))
-        .route("/api/pnl/batch/results/:job_id/traders", get(filter_copy_traders))
+        .route(
+            "/api/pnl/batch/results/:job_id/export.csv",
+            get(export_batch_results_csv),
+        )
+        .route(
+            "/api/pnl/batch/results/:job_id/traders",
+            get(filter_copy_traders),
+        )
         .route("/api/pnl/batch/history", get(get_batch_job_history))
-        
         // Token analysis endpoints
         .route("/api/token-analysis", post(submit_token_analysis_job))
-        .route("/api/token-analysis/:job_id/status", get(get_token_analysis_job_status))
-        .route("/api/token-analysis/:job_id/results", get(get_token_analysis_job_results))
+        .route(
+            "/api/token-analysis/:job_id/status",
+            get(get_token_analysis_job_status),
+        )
+        .route(
+            "/api/token-analysis/:job_id/results",
+            get(get_token_analysis_job_results),
+        )
         .route("/api/token-analysis/jobs", get(get_token_analysis_jobs))
-        
         // Continuous mode endpoints
-        .route("/api/pnl/continuous/discovered-wallets", get(get_discovered_wallets))
-        .route("/api/pnl/continuous/discovered-wallets/:wallet_address/details", get(get_wallet_details))
-        
+        .route(
+            "/api/pnl/continuous/discovered-wallets",
+            get(get_discovered_wallets),
+        )
+        .route(
+            "/api/pnl/continuous/discovered-wallets/:wallet_address/details",
+            get(get_wallet_details),
+        )
         // API v2 - Enhanced P&L analysis for copy trading
         .nest("/api/v2", v2::create_v2_routes())
-        
         // Add CORS middleware
         .layer(
             ServiceBuilder::new()

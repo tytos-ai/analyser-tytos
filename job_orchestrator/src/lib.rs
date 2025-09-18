@@ -1,16 +1,22 @@
 use chrono::Utc;
 use config_manager::SystemConfig;
-use futures::future::join_all;
 use dex_client::{
-    BirdEyeClient, BirdEyeError, GeneralTraderTransaction, TokenTransactionSide, 
-    PriceEnricher, PriceStrategy,
     // Portfolio API imports
-    extract_current_prices_from_portfolio
+    extract_current_prices_from_portfolio,
+    BirdEyeClient,
+    BirdEyeError,
+    GeneralTraderTransaction,
+    TokenTransactionSide,
+};
+use futures::future::join_all;
+use persistence_layer::{
+    DiscoveredWalletToken, JobStatus, PersistenceClient, PersistenceError, TokenAnalysisJob,
 };
 use zerion_client::{ZerionClient, ZerionError};
-use persistence_layer::{PersistenceError, PersistenceClient, DiscoveredWalletToken, TokenAnalysisJob, JobStatus};
 // New algorithm imports (primary P&L system)
-use pnl_core::{NewTransactionParser, NewPnLEngine, PortfolioPnLResult, NewFinancialEvent, BalanceFetcher};
+use pnl_core::{
+    BalanceFetcher, NewFinancialEvent, NewPnLEngine, NewTransactionParser, PortfolioPnLResult,
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,7 +30,9 @@ use uuid::Uuid;
 
 pub mod birdeye_trending_orchestrator;
 
-pub use birdeye_trending_orchestrator::{BirdEyeTrendingOrchestrator, DiscoveryStats, ProcessedSwap};
+pub use birdeye_trending_orchestrator::{
+    BirdEyeTrendingOrchestrator, DiscoveryStats, ProcessedSwap,
+};
 
 #[derive(Error, Debug, Clone)]
 pub enum OrchestratorError {
@@ -68,9 +76,6 @@ impl From<pnl_core::PnLError> for OrchestratorError {
     }
 }
 
-
-
-
 impl From<BirdEyeError> for OrchestratorError {
     fn from(err: BirdEyeError) -> Self {
         OrchestratorError::BirdEyePrice(err.to_string())
@@ -82,9 +87,6 @@ impl From<ZerionError> for OrchestratorError {
         OrchestratorError::Zerion(err.to_string())
     }
 }
-
-
-
 
 impl From<config_manager::ConfigurationError> for OrchestratorError {
     fn from(err: config_manager::ConfigurationError) -> Self {
@@ -148,12 +150,16 @@ pub struct BatchJob {
 }
 
 impl BatchJob {
-    pub fn new(wallet_addresses: Vec<String>, chain: String, max_transactions: Option<u32>) -> Self {
+    pub fn new(
+        wallet_addresses: Vec<String>,
+        chain: String,
+        max_transactions: Option<u32>,
+    ) -> Self {
         // Store max_transactions in filters JSON for PostgreSQL storage
         let filters = serde_json::json!({
             "max_transactions": max_transactions
         });
-        
+
         Self {
             id: Uuid::new_v4(),
             wallet_addresses,
@@ -166,14 +172,15 @@ impl BatchJob {
             individual_jobs: Vec::new(),
         }
     }
-    
+
     /// Get max_transactions from filters JSON
     pub fn get_max_transactions(&self) -> Option<u32> {
-        self.filters.get("max_transactions")
+        self.filters
+            .get("max_transactions")
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
     }
-    
+
     /// Convert to persistence layer BatchJob format
     pub fn to_persistence_batch_job(&self) -> Result<persistence_layer::BatchJob> {
         Ok(persistence_layer::BatchJob {
@@ -194,7 +201,7 @@ impl BatchJob {
             individual_jobs: self.individual_jobs.clone(),
         })
     }
-    
+
     /// Create from persistence layer BatchJob format
     pub fn from_persistence_batch_job(persistent_job: persistence_layer::BatchJob) -> Result<Self> {
         Ok(Self {
@@ -215,8 +222,6 @@ impl BatchJob {
             individual_jobs: persistent_job.individual_jobs,
         })
     }
-
-
 }
 
 /// Job orchestrator for managing P&L analysis tasks
@@ -232,7 +237,10 @@ pub struct JobOrchestrator {
 }
 
 impl JobOrchestrator {
-    pub async fn new(config: SystemConfig, persistence_client: Arc<PersistenceClient>) -> Result<Self> {
+    pub async fn new(
+        config: SystemConfig,
+        persistence_client: Arc<PersistenceClient>,
+    ) -> Result<Self> {
         // Initialize BirdEye client
         let birdeye_config = config.birdeye.clone();
         let birdeye_client = BirdEyeClient::new(birdeye_config.clone())?;
@@ -253,17 +261,22 @@ impl JobOrchestrator {
                 }
                 Err(e) => {
                     error!("Failed to initialize Zerion client: {}", e);
-                    return Err(OrchestratorError::Config(format!("Zerion client initialization failed: {}", e)));
+                    return Err(OrchestratorError::Config(format!(
+                        "Zerion client initialization failed: {}",
+                        e
+                    )));
                 }
             }
         } else {
             error!("Zerion API key not provided - cannot initialize Zerion client");
-            return Err(OrchestratorError::Config("Zerion API key is required".to_string()));
+            return Err(OrchestratorError::Config(
+                "Zerion API key is required".to_string(),
+            ));
         };
 
-
         // Generate unique instance ID using hostname and process ID
-        let instance_id = format!("{}:{}:{}", 
+        let instance_id = format!(
+            "{}:{}:{}",
             hostname::get().unwrap_or_default().to_string_lossy(),
             std::process::id(),
             Uuid::new_v4().to_string()[..8].to_string() // First 8 chars of UUID for uniqueness
@@ -312,7 +325,8 @@ impl JobOrchestrator {
         // Cleanup stale processing locks from dead instances (every cycle)
         {
             let redis = &self.persistence_client;
-            if let Err(e) = redis.cleanup_stale_processing_locks(600).await { // 10 minutes max age
+            if let Err(e) = redis.cleanup_stale_processing_locks(600).await {
+                // 10 minutes max age
                 warn!("Failed to cleanup stale processing locks: {}", e);
             }
         }
@@ -321,7 +335,9 @@ impl JobOrchestrator {
         let batch_size = self.config.system.pnl_parallel_batch_size.unwrap_or(10);
         let (claimed_batch, batch_id) = {
             let redis = &self.persistence_client;
-            redis.claim_wallet_batch(&self.instance_id, batch_size).await?
+            redis
+                .claim_wallet_batch(&self.instance_id, batch_size)
+                .await?
         };
 
         if claimed_batch.is_empty() {
@@ -329,8 +345,12 @@ impl JobOrchestrator {
             return Ok(());
         }
 
-        info!("Instance {} claimed batch {} with {} wallet-token pairs", 
-              self.instance_id, batch_id, claimed_batch.len());
+        info!(
+            "Instance {} claimed batch {} with {} wallet-token pairs",
+            self.instance_id,
+            batch_id,
+            claimed_batch.len()
+        );
 
         // Process the claimed batch
         let result = self.process_claimed_batch(&claimed_batch, &batch_id).await;
@@ -348,8 +368,12 @@ impl JobOrchestrator {
                 // Some items failed, return them to the queue
                 warn!("Batch {} processing failed: {}", batch_id, e);
                 let redis = &self.persistence_client;
-                if let Err(return_err) = redis.return_failed_batch(&batch_id, &claimed_batch).await {
-                    error!("Failed to return failed batch {} to queue: {}", batch_id, return_err);
+                if let Err(return_err) = redis.return_failed_batch(&batch_id, &claimed_batch).await
+                {
+                    error!(
+                        "Failed to return failed batch {} to queue: {}",
+                        batch_id, return_err
+                    );
                 }
             }
         }
@@ -358,9 +382,16 @@ impl JobOrchestrator {
     }
 
     /// Process a claimed batch of wallet-token pairs
-    async fn process_claimed_batch(&self, claimed_batch: &[DiscoveredWalletToken], batch_id: &str) -> Result<()> {
-        info!("🚀 Processing claimed batch {} with {} wallet-token pairs in parallel...", 
-              batch_id, claimed_batch.len());
+    async fn process_claimed_batch(
+        &self,
+        claimed_batch: &[DiscoveredWalletToken],
+        batch_id: &str,
+    ) -> Result<()> {
+        info!(
+            "🚀 Processing claimed batch {} with {} wallet-token pairs in parallel...",
+            batch_id,
+            claimed_batch.len()
+        );
 
         // Get effective P&L filters (user override or config default)
         let filters = self.get_effective_continuous_filters().await;
@@ -370,13 +401,13 @@ impl JobOrchestrator {
             let filters = filters.clone();
             let pair_clone = pair.clone();
             async move {
-                info!("Processing claimed wallet-token pair: {} for {} ({})", 
+                info!("Processing claimed wallet-token pair: {} for {} ({})",
                       pair_clone.wallet_address, pair_clone.token_symbol, pair_clone.token_address);
-                
+
                 // Add timeout for each wallet processing (5 minutes max for queue processing)
                 let timeout_duration = Duration::from_secs(300);
                 let result = match tokio::time::timeout(
-                    timeout_duration, 
+                    timeout_duration,
                     self.process_single_wallet_token_pair(&pair_clone, filters)
                 ).await {
                     Ok(Ok(report)) => {
@@ -390,7 +421,7 @@ impl JobOrchestrator {
                                 "continuous",
                             ).await
                         };
-                        
+
                         match store_result {
                             Ok(_) => {
                                 // Mark wallet as successfully processed for this chain
@@ -415,7 +446,7 @@ impl JobOrchestrator {
                     }
                     Ok(Err(e)) => {
                         // P&L calculation failed
-                        warn!("P&L calculation failed for wallet {} token {}: {}", 
+                        warn!("P&L calculation failed for wallet {} token {}: {}",
                               pair_clone.wallet_address, pair_clone.token_symbol, e);
                         let redis = &self.persistence_client;
                         if let Err(mark_err) = redis.mark_wallet_as_failed_for_chain(&pair_clone.wallet_address, &pair_clone.chain).await {
@@ -425,7 +456,7 @@ impl JobOrchestrator {
                     }
                     Err(_) => {
                         // Timeout occurred
-                        let timeout_err = anyhow::anyhow!("Processing timeout for wallet {} token {}", 
+                        let timeout_err = anyhow::anyhow!("Processing timeout for wallet {} token {}",
                                                         pair_clone.wallet_address, pair_clone.token_symbol);
                         warn!("{}", timeout_err);
                         let redis = &self.persistence_client;
@@ -435,35 +466,41 @@ impl JobOrchestrator {
                         Err(timeout_err)
                     }
                 };
-                
+
                 (pair_clone, result)
             }
         });
 
         // Wait for all to complete
         let results = join_all(futures).await;
-        
+
         // Count successes and failures
         let mut success_count = 0;
         let mut failure_count = 0;
-        
+
         for (pair, result) in results {
             match result {
                 Ok(report) => {
                     success_count += 1;
-                    info!("✅ Successfully processed wallet {} for token {}: P&L = {} USD", 
-                          pair.wallet_address, pair.token_symbol, report.total_pnl_usd);
+                    info!(
+                        "✅ Successfully processed wallet {} for token {}: P&L = {} USD",
+                        pair.wallet_address, pair.token_symbol, report.total_pnl_usd
+                    );
                 }
                 Err(e) => {
                     failure_count += 1;
-                    error!("❌ Failed to process wallet {} for token {}: {}", 
-                           pair.wallet_address, pair.token_symbol, e);
+                    error!(
+                        "❌ Failed to process wallet {} for token {}: {}",
+                        pair.wallet_address, pair.token_symbol, e
+                    );
                 }
             }
         }
 
-        info!("Batch {} completed: {} successes, {} failures", 
-              batch_id, success_count, failure_count);
+        info!(
+            "Batch {} completed: {} successes, {} failures",
+            batch_id, success_count, failure_count
+        );
 
         // Return success if at least some items were processed successfully
         if success_count > 0 {
@@ -482,12 +519,18 @@ impl JobOrchestrator {
         };
 
         if claimed_batch.is_empty() {
-            debug!("No work available for test cycle on instance {}", self.instance_id);
+            debug!(
+                "No work available for test cycle on instance {}",
+                self.instance_id
+            );
             return Ok(false);
         }
 
-        debug!("Test cycle claimed batch {} with {} wallet-token pair", 
-               batch_id, claimed_batch.len());
+        debug!(
+            "Test cycle claimed batch {} with {} wallet-token pair",
+            batch_id,
+            claimed_batch.len()
+        );
 
         // Process the single claimed item
         let result = self.process_claimed_batch(&claimed_batch, &batch_id).await;
@@ -506,8 +549,12 @@ impl JobOrchestrator {
                 // Failed, return items to queue
                 warn!("Test batch {} processing failed: {}", batch_id, e);
                 let redis = &self.persistence_client;
-                if let Err(return_err) = redis.return_failed_batch(&batch_id, &claimed_batch).await {
-                    error!("Failed to return failed test batch {} to queue: {}", batch_id, return_err);
+                if let Err(return_err) = redis.return_failed_batch(&batch_id, &claimed_batch).await
+                {
+                    error!(
+                        "Failed to return failed test batch {} to queue: {}",
+                        batch_id, return_err
+                    );
                 }
                 Err(e)
             }
@@ -536,15 +583,25 @@ impl JobOrchestrator {
         tokio::spawn(async move {
             if let Err(e) = orchestrator.execute_batch_job(job_id).await {
                 error!("Batch job {} failed with system error: {}", job_id, e);
-                
+
                 // Mark job as Failed due to system-level error
-                if let Err(update_err) = orchestrator.mark_batch_job_as_failed(job_id, &e.to_string()).await {
-                    error!("Failed to update batch job {} status to Failed: {}", job_id, update_err);
+                if let Err(update_err) = orchestrator
+                    .mark_batch_job_as_failed(job_id, &e.to_string())
+                    .await
+                {
+                    error!(
+                        "Failed to update batch job {} status to Failed: {}",
+                        job_id, update_err
+                    );
                 }
             }
         });
 
-        info!("Submitted batch job {} for {} wallets", job_id, wallet_addresses.len());
+        info!(
+            "Submitted batch job {} for {} wallets",
+            job_id,
+            wallet_addresses.len()
+        );
 
         Ok(job_id)
     }
@@ -553,64 +610,85 @@ impl JobOrchestrator {
     async fn execute_batch_job(&self, job_id: Uuid) -> Result<()> {
         let start_time = std::time::Instant::now();
         info!("🚀 Starting batch job execution: {}", job_id);
-        
+
         // Load job from PostgreSQL and update status to Running
         info!("📋 Loading batch job details from database...");
         let (wallet_addresses, chain, max_transactions) = {
             let persistence_client = &self.persistence_client;
-            let persistent_job = persistence_client.get_batch_job(&job_id.to_string()).await?
-                .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
-            
+            let persistent_job = persistence_client
+                .get_batch_job(&job_id.to_string())
+                .await?
+                .ok_or_else(|| {
+                    OrchestratorError::JobExecution(format!("Batch job {} not found", job_id))
+                })?;
+
             let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
-            info!("✅ Job loaded successfully - Chain: {}, Wallets: {}, Max Transactions: {:?}", 
-                  job.chain, job.wallet_addresses.len(), job.get_max_transactions());
-            
+            info!(
+                "✅ Job loaded successfully - Chain: {}, Wallets: {}, Max Transactions: {:?}",
+                job.chain,
+                job.wallet_addresses.len(),
+                job.get_max_transactions()
+            );
+
             job.status = JobStatus::Running;
             job.started_at = Some(Utc::now());
             info!("🔄 Updating job status to Running...");
 
             // Update status in PostgreSQL
             let updated_persistent_job = job.to_persistence_batch_job()?;
-            persistence_client.update_batch_job(&updated_persistent_job).await?;
+            persistence_client
+                .update_batch_job(&updated_persistent_job)
+                .await?;
             info!("✅ Job status updated in database");
 
-            (job.wallet_addresses.clone(), job.chain.clone(), job.get_max_transactions())
+            (
+                job.wallet_addresses.clone(),
+                job.chain.clone(),
+                job.get_max_transactions(),
+            )
         };
 
-        info!("🎯 Starting batch job execution: {} for {} wallets on {} chain", 
-              job_id, wallet_addresses.len(), chain);
+        info!(
+            "🎯 Starting batch job execution: {} for {} wallets on {} chain",
+            job_id,
+            wallet_addresses.len(),
+            chain
+        );
 
         // Process wallets in parallel with timeout
         let wallet_count = wallet_addresses.len();
-        info!("⚡ Starting parallel processing of {} wallets (timeout: 10 minutes per wallet)...", wallet_count);
+        info!(
+            "⚡ Starting parallel processing of {} wallets (timeout: 10 minutes per wallet)...",
+            wallet_count
+        );
         let futures = wallet_addresses.iter().enumerate().map(|(index, wallet)| {
             let wallet_clone = wallet.clone();
             let chain_clone = chain.clone();
             async move {
                 let wallet_start_time = std::time::Instant::now();
                 info!("🔄 Processing wallet {}/{}: {} on {}", index + 1, wallet_count, wallet_clone, chain_clone);
-                
+
                 // Add timeout for each wallet processing (10 minutes max)
                 let timeout_duration = Duration::from_secs(600);
                 let result = match tokio::time::timeout(
-                    timeout_duration, 
+                    timeout_duration,
                     self.process_single_wallet(&wallet_clone, &chain_clone, max_transactions)
                 ).await {
                     Ok(Ok(report)) => {
                         let elapsed = wallet_start_time.elapsed();
-                        info!("✅ Wallet {}/{} completed successfully in {:.2}s: {} (Realized P&L: ${:.2}, Unrealized P&L: ${:.2})", 
+                        info!("✅ Wallet {}/{} completed successfully in {:.2}s: {} (Realized P&L: ${:.2}, Unrealized P&L: ${:.2})",
                               index + 1, wallet_count, elapsed.as_secs_f64(), wallet_clone,
                               report.total_realized_pnl_usd, report.total_unrealized_pnl_usd);
                         Ok(report)
                     },
                     Ok(Err(e)) => {
                         let elapsed = wallet_start_time.elapsed();
-                        warn!("❌ Wallet {}/{} failed in {:.2}s: {} - Error: {}", 
+                        warn!("❌ Wallet {}/{} failed in {:.2}s: {} - Error: {}",
                               index + 1, wallet_count, elapsed.as_secs_f64(), wallet_clone, e);
                         Err(e)
                     },
                     Err(_) => {
-                        warn!("⏰ Wallet {}/{} timed out after {} seconds: {}", 
+                        warn!("⏰ Wallet {}/{} timed out after {} seconds: {}",
                               index + 1, wallet_count, timeout_duration.as_secs(), wallet_clone);
                         Err(OrchestratorError::JobExecution(
                             format!("Wallet processing timed out after {} seconds", timeout_duration.as_secs())
@@ -621,10 +699,16 @@ impl JobOrchestrator {
             }
         });
 
-        info!("⏳ Waiting for all {} wallet processing tasks to complete...", wallet_count);
+        info!(
+            "⏳ Waiting for all {} wallet processing tasks to complete...",
+            wallet_count
+        );
         let results = join_all(futures).await;
         let processing_elapsed = start_time.elapsed();
-        info!("🏁 All wallet processing completed in {:.2}s", processing_elapsed.as_secs_f64());
+        info!(
+            "🏁 All wallet processing completed in {:.2}s",
+            processing_elapsed.as_secs_f64()
+        );
 
         // Store individual P&L results in main PostgreSQL table and batch results
         info!("💾 Storing P&L results to database...");
@@ -632,38 +716,55 @@ impl JobOrchestrator {
             let mut success_count = 0;
             let total_results = results.len();
             let successful_results = results.iter().filter(|(_, r)| r.is_ok()).count();
-            info!("📊 Processing {} results ({} successful, {} failed)", 
-                  total_results, successful_results, total_results - successful_results);
-            
+            info!(
+                "📊 Processing {} results ({} successful, {} failed)",
+                total_results,
+                successful_results,
+                total_results - successful_results
+            );
+
             // Store each successful wallet's rich P&L result in main pnl_results table
             for (wallet, result) in &results {
                 if let Ok(portfolio_result) = result {
                     // Store rich portfolio result in main table for individual wallet queries
                     let persistence_client = &self.persistence_client;
                     // Use the chain from the batch job
-                    info!("💾 Storing result for wallet: {} (Realized: ${:.2}, Unrealized: ${:.2}, {} tokens)", 
-                          wallet, portfolio_result.total_realized_pnl_usd, 
+                    info!("💾 Storing result for wallet: {} (Realized: ${:.2}, Unrealized: ${:.2}, {} tokens)",
+                          wallet, portfolio_result.total_realized_pnl_usd,
                           portfolio_result.total_unrealized_pnl_usd, portfolio_result.token_results.len());
-                    match persistence_client.store_pnl_result_with_source(wallet, &chain, portfolio_result, "batch").await {
+                    match persistence_client
+                        .store_pnl_result_with_source(wallet, &chain, portfolio_result, "batch")
+                        .await
+                    {
                         Ok(_) => {
-                            info!("✅ Successfully stored P&L result for wallet {} from batch job {}", wallet, job_id);
+                            info!(
+                                "✅ Successfully stored P&L result for wallet {} from batch job {}",
+                                wallet, job_id
+                            );
                             success_count += 1;
                         }
                         Err(e) => {
-                            warn!("❌ Failed to store P&L result for wallet {} from batch job {}: {}", wallet, job_id, e);
+                            warn!(
+                                "❌ Failed to store P&L result for wallet {} from batch job {}: {}",
+                                wallet, job_id, e
+                            );
                         }
                     }
                 } else if let Err(e) = result {
                     warn!("⚠️ Skipping storage for failed wallet {}: {}", wallet, e);
                 }
             }
-            
+
             // Update batch job status to completed in PostgreSQL
             info!("🔄 Updating batch job status to Completed...");
             let persistence_client = &self.persistence_client;
-            let persistent_job = persistence_client.get_batch_job(&job_id.to_string()).await?
-                .ok_or_else(|| OrchestratorError::JobExecution(format!("Batch job {} not found", job_id)))?;
-            
+            let persistent_job = persistence_client
+                .get_batch_job(&job_id.to_string())
+                .await?
+                .ok_or_else(|| {
+                    OrchestratorError::JobExecution(format!("Batch job {} not found", job_id))
+                })?;
+
             let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
             job.status = JobStatus::Completed;
             job.completed_at = Some(Utc::now());
@@ -674,20 +775,25 @@ impl JobOrchestrator {
 
             // Update final status
             let updated_persistent_job = job.to_persistence_batch_job()?;
-            persistence_client.update_batch_job(&updated_persistent_job).await?;
+            persistence_client
+                .update_batch_job(&updated_persistent_job)
+                .await?;
             info!("✅ Batch job status updated to Completed in database");
 
             success_count
         };
 
         let total_elapsed = start_time.elapsed();
-        info!("🎉 Batch job {} completed successfully in {:.2}s: {}/{} wallets successful ({:.1}% success rate)", 
-              job_id, total_elapsed.as_secs_f64(), successful_count, wallet_count, 
+        info!("🎉 Batch job {} completed successfully in {:.2}s: {}/{} wallets successful ({:.1}% success rate)",
+              job_id, total_elapsed.as_secs_f64(), successful_count, wallet_count,
               (successful_count as f64 / wallet_count as f64) * 100.0);
 
         if successful_count < wallet_count {
             let failed_count = wallet_count - successful_count;
-            warn!("⚠️ {} out of {} wallets failed processing", failed_count, wallet_count);
+            warn!(
+                "⚠️ {} out of {} wallets failed processing",
+                failed_count, wallet_count
+            );
         }
 
         Ok(())
@@ -717,24 +823,30 @@ impl JobOrchestrator {
     /// Get batch job results from PostgreSQL using wallet addresses from batch job
     pub async fn get_batch_job_results(&self, job_id: &str) -> Result<Vec<PortfolioPnLResult>> {
         let persistence = &self.persistence_client;
-        
+
         // First get the batch job to get the wallet addresses
         match persistence.get_batch_job(job_id).await? {
             Some(batch_job) => {
                 let mut results = Vec::new();
-                
+
                 // Fetch P&L results for each wallet in the batch
                 for wallet_address in &batch_job.wallet_addresses {
-                    match persistence.get_portfolio_pnl_result(wallet_address, &batch_job.chain).await? {
+                    match persistence
+                        .get_portfolio_pnl_result(wallet_address, &batch_job.chain)
+                        .await?
+                    {
                         Some(stored_result) => {
                             results.push(stored_result.portfolio_result);
                         }
                         None => {
-                            debug!("No P&L result found for wallet {} in batch {}", wallet_address, job_id);
+                            debug!(
+                                "No P&L result found for wallet {} in batch {}",
+                                wallet_address, job_id
+                            );
                         }
                     }
                 }
-                
+
                 Ok(results)
             }
             None => {
@@ -747,30 +859,37 @@ impl JobOrchestrator {
     /// Mark a batch job as failed due to system-level error
     async fn mark_batch_job_as_failed(&self, job_id: Uuid, error_message: &str) -> Result<()> {
         let redis = &self.persistence_client;
-        
+
         // Try to get the job and update its status to Failed
         if let Some(persistent_job) = redis.get_batch_job(&job_id.to_string()).await? {
             let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
             job.status = JobStatus::Failed;
             job.completed_at = Some(Utc::now());
-            
+
             // Update the job in database
             let updated_persistent_job = job.to_persistence_batch_job()?;
             redis.update_batch_job(&updated_persistent_job).await?;
-            
-            info!("Marked batch job {} as Failed due to system error: {}", job_id, error_message);
+
+            info!(
+                "Marked batch job {} as Failed due to system error: {}",
+                job_id, error_message
+            );
         } else {
             warn!("Could not find batch job {} to mark as failed", job_id);
         }
-        
+
         Ok(())
     }
 
     /// Get all batch jobs with pagination
-    pub async fn get_all_batch_jobs(&self, limit: usize, offset: usize) -> Result<(Vec<BatchJob>, usize)> {
+    pub async fn get_all_batch_jobs(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<BatchJob>, usize)> {
         let redis = &self.persistence_client;
         let (persistent_jobs, total_count) = redis.get_all_batch_jobs(limit, offset).await?;
-        
+
         let mut jobs = Vec::new();
         for persistent_job in persistent_jobs {
             match BatchJob::from_persistence_batch_job(persistent_job) {
@@ -780,7 +899,7 @@ impl JobOrchestrator {
                 }
             }
         }
-        
+
         Ok((jobs, total_count))
     }
 
@@ -790,27 +909,48 @@ impl JobOrchestrator {
         pair: &DiscoveredWalletToken,
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
-        debug!("🎯 Starting targeted P&L analysis for wallet: {} on token: {} ({})", 
-               pair.wallet_address, pair.token_symbol, pair.token_address);
+        debug!(
+            "🎯 Starting targeted P&L analysis for wallet: {} on token: {} ({})",
+            pair.wallet_address, pair.token_symbol, pair.token_address
+        );
 
         // Use the same routing logic as batch jobs for consistency
-        info!("🔄 Using Zerion+BirdEye hybrid for continuous analysis of wallet: {}", pair.wallet_address);
+        info!(
+            "🔄 Using Zerion+BirdEye hybrid for continuous analysis of wallet: {}",
+            pair.wallet_address
+        );
 
         // Route based on chain
         let report = match pair.chain.to_lowercase().as_str() {
             "solana" => {
                 // Always use Zerion+BirdEye hybrid for Solana
-                info!("🦋 Using Zerion+BirdEye hybrid for continuous analysis of wallet: {}", pair.wallet_address);
-                self.process_single_wallet_with_zerion(&pair.wallet_address, &pair.chain, max_transactions).await?
+                info!(
+                    "🦋 Using Zerion+BirdEye hybrid for continuous analysis of wallet: {}",
+                    pair.wallet_address
+                );
+                self.process_single_wallet_with_zerion(
+                    &pair.wallet_address,
+                    &pair.chain,
+                    max_transactions,
+                )
+                .await?
             }
             _ => {
-                // For non-Solana chains, use existing methods
-                self.process_single_wallet_with_birdeye(&pair.wallet_address, &pair.chain, max_transactions).await?
+                error!(
+                    "❌ Chain {} not supported. Only Solana is currently supported.",
+                    pair.chain
+                );
+                return Err(OrchestratorError::Config(format!(
+                    "Unsupported chain: {}",
+                    pair.chain
+                )));
             }
         };
 
-        debug!("✅ Targeted P&L analysis completed for wallet: {} on token: {}", 
-               pair.wallet_address, pair.token_symbol);
+        debug!(
+            "✅ Targeted P&L analysis completed for wallet: {} on token: {}",
+            pair.wallet_address, pair.token_symbol
+        );
 
         Ok(report)
     }
@@ -822,191 +962,62 @@ impl JobOrchestrator {
         chain: &str,
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
-        info!("🔍 Starting P&L analysis for wallet: {} on chain: {} (max_txs: {:?})", 
-              wallet_address, chain, max_transactions);
-              
+        info!(
+            "🔍 Starting P&L analysis for wallet: {} on chain: {} (max_txs: {:?})",
+            wallet_address, chain, max_transactions
+        );
+
         // Route to appropriate client based on chain
         let result = match chain.to_lowercase().as_str() {
             "solana" => {
                 // Always use Zerion+BirdEye hybrid for Solana
-                info!("🦋 Using Zerion+BirdEye hybrid for Solana P&L analysis of wallet: {}", wallet_address);
-                self.process_single_wallet_with_zerion(wallet_address, chain, max_transactions).await
+                info!(
+                    "🦋 Using Zerion+BirdEye hybrid for Solana P&L analysis of wallet: {}",
+                    wallet_address
+                );
+                self.process_single_wallet_with_zerion(wallet_address, chain, max_transactions)
+                    .await
             }
             "ethereum" | "base" | "bsc" => {
                 // EVM chains not supported in Zerion+BirdEye hybrid mode
-                error!("❌ Chain {} not supported in Zerion+BirdEye hybrid mode", chain);
-                Err(OrchestratorError::Config(format!("Chain {} not supported in hybrid mode", chain)))
+                error!(
+                    "❌ Chain {} not supported in Zerion+BirdEye hybrid mode",
+                    chain
+                );
+                Err(OrchestratorError::Config(format!(
+                    "Chain {} not supported in hybrid mode",
+                    chain
+                )))
             }
             _ => {
-                error!("❌ Unsupported chain: {}. Supported chains: solana, ethereum, base, bsc", chain);
-                return Err(OrchestratorError::Config(format!("Unsupported chain: {}", chain)));
+                error!(
+                    "❌ Unsupported chain: {}. Supported chains: solana, ethereum, base, bsc",
+                    chain
+                );
+                return Err(OrchestratorError::Config(format!(
+                    "Unsupported chain: {}",
+                    chain
+                )));
             }
         };
-        
+
         match &result {
             Ok(portfolio) => {
-                info!("✅ P&L analysis completed for wallet: {} - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens", 
-                      wallet_address, portfolio.total_realized_pnl_usd, 
+                info!("✅ P&L analysis completed for wallet: {} - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens",
+                      wallet_address, portfolio.total_realized_pnl_usd,
                       portfolio.total_unrealized_pnl_usd, portfolio.token_results.len());
             }
             Err(e) => {
-                warn!("❌ P&L analysis failed for wallet: {} - Error: {}", wallet_address, e);
+                warn!(
+                    "❌ P&L analysis failed for wallet: {} - Error: {}",
+                    wallet_address, e
+                );
             }
         }
-        
+
         result
     }
 
-    /// Process a single wallet using BirdEye transaction history API (captures swaps AND sends)
-    async fn process_single_wallet_with_birdeye(
-        &self,
-        wallet_address: &str,
-        chain: &str,
-        max_transactions: Option<u32>,
-    ) -> Result<PortfolioPnLResult> {
-        let step_start = std::time::Instant::now();
-        info!("🐦 Starting BirdEye P&L analysis for wallet: {} on chain: {}", wallet_address, chain);
-
-        let max_total_transactions = max_transactions
-            .unwrap_or(self.config.zerion.default_max_transactions);
-        info!("📋 Configuration: Max transactions = {}, BirdEye API timeout = {}s", 
-              max_total_transactions, self.config.birdeye.request_timeout_seconds);
-        
-        // Step 1: Fetch transaction history (includes both swaps AND sends)
-        info!("📥 Step 1/4: Fetching transaction history from BirdEye API with pagination...");
-        info!("🔄 Requesting up to {} transaction history entries for wallet {} (using pagination)", 
-               max_total_transactions, wallet_address);
-        
-        let history_start = std::time::Instant::now();
-        let history_transactions = self
-            .birdeye_client
-            .get_wallet_transaction_history_with_full_pagination(wallet_address, Some(chain), max_total_transactions)
-            .await?;
-        let history_elapsed = history_start.elapsed();
-
-        if history_transactions.is_empty() {
-            warn!("❌ No transaction history found for wallet: {}", wallet_address);
-            return Err(OrchestratorError::JobExecution(format!(
-                "No transaction history found for wallet: {}",
-                wallet_address
-            )));
-        }
-
-        info!("✅ Step 1 completed in {:.2}s: Found {} transaction history entries for wallet {}", 
-              history_elapsed.as_secs_f64(), history_transactions.len(), wallet_address);
-
-        // Step 2: Enrich transactions with price data
-        info!("💰 Step 2/4: Enriching {} transactions with historical price data...", history_transactions.len());
-        info!("🔧 Using PriceStrategy::Historical for accurate historical pricing (no fallbacks)");
-        
-        let enrich_start = std::time::Instant::now();
-        let birdeye_client_for_enricher = BirdEyeClient::new(self.config.birdeye.clone())?;
-        let mut price_enricher = PriceEnricher::new(birdeye_client_for_enricher);
-        
-        let enriched_transactions = price_enricher
-            .enrich_transactions_batch(history_transactions, PriceStrategy::Historical)
-            .await?;
-        let enrich_elapsed = enrich_start.elapsed();
-
-        if enriched_transactions.is_empty() {
-            warn!("❌ No enriched transactions after price resolution for wallet: {}", wallet_address);
-            return Err(OrchestratorError::JobExecution(format!(
-                "No enriched transactions after price resolution for wallet: {}",
-                wallet_address
-            )));
-        }
-
-        let successfully_enriched = enriched_transactions.iter().filter(|t| t.price_resolution_complete).count();
-        info!("✅ Step 2 completed in {:.2}s: {}/{} transactions successfully enriched ({:.1}% success rate)", 
-              enrich_elapsed.as_secs_f64(), successfully_enriched, enriched_transactions.len(),
-              (successfully_enriched as f64 / enriched_transactions.len() as f64) * 100.0);
-
-        // Step 3: Fetch current portfolio for accurate unrealized P&L calculation
-        info!("📈 Step 3/4: Fetching current portfolio for real-time token prices...");
-        info!("🔄 Requesting current wallet portfolio from BirdEye API for wallet {}", wallet_address);
-        
-        let portfolio_start = std::time::Instant::now();
-        let current_portfolio = self
-            .birdeye_client
-            .get_wallet_portfolio(wallet_address, Some(chain))
-            .await?;
-        let portfolio_elapsed = portfolio_start.elapsed();
-
-        let portfolio_total_value = current_portfolio.iter().map(|t| t.value_usd).sum::<f64>();
-        info!("✅ Step 3 completed in {:.2}s: Current portfolio fetched - {} tokens with total value ${:.2}", 
-              portfolio_elapsed.as_secs_f64(), current_portfolio.len(), portfolio_total_value);
-
-        // Extract current prices from portfolio for accurate unrealized P&L
-        info!("🔍 Processing current portfolio holdings for unrealized P&L...");
-        if !current_portfolio.is_empty() {
-            info!("📋 Current Holdings Detail:");
-            for (i, token) in current_portfolio.iter().enumerate().take(10) { // Show first 10 tokens
-                info!("   Token {}: {} {} (${:.6}/token) = ${:.2} value (balance: {:.6})",
-                      i+1, token.symbol.as_ref().unwrap_or(&"UNKNOWN".to_string()),
-                      token.address, token.price_usd, token.value_usd, token.ui_amount);
-            }
-            if current_portfolio.len() > 10 {
-                info!("   ... and {} more tokens", current_portfolio.len() - 10);
-            }
-        }
-        
-        let current_prices = extract_current_prices_from_portfolio(&current_portfolio);
-        info!("💲 Extracted {} current token prices for unrealized P&L calculation", current_prices.len());
-        
-        // Show some sample prices for debugging
-        if !current_prices.is_empty() {
-            info!("📊 Sample Current Prices (for unrealized P&L calculation):");
-            for (token_addr, price) in current_prices.iter().take(5) {
-                info!("   {}: ${:.6}", token_addr, price);
-            }
-        }
-
-        // Step 4: Calculate P&L using transaction history
-        info!("🧮 Step 4/4: Calculating P&L using enriched transactions...");
-        info!("🔧 Processing {} enriched transactions with {} current prices",
-              enriched_transactions.len(), current_prices.len());
-
-        let pnl_start = std::time::Instant::now();
-
-        // For hybrid mode, create a simple P&L result based on enriched transactions
-        // This is a simplified approach for the BirdEye path that works with current prices
-        info!("📊 Creating P&L result from {} enriched transactions", enriched_transactions.len());
-
-        let report = PortfolioPnLResult {
-            wallet_address: wallet_address.to_string(),
-            token_results: Vec::new(), // Simplified - tokens would be processed here
-            total_realized_pnl_usd: Decimal::ZERO,
-            total_unrealized_pnl_usd: Decimal::ZERO,
-            total_pnl_usd: Decimal::ZERO,
-            total_trades: enriched_transactions.len() as u32,
-            winning_trades: 0,
-            losing_trades: 0,
-            overall_win_rate_percentage: Decimal::ZERO,
-            avg_hold_time_minutes: Decimal::ZERO,
-            tokens_analyzed: current_prices.len() as u32,
-            events_processed: enriched_transactions.len() as u32,
-            analysis_timestamp: Utc::now(),
-            total_invested_usd: Decimal::ZERO,
-            total_returned_usd: Decimal::ZERO,
-            current_winning_streak: 0,
-            longest_winning_streak: 0,
-            current_losing_streak: 0,
-            longest_losing_streak: 0,
-            profit_percentage: Decimal::ZERO,
-            unique_tokens_count: current_prices.len() as u32,
-            active_days_count: 1,
-        };
-
-        let pnl_elapsed = pnl_start.elapsed();
-
-        let total_elapsed = step_start.elapsed();
-        info!("✅ Step 4 completed in {:.2}s: P&L calculation finished", pnl_elapsed.as_secs_f64());
-        info!("🎉 BirdEye P&L analysis completed for wallet {} in {:.2}s total - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens", 
-              wallet_address, total_elapsed.as_secs_f64(), report.total_realized_pnl_usd, 
-              report.total_unrealized_pnl_usd, report.token_results.len());
-
-        Ok(report)
-    }
 
     /// Process a single wallet using Zerion transaction data + BirdEye current portfolio (hybrid approach)
     async fn process_single_wallet_with_zerion(
@@ -1016,15 +1027,21 @@ impl JobOrchestrator {
         max_transactions: Option<u32>,
     ) -> Result<PortfolioPnLResult> {
         let step_start = std::time::Instant::now();
-        info!("🦋 Starting Zerion+BirdEye hybrid P&L analysis for wallet: {}", wallet_address);
+        info!(
+            "🦋 Starting Zerion+BirdEye hybrid P&L analysis for wallet: {}",
+            wallet_address
+        );
 
-        let zerion_client = self.zerion_client.as_ref()
-            .ok_or_else(|| OrchestratorError::Config("Zerion client not initialized".to_string()))?;
+        let zerion_client = self.zerion_client.as_ref().ok_or_else(|| {
+            OrchestratorError::Config("Zerion client not initialized".to_string())
+        })?;
 
-        let max_total_transactions = max_transactions
-            .unwrap_or(self.config.zerion.default_max_transactions);
-        info!("📋 Configuration: Max transactions = {}, Zerion timeout = {}s",
-              max_total_transactions, self.config.zerion.request_timeout_seconds);
+        let max_total_transactions =
+            max_transactions.unwrap_or(self.config.zerion.default_max_transactions);
+        info!(
+            "📋 Configuration: Max transactions = {}, Zerion timeout = {}s",
+            max_total_transactions, self.config.zerion.request_timeout_seconds
+        );
 
         // Step 1: Fetch transaction history from Zerion (includes embedded historical prices!)
         info!("📥 Step 1/3: Fetching transaction history from Zerion API...");
@@ -1033,12 +1050,19 @@ impl JobOrchestrator {
 
         let history_start = std::time::Instant::now();
         let zerion_transactions = zerion_client
-            .get_wallet_transactions_with_limit(wallet_address, "usd", max_total_transactions as usize)
+            .get_wallet_transactions_with_limit(
+                wallet_address,
+                "usd",
+                max_total_transactions as usize,
+            )
             .await?;
         let history_elapsed = history_start.elapsed();
 
         if zerion_transactions.is_empty() {
-            warn!("❌ No transaction history found for wallet: {}", wallet_address);
+            warn!(
+                "❌ No transaction history found for wallet: {}",
+                wallet_address
+            );
             return Err(OrchestratorError::JobExecution(format!(
                 "No transaction history found for wallet: {}",
                 wallet_address
@@ -1050,7 +1074,10 @@ impl JobOrchestrator {
 
         // Step 2: Fetch current portfolio from BirdEye for accurate unrealized P&L calculation
         info!("📈 Step 2/3: Fetching current portfolio from BirdEye for real-time token prices...");
-        info!("🔄 Requesting current wallet portfolio from BirdEye API for wallet {}", wallet_address);
+        info!(
+            "🔄 Requesting current wallet portfolio from BirdEye API for wallet {}",
+            wallet_address
+        );
 
         let portfolio_start = std::time::Instant::now();
         let current_portfolio = self
@@ -1067,10 +1094,17 @@ impl JobOrchestrator {
         info!("🔍 Processing current portfolio holdings for unrealized P&L...");
         if !current_portfolio.is_empty() {
             info!("📋 Current Holdings Detail:");
-            for (i, token) in current_portfolio.iter().enumerate().take(10) { // Show first 10 tokens
-                info!("   Token {}: {} {} (${:.6}/token) = ${:.2} value (balance: {:.6})",
-                      i+1, token.symbol.as_ref().unwrap_or(&"UNKNOWN".to_string()),
-                      token.address, token.price_usd, token.value_usd, token.ui_amount);
+            for (i, token) in current_portfolio.iter().enumerate().take(10) {
+                // Show first 10 tokens
+                info!(
+                    "   Token {}: {} {} (${:.6}/token) = ${:.2} value (balance: {:.6})",
+                    i + 1,
+                    token.symbol.as_ref().unwrap_or(&"UNKNOWN".to_string()),
+                    token.address,
+                    token.price_usd,
+                    token.value_usd,
+                    token.ui_amount
+                );
             }
             if current_portfolio.len() > 10 {
                 info!("   ... and {} more tokens", current_portfolio.len() - 10);
@@ -1078,23 +1112,36 @@ impl JobOrchestrator {
         }
 
         let current_prices = extract_current_prices_from_portfolio(&current_portfolio);
-        info!("💲 Extracted {} current token prices for unrealized P&L calculation", current_prices.len());
+        info!(
+            "💲 Extracted {} current token prices for unrealized P&L calculation",
+            current_prices.len()
+        );
 
         // Step 3: Calculate P&L using Zerion transactions with embedded prices + BirdEye current prices
-        info!("🧮 Step 3/3: Calculating P&L using Zerion embedded prices + BirdEye current prices...");
-        info!("🔧 Processing {} Zerion transactions with {} current prices",
-              zerion_transactions.len(), current_prices.len());
+        info!(
+            "🧮 Step 3/3: Calculating P&L using Zerion embedded prices + BirdEye current prices..."
+        );
+        info!(
+            "🔧 Processing {} Zerion transactions with {} current prices",
+            zerion_transactions.len(),
+            current_prices.len()
+        );
 
         let pnl_start = std::time::Instant::now();
-        let report = self.calculate_pnl_with_zerion_transactions(
-            wallet_address,
-            zerion_transactions,
-            current_prices
-        ).await?;
+        let report = self
+            .calculate_pnl_with_zerion_transactions(
+                wallet_address,
+                zerion_transactions,
+                current_prices,
+            )
+            .await?;
         let pnl_elapsed = pnl_start.elapsed();
 
         let total_elapsed = step_start.elapsed();
-        info!("✅ Step 3 completed in {:.2}s: P&L calculation finished", pnl_elapsed.as_secs_f64());
+        info!(
+            "✅ Step 3 completed in {:.2}s: P&L calculation finished",
+            pnl_elapsed.as_secs_f64()
+        );
         info!("🎉 Zerion+BirdEye hybrid P&L analysis completed for wallet {} in {:.2}s total - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens",
               wallet_address, total_elapsed.as_secs_f64(), report.total_realized_pnl_usd,
               report.total_unrealized_pnl_usd, report.token_results.len());
@@ -1112,16 +1159,21 @@ impl JobOrchestrator {
         info!("🚀 Starting Zerion P&L calculation with {} current prices for wallet: {} with {} transactions",
               current_prices.len(), wallet_address, zerion_transactions.len());
 
-        let zerion_client = self.zerion_client.as_ref()
-            .ok_or_else(|| OrchestratorError::Config("Zerion client not initialized".to_string()))?;
+        let zerion_client = self.zerion_client.as_ref().ok_or_else(|| {
+            OrchestratorError::Config("Zerion client not initialized".to_string())
+        })?;
 
         // Step 1: Convert Zerion transactions to financial events
-        let financial_events = zerion_client.convert_to_financial_events(&zerion_transactions, wallet_address);
+        let financial_events =
+            zerion_client.convert_to_financial_events(&zerion_transactions, wallet_address);
         info!("📊 Converted {} Zerion transactions into {} financial events (including send transactions)",
               zerion_transactions.len(), financial_events.len());
 
         if financial_events.is_empty() {
-            warn!("❌ No financial events generated from Zerion transactions for wallet: {}", wallet_address);
+            warn!(
+                "❌ No financial events generated from Zerion transactions for wallet: {}",
+                wallet_address
+            );
             return Err(OrchestratorError::JobExecution(format!(
                 "No financial events generated from Zerion transactions for wallet: {}",
                 wallet_address
@@ -1131,22 +1183,38 @@ impl JobOrchestrator {
         // Step 2: Group events by token for P&L processing
         let mut events_by_token: HashMap<String, Vec<NewFinancialEvent>> = HashMap::new();
         for event in financial_events {
-            events_by_token.entry(event.token_address.clone()).or_insert_with(Vec::new).push(event);
+            events_by_token
+                .entry(event.token_address.clone())
+                .or_insert_with(Vec::new)
+                .push(event);
         }
-        info!("🔧 Grouped events into {} unique tokens for P&L calculation", events_by_token.len());
+        info!(
+            "🔧 Grouped events into {} unique tokens for P&L calculation",
+            events_by_token.len()
+        );
 
         // Step 3: Calculate P&L using the new P&L engine with all events
         let pnl_engine = NewPnLEngine::new(wallet_address.to_string());
 
-        info!("💰 Calculating portfolio P&L for {} tokens", events_by_token.len());
+        info!(
+            "💰 Calculating portfolio P&L for {} tokens",
+            events_by_token.len()
+        );
 
         // Step 4: Calculate portfolio totals using the engine's method
-        let portfolio_result = pnl_engine.calculate_portfolio_pnl(events_by_token, Some(current_prices)).await
-            .map_err(|e| OrchestratorError::PnL(format!("Portfolio P&L calculation failed: {}", e)))?;
+        let portfolio_result = pnl_engine
+            .calculate_portfolio_pnl(events_by_token, Some(current_prices))
+            .await
+            .map_err(|e| {
+                OrchestratorError::PnL(format!("Portfolio P&L calculation failed: {}", e))
+            })?;
 
-        info!("🎯 Portfolio P&L Summary: Realized ${:.2}, Unrealized ${:.2}, Total ${:.2}",
-              portfolio_result.total_realized_pnl_usd, portfolio_result.total_unrealized_pnl_usd,
-              portfolio_result.total_pnl_usd);
+        info!(
+            "🎯 Portfolio P&L Summary: Realized ${:.2}, Unrealized ${:.2}, Total ${:.2}",
+            portfolio_result.total_realized_pnl_usd,
+            portfolio_result.total_unrealized_pnl_usd,
+            portfolio_result.total_pnl_usd
+        );
 
         Ok(portfolio_result)
     }
@@ -1165,12 +1233,14 @@ impl JobOrchestrator {
             match timeout(Duration::from_millis(1000), async {
                 let redis = &self.persistence_client;
                 redis.get_wallet_token_pairs_queue_size().await
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(size)) => size,
                 Ok(Err(_)) => {
                     warn!("Redis unavailable for queue size check");
                     0
-                },
+                }
                 Err(_) => {
                     warn!("Redis queue size check timed out");
                     0
@@ -1179,19 +1249,21 @@ impl JobOrchestrator {
         };
 
         let running_jobs_count = self.running_jobs.lock().await.len();
-        
+
         // Get batch jobs count from Redis
         let batch_jobs_count = {
             use tokio::time::{timeout, Duration as TokioDuration};
             match timeout(TokioDuration::from_millis(1000), async {
                 let redis = &self.persistence_client;
                 redis.get_batch_job_stats().await
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(stats)) => stats.total_jobs,
                 Ok(Err(_)) => {
                     warn!("Redis unavailable for batch jobs count");
                     0
-                },
+                }
                 Err(_) => {
                     warn!("Redis batch jobs count check timed out");
                     0
@@ -1217,13 +1289,18 @@ impl JobOrchestrator {
     /// Consolidate duplicate transaction hashes by merging multi-step swaps into single transactions
     /// This preprocessing step ensures each unique tx_hash results in exactly one transaction
     /// preserving the existing P&L algorithm's expectation of one transaction = one buy/sell pair
-    pub fn consolidate_duplicate_hashes(transactions: Vec<GeneralTraderTransaction>) -> Vec<GeneralTraderTransaction> {
+    pub fn consolidate_duplicate_hashes(
+        transactions: Vec<GeneralTraderTransaction>,
+    ) -> Vec<GeneralTraderTransaction> {
         use std::collections::HashMap;
-        
+
         // Group transactions by tx_hash
         let mut tx_groups: HashMap<String, Vec<GeneralTraderTransaction>> = HashMap::new();
         for tx in transactions {
-            tx_groups.entry(tx.tx_hash.clone()).or_insert_with(Vec::new).push(tx);
+            tx_groups
+                .entry(tx.tx_hash.clone())
+                .or_insert_with(Vec::new)
+                .push(tx);
         }
 
         let mut consolidated_transactions = Vec::new();
@@ -1236,14 +1313,21 @@ impl JobOrchestrator {
             } else {
                 // Consolidation path: Multiple entries - consolidate into single transaction (0.3% of cases)
                 duplicates_found += entries.len() - 1;
-                info!("🔄 Consolidating {} duplicate entries for tx_hash: {}", entries.len(), tx_hash);
+                info!(
+                    "🔄 Consolidating {} duplicate entries for tx_hash: {}",
+                    entries.len(),
+                    tx_hash
+                );
                 consolidated_transactions.push(Self::consolidate_duplicate_entries(entries));
             }
         }
 
         if duplicates_found > 0 {
-            info!("✅ Consolidated {} duplicate hash entries across {} unique transactions", 
-                  duplicates_found, consolidated_transactions.len());
+            info!(
+                "✅ Consolidated {} duplicate hash entries across {} unique transactions",
+                duplicates_found,
+                consolidated_transactions.len()
+            );
         }
 
         consolidated_transactions
@@ -1251,11 +1335,13 @@ impl JobOrchestrator {
 
     /// Consolidate multiple entries with the same tx_hash into a single net transaction
     /// This handles multi-step swaps by calculating net token flows and weighted average pricing
-    pub fn consolidate_duplicate_entries(entries: Vec<GeneralTraderTransaction>) -> GeneralTraderTransaction {
+    pub fn consolidate_duplicate_entries(
+        entries: Vec<GeneralTraderTransaction>,
+    ) -> GeneralTraderTransaction {
         use std::collections::HashMap;
-        
+
         let first_entry = &entries[0];
-        
+
         // Calculate net flows for each token address
         let mut token_flows: HashMap<String, f64> = HashMap::new();
         let mut token_prices: HashMap<String, f64> = HashMap::new();
@@ -1287,10 +1373,14 @@ impl JobOrchestrator {
         let mut primary_inflow: Option<(String, f64)> = None;
 
         for (token_addr, &net_flow) in &token_flows {
-            if net_flow.abs() < 0.000001 { continue; } // Skip dust amounts
+            if net_flow.abs() < 0.000001 {
+                continue;
+            } // Skip dust amounts
 
             if net_flow < 0.0 {
-                if primary_outflow.is_none() || net_flow.abs() > primary_outflow.as_ref().unwrap().1.abs() {
+                if primary_outflow.is_none()
+                    || net_flow.abs() > primary_outflow.as_ref().unwrap().1.abs()
+                {
                     primary_outflow = Some((token_addr.clone(), net_flow));
                 }
             } else {
@@ -1304,17 +1394,17 @@ impl JobOrchestrator {
         let (outflow_addr, outflow_amount) = match primary_outflow {
             Some(outflow) => outflow,
             None => {
-                warn!("⚠️ Skipping duplicate consolidation for tx {}: No outflow token found. Token flows: {:?}", 
+                warn!("⚠️ Skipping duplicate consolidation for tx {}: No outflow token found. Token flows: {:?}",
                       first_entry.tx_hash, token_flows);
                 // Return the first entry unchanged when consolidation fails
                 return first_entry.clone();
             }
         };
-        
+
         let (inflow_addr, inflow_amount) = match primary_inflow {
             Some(inflow) => inflow,
             None => {
-                warn!("⚠️ Skipping duplicate consolidation for tx {}: No inflow token found. Token flows: {:?}", 
+                warn!("⚠️ Skipping duplicate consolidation for tx {}: No inflow token found. Token flows: {:?}",
                       first_entry.tx_hash, token_flows);
                 // Return the first entry unchanged when consolidation fails
                 return first_entry.clone();
@@ -1327,16 +1417,14 @@ impl JobOrchestrator {
         consolidated_quote.ui_amount = outflow_amount.abs();
         consolidated_quote.type_swap = "from".to_string();
 
-        // Create consolidated base side (inflow - "to") 
+        // Create consolidated base side (inflow - "to")
         let mut consolidated_base = token_side_info[&inflow_addr].clone();
         consolidated_base.ui_change_amount = inflow_amount; // positive
         consolidated_base.ui_amount = inflow_amount;
         consolidated_base.type_swap = "to".to_string();
 
         // Calculate consolidated volume_usd
-        let total_volume_usd = entries.iter()
-            .map(|e| e.volume_usd)
-            .sum::<f64>();
+        let total_volume_usd = entries.iter().map(|e| e.volume_usd).sum::<f64>();
 
         // Create consolidated transaction that maintains the same structure
         GeneralTraderTransaction {
@@ -1363,13 +1451,19 @@ impl JobOrchestrator {
         let job = TokenAnalysisJob::new(token_addresses.clone(), chain.clone(), max_transactions);
         let job_id = job.id;
 
-        info!("🚀 Starting token analysis job {} for {} tokens on {}", 
-              job_id, token_addresses.len(), chain);
+        info!(
+            "🚀 Starting token analysis job {} for {} tokens on {}",
+            job_id,
+            token_addresses.len(),
+            chain
+        );
 
         // Store job in persistence and memory
-        self.persistence_client.store_token_analysis_job(&job).await
+        self.persistence_client
+            .store_token_analysis_job(&job)
+            .await
             .map_err(|e| OrchestratorError::Persistence(e.to_string()))?;
-        
+
         {
             let mut running_jobs = self.running_token_analysis_jobs.lock().await;
             running_jobs.insert(job_id, job);
@@ -1379,18 +1473,28 @@ impl JobOrchestrator {
         let orchestrator_clone = self.clone();
         let job_id_clone = job_id;
         tokio::spawn(async move {
-            if let Err(e) = orchestrator_clone.process_token_analysis_job(job_id_clone).await {
+            if let Err(e) = orchestrator_clone
+                .process_token_analysis_job(job_id_clone)
+                .await
+            {
                 error!("Token analysis job {} failed: {}", job_id_clone, e);
-                
+
                 // Update job status to failed
                 let mut running_jobs = orchestrator_clone.running_token_analysis_jobs.lock().await;
                 if let Some(job) = running_jobs.get_mut(&job_id_clone) {
                     job.status = JobStatus::Failed;
                     job.completed_at = Some(Utc::now());
-                    
+
                     // Update in persistence
-                    if let Err(persist_err) = orchestrator_clone.persistence_client.update_token_analysis_job(job).await {
-                        error!("Failed to update failed job {} in persistence: {}", job_id_clone, persist_err);
+                    if let Err(persist_err) = orchestrator_clone
+                        .persistence_client
+                        .update_token_analysis_job(job)
+                        .await
+                    {
+                        error!(
+                            "Failed to update failed job {} in persistence: {}",
+                            job_id_clone, persist_err
+                        );
                     }
                 }
             }
@@ -1406,17 +1510,24 @@ impl JobOrchestrator {
         // Get job from running jobs and update status
         let (token_addresses, chain, max_transactions) = {
             let mut running_jobs = self.running_token_analysis_jobs.lock().await;
-            let job = running_jobs.get_mut(&job_id)
-                .ok_or_else(|| OrchestratorError::JobExecution(format!("Token analysis job {} not found", job_id)))?;
-            
+            let job = running_jobs.get_mut(&job_id).ok_or_else(|| {
+                OrchestratorError::JobExecution(format!("Token analysis job {} not found", job_id))
+            })?;
+
             job.status = JobStatus::Running;
             job.started_at = Some(Utc::now());
-            
+
             // Update in persistence
-            self.persistence_client.update_token_analysis_job(job).await
+            self.persistence_client
+                .update_token_analysis_job(job)
+                .await
                 .map_err(|e| OrchestratorError::Persistence(e.to_string()))?;
-            
-            (job.token_addresses.clone(), job.chain.clone(), job.get_max_transactions())
+
+            (
+                job.token_addresses.clone(),
+                job.chain.clone(),
+                job.get_max_transactions(),
+            )
         };
 
         let mut discovered_wallet_addresses = std::collections::HashSet::new();
@@ -1424,23 +1535,37 @@ impl JobOrchestrator {
         // Step 1: Discover top traders for each token
         for token_address in &token_addresses {
             info!("🔍 Discovering top traders for token: {}", token_address);
-            
-            match self.birdeye_client.get_top_traders_paginated(token_address, &chain).await {
+
+            match self
+                .birdeye_client
+                .get_top_traders_paginated(token_address, &chain)
+                .await
+            {
                 Ok(traders) => {
-                    info!("📊 Found {} top traders for token {}", traders.len(), token_address);
+                    info!(
+                        "📊 Found {} top traders for token {}",
+                        traders.len(),
+                        token_address
+                    );
                     for trader in traders {
                         discovered_wallet_addresses.insert(trader.owner);
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to get top traders for token {}: {}", token_address, e);
+                    warn!(
+                        "Failed to get top traders for token {}: {}",
+                        token_address, e
+                    );
                 }
             }
         }
 
         let discovered_wallets: Vec<String> = discovered_wallet_addresses.into_iter().collect();
-        info!("🎯 Discovered {} unique wallets across {} tokens", 
-              discovered_wallets.len(), token_addresses.len());
+        info!(
+            "🎯 Discovered {} unique wallets across {} tokens",
+            discovered_wallets.len(),
+            token_addresses.len()
+        );
 
         // Update job with discovered wallets
         {
@@ -1457,25 +1582,37 @@ impl JobOrchestrator {
         // Process wallets in parallel batches (like batch jobs)
         let batch_size = self.config.system.pnl_parallel_batch_size.unwrap_or(10);
         for wallet_chunk in discovered_wallets.chunks(batch_size) {
-            let futures: Vec<_> = wallet_chunk.iter().map(|wallet| {
-                let wallet = wallet.clone();
-                let chain = chain.clone();
-                let max_transactions = max_transactions;
-                async move {
-                    let result = self.process_single_wallet_for_token_analysis(&wallet, &chain, max_transactions).await;
-                    (wallet, result)
-                }
-            }).collect();
+            let futures: Vec<_> = wallet_chunk
+                .iter()
+                .map(|wallet| {
+                    let wallet = wallet.clone();
+                    let chain = chain.clone();
+                    let max_transactions = max_transactions;
+                    async move {
+                        let result = self
+                            .process_single_wallet_for_token_analysis(
+                                &wallet,
+                                &chain,
+                                max_transactions,
+                            )
+                            .await;
+                        (wallet, result)
+                    }
+                })
+                .collect();
 
             let results = join_all(futures).await;
-            
+
             for (wallet, result) in results {
                 match result {
                     Ok(_) => {
                         analyzed_wallets.push(wallet);
                     }
                     Err(e) => {
-                        warn!("Failed to analyze wallet {} for token analysis: {}", wallet, e);
+                        warn!(
+                            "Failed to analyze wallet {} for token analysis: {}",
+                            wallet, e
+                        );
                         failed_wallets.push(wallet);
                     }
                 }
@@ -1490,10 +1627,13 @@ impl JobOrchestrator {
                 job.failed_wallets = failed_wallets.clone();
                 job.status = JobStatus::Completed;
                 job.completed_at = Some(Utc::now());
-                
+
                 // Update in persistence
                 if let Err(e) = self.persistence_client.update_token_analysis_job(job).await {
-                    error!("Failed to update completed job {} in persistence: {}", job_id, e);
+                    error!(
+                        "Failed to update completed job {} in persistence: {}",
+                        job_id, e
+                    );
                 }
             }
         }
@@ -1512,8 +1652,12 @@ impl JobOrchestrator {
             }
         });
 
-        info!("✅ Token analysis job {} completed: {}/{} wallets successfully analyzed", 
-              job_id, analyzed_wallets.len(), discovered_wallets.len());
+        info!(
+            "✅ Token analysis job {} completed: {}/{} wallets successfully analyzed",
+            job_id,
+            analyzed_wallets.len(),
+            discovered_wallets.len()
+        );
 
         Ok(())
     }
@@ -1526,62 +1670,78 @@ impl JobOrchestrator {
         max_transactions: Option<u32>,
     ) -> Result<()> {
         // Use the same P&L processing logic as batch jobs, but store with "token_analysis" source
-        let transactions = self.birdeye_client
+        let transactions = self
+            .birdeye_client
             .get_all_trader_transactions(wallet_address, chain, None, None, max_transactions)
             .await?;
 
         if transactions.is_empty() {
             warn!("No transactions found for wallet {}", wallet_address);
-            return Err(OrchestratorError::JobExecution(
-                format!("No transactions found for wallet {}", wallet_address)
-            ));
+            return Err(OrchestratorError::JobExecution(format!(
+                "No transactions found for wallet {}",
+                wallet_address
+            )));
         }
 
         // Step 0: Preprocessing - Consolidate duplicate transaction hashes (DEX aggregation fix)
         let original_count = transactions.len();
         let consolidated_transactions = Self::consolidate_duplicate_hashes(transactions);
         let consolidated_count = consolidated_transactions.len();
-        
+
         if original_count != consolidated_count {
-            info!("🔄 Token analysis preprocessing: {} transactions → {} consolidated transactions", 
-                  original_count, consolidated_count);
+            info!(
+                "🔄 Token analysis preprocessing: {} transactions → {} consolidated transactions",
+                original_count, consolidated_count
+            );
         }
 
         let parser = NewTransactionParser::new(wallet_address.to_string());
-        let events = parser.parse_transactions(consolidated_transactions).await
+        let events = parser
+            .parse_transactions(consolidated_transactions)
+            .await
             .map_err(|e| OrchestratorError::PnL(e))?;
 
         if events.is_empty() {
             warn!("No financial events found for wallet {}", wallet_address);
-            return Err(OrchestratorError::JobExecution(
-                format!("No financial events found for wallet {}", wallet_address)
-            ));
+            return Err(OrchestratorError::JobExecution(format!(
+                "No financial events found for wallet {}",
+                wallet_address
+            )));
         }
 
         // Group events by token for P&L processing
         let events_by_token = NewTransactionParser::group_events_by_token(events);
-        
+
         // Create P&L engine with balance API integration for token analysis
-        let balance_fetcher = if true { // Always enabled for hybrid mode
+        let balance_fetcher = if true {
+            // Always enabled for hybrid mode
             BalanceFetcher::new(
-                self.config.birdeye.api_key.clone(), 
-                Some(self.config.birdeye.api_base_url.clone())
+                self.config.birdeye.api_key.clone(),
+                Some(self.config.birdeye.api_base_url.clone()),
             )
         } else {
             BalanceFetcher::new("disabled".to_string(), None)
         };
-        
-        let engine = if true { // Always enabled for hybrid mode
+
+        let engine = if true {
+            // Always enabled for hybrid mode
             NewPnLEngine::with_balance_fetcher(wallet_address.to_string(), balance_fetcher)
         } else {
             NewPnLEngine::new(wallet_address.to_string())
         };
-        let portfolio_result = engine.calculate_portfolio_pnl(events_by_token, None).await
+        let portfolio_result = engine
+            .calculate_portfolio_pnl(events_by_token, None)
+            .await
             .map_err(|e| OrchestratorError::PnL(e))?;
 
         // Store with "token_analysis" source
         self.persistence_client
-            .store_pnl_result_with_source(wallet_address, chain, &portfolio_result, "token_analysis")
+            .store_pnl_result_with_source(
+                wallet_address,
+                chain,
+                &portfolio_result,
+                "token_analysis",
+            )
             .await
             .map_err(|e| OrchestratorError::Persistence(e.to_string()))?;
 
@@ -1598,9 +1758,13 @@ impl JobOrchestrator {
                 return Some(job.clone());
             }
         }
-        
+
         // If not in memory, check persistence (for completed/failed jobs)
-        match self.persistence_client.get_token_analysis_job(&job_id.to_string()).await {
+        match self
+            .persistence_client
+            .get_token_analysis_job(&job_id.to_string())
+            .await
+        {
             Ok(job) => job,
             Err(e) => {
                 error!("Failed to get job {} from persistence: {}", job_id, e);
@@ -1616,8 +1780,14 @@ impl JobOrchestrator {
     }
 
     /// Get all token analysis jobs from persistence with pagination
-    pub async fn get_all_token_analysis_jobs_from_persistence(&self, limit: usize, offset: usize) -> Result<(Vec<TokenAnalysisJob>, usize)> {
-        self.persistence_client.get_all_token_analysis_jobs(limit, offset).await
+    pub async fn get_all_token_analysis_jobs_from_persistence(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<TokenAnalysisJob>, usize)> {
+        self.persistence_client
+            .get_all_token_analysis_jobs(limit, offset)
+            .await
             .map_err(|e| OrchestratorError::Persistence(e.to_string()))
     }
 }
@@ -1687,10 +1857,12 @@ mod tests {
         };
 
         println!("Configuration loaded successfully");
-        println!("Data source: {}", config.data_source);
         println!("Zerion enabled: {}", config.zerion.enabled);
         println!("Zerion API URL: {}", config.zerion.api_base_url);
-        println!("Zerion API key configured: {}", !config.zerion.api_key.is_empty());
+        println!(
+            "Zerion API key configured: {}",
+            !config.zerion.api_key.is_empty()
+        );
         println!("Zerion API key value: '{}'", config.zerion.api_key);
 
         // Initialize Zerion client directly with hardcoded values to bypass config issue
@@ -1717,18 +1889,31 @@ mod tests {
         println!("Testing Zerion client with wallet: {}", wallet_address);
 
         // Test transaction fetching
-        match zerion_client.get_wallet_transactions_with_limit(wallet_address, "usd", 10).await {
+        match zerion_client
+            .get_wallet_transactions_with_limit(wallet_address, "usd", 10)
+            .await
+        {
             Ok(transactions) => {
-                println!("✅ Successfully fetched {} transactions", transactions.len());
+                println!(
+                    "✅ Successfully fetched {} transactions",
+                    transactions.len()
+                );
 
                 // Test financial event conversion
-                let events = zerion_client.convert_to_financial_events(&transactions, wallet_address);
-                println!("✅ Successfully converted to {} financial events", events.len());
+                let events =
+                    zerion_client.convert_to_financial_events(&transactions, wallet_address);
+                println!(
+                    "✅ Successfully converted to {} financial events",
+                    events.len()
+                );
 
                 // Show some examples
                 for (i, event) in events.iter().enumerate() {
-                    if i >= 5 { break; } // Only show first 5 events
-                    println!("Event {}: {:?} {} {} @ ${:.4} = ${:.2}",
+                    if i >= 5 {
+                        break;
+                    } // Only show first 5 events
+                    println!(
+                        "Event {}: {:?} {} {} @ ${:.4} = ${:.2}",
                         i + 1,
                         event.event_type,
                         event.quantity,
@@ -1739,14 +1924,23 @@ mod tests {
                 }
 
                 // Verify we have both buy and sell events
-                let buys = events.iter().filter(|e| matches!(e.event_type, pnl_core::NewEventType::Buy)).count();
-                let sells = events.iter().filter(|e| matches!(e.event_type, pnl_core::NewEventType::Sell)).count();
+                let buys = events
+                    .iter()
+                    .filter(|e| matches!(e.event_type, pnl_core::NewEventType::Buy))
+                    .count();
+                let sells = events
+                    .iter()
+                    .filter(|e| matches!(e.event_type, pnl_core::NewEventType::Sell))
+                    .count();
                 println!("Event breakdown: {} buys, {} sells", buys, sells);
 
                 if buys > 0 && sells > 0 {
                     println!("✅ Hybrid Zerion integration working correctly!");
                 } else {
-                    println!("⚠️  Only got {} buys and {} sells - may need more transaction data", buys, sells);
+                    println!(
+                        "⚠️  Only got {} buys and {} sells - may need more transaction data",
+                        buys, sells
+                    );
                 }
             }
             Err(e) => {

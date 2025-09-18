@@ -1,6 +1,6 @@
-use crate::{ApiError, AppState};
+use crate::service_manager::ServiceConfig;
 use crate::types::*;
-use serde_json::Value;
+use crate::{ApiError, AppState};
 use axum::{
     extract::{Path, Query, State},
     http::header,
@@ -10,10 +10,10 @@ use chrono::Utc;
 use csv::Writer;
 use persistence_layer::JobStatus;
 use rust_decimal::Decimal;
-use std::{io::Cursor, collections::HashMap};
+use serde_json::Value;
+use std::{collections::HashMap, io::Cursor};
 use tracing::{info, warn};
 use uuid::Uuid;
-use crate::service_manager::ServiceConfig;
 
 /// Health check endpoint
 pub async fn health_check() -> impl IntoResponse {
@@ -29,12 +29,16 @@ pub async fn get_system_status(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
     let orchestrator_status = state.orchestrator.get_status().await?;
-    
+
     let service_stats = state.service_manager.get_stats().await;
-    
+
     let dex_status = DexClientStatus {
-        enabled: service_stats.wallet_discovery.state != crate::service_manager::ServiceState::Stopped,
-        connected: matches!(service_stats.wallet_discovery.state, crate::service_manager::ServiceState::Running),
+        enabled: service_stats.wallet_discovery.state
+            != crate::service_manager::ServiceState::Stopped,
+        connected: matches!(
+            service_stats.wallet_discovery.state,
+            crate::service_manager::ServiceState::Running
+        ),
         last_activity: service_stats.wallet_discovery.last_activity,
         processed_pairs: service_stats.wallet_discovery.cycles_completed,
         discovered_wallets: service_stats.wallet_discovery.queue_size,
@@ -69,9 +73,7 @@ pub async fn get_system_logs(
 }
 
 /// Get current configuration
-pub async fn get_config(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_config(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(SuccessResponse::new(state.config.clone())))
 }
 
@@ -83,9 +85,9 @@ pub async fn update_config(
     // For now, return success but don't actually update config
     // In a real implementation, you'd validate and apply the configuration changes
     warn!("Configuration update requested but not implemented");
-    
+
     Ok(Json(SuccessResponse::new(
-        "Configuration update not yet implemented".to_string()
+        "Configuration update not yet implemented".to_string(),
     )))
 }
 
@@ -94,21 +96,32 @@ pub async fn submit_batch_job(
     State(state): State<AppState>,
     Json(request): Json<BatchJobRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    info!("Batch job submitted for {} wallets", request.wallet_addresses.len());
+    info!(
+        "Batch job submitted for {} wallets",
+        request.wallet_addresses.len()
+    );
 
     // Validate wallet addresses
     if request.wallet_addresses.is_empty() {
-        return Err(ApiError::Validation("No wallet addresses provided".to_string()));
+        return Err(ApiError::Validation(
+            "No wallet addresses provided".to_string(),
+        ));
     }
 
     if request.wallet_addresses.len() > 1000 {
-        return Err(ApiError::Validation("Too many wallet addresses (max 1000)".to_string()));
+        return Err(ApiError::Validation(
+            "Too many wallet addresses (max 1000)".to_string(),
+        ));
     }
 
     // Submit the job
     let job_id = state
         .orchestrator
-        .submit_batch_job(request.wallet_addresses.clone(), request.chain.clone(), request.max_transactions)
+        .submit_batch_job(
+            request.wallet_addresses.clone(),
+            request.chain.clone(),
+            request.max_transactions,
+        )
         .await?;
 
     let response = BatchJobResponse {
@@ -156,16 +169,18 @@ pub async fn get_batch_job_results(
 
     // Load the results separately from PostgreSQL for each wallet
     let persistence_client = &state.persistence_client;
-    
-    
+
     // Fetch P&L results for all wallets in the batch
     let mut wallet_results = HashMap::new();
     let mut total_pnl = Decimal::ZERO;
     let mut successful_count = 0;
-    
+
     for wallet_address in &job.wallet_addresses {
         // Use the chain from the batch job
-        match persistence_client.get_portfolio_pnl_result(wallet_address, &job.chain).await {
+        match persistence_client
+            .get_portfolio_pnl_result(wallet_address, &job.chain)
+            .await
+        {
             Ok(Some(stored_result)) => {
                 total_pnl += stored_result.portfolio_result.total_pnl_usd;
                 successful_count += 1;
@@ -176,7 +191,7 @@ pub async fn get_batch_job_results(
                         status: "success".to_string(),
                         pnl_report: Some(stored_result.portfolio_result),
                         error_message: None,
-                    }
+                    },
                 );
             }
             Ok(None) => {
@@ -187,7 +202,7 @@ pub async fn get_batch_job_results(
                         status: "not_found".to_string(),
                         pnl_report: None,
                         error_message: Some("No P&L results found for this wallet".to_string()),
-                    }
+                    },
                 );
             }
             Err(e) => {
@@ -198,25 +213,29 @@ pub async fn get_batch_job_results(
                         status: "error".to_string(),
                         pnl_report: None,
                         error_message: Some(format!("Failed to fetch results: {}", e)),
-                    }
+                    },
                 );
             }
         }
     }
-    
+
     let total_wallets = job.wallet_addresses.len();
     let average_pnl = if successful_count > 0 {
         total_pnl / Decimal::from(successful_count)
     } else {
         Decimal::ZERO
     };
-    
-    let profitable_wallets = wallet_results.values()
-        .filter(|r| r.pnl_report.as_ref()
-            .map(|report| report.total_pnl_usd > Decimal::ZERO)
-            .unwrap_or(false))
+
+    let profitable_wallets = wallet_results
+        .values()
+        .filter(|r| {
+            r.pnl_report
+                .as_ref()
+                .map(|report| report.total_pnl_usd > Decimal::ZERO)
+                .unwrap_or(false)
+        })
         .count();
-    
+
     let response = BatchJobResultsResponse {
         job_id: job.id,
         status: job.status,
@@ -230,7 +249,7 @@ pub async fn get_batch_job_results(
         },
         results: wallet_results,
     };
-    
+
     Ok(Json(SuccessResponse::new(response)))
 }
 
@@ -241,13 +260,10 @@ pub async fn get_batch_job_history(
 ) -> Result<impl IntoResponse, ApiError> {
     let limit = query.limit.unwrap_or(50).min(200) as usize; // Max 200 per request
     let offset = query.offset.unwrap_or(0) as usize;
-    
+
     // Get batch jobs from the orchestrator
-    let (jobs, total_count) = state
-        .orchestrator
-        .get_all_batch_jobs(limit, offset)
-        .await?;
-    
+    let (jobs, total_count) = state.orchestrator.get_all_batch_jobs(limit, offset).await?;
+
     // Convert to response format
     let mut job_summaries = Vec::new();
     for job in jobs {
@@ -261,7 +277,7 @@ pub async fn get_batch_job_history(
             // In progress - we don't know the counts
             (0, 0)
         };
-        
+
         let job_summary = BatchJobSummary {
             id: job.id,
             wallet_count: job.wallet_addresses.len(),
@@ -275,29 +291,41 @@ pub async fn get_batch_job_history(
         };
         job_summaries.push(job_summary);
     }
-    
+
     let pagination = PaginationInfo {
         total_count: total_count as u64,
         limit: limit as u32,
         offset: offset as u32,
         has_more: offset + limit < total_count,
     };
-    
+
     // Calculate summary statistics before moving job_summaries
     let summary = BatchJobHistorySummary {
         total_jobs: total_count as u64,
-        pending_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Pending).count() as u64,
-        running_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Running).count() as u64,
-        completed_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Completed).count() as u64,
-        failed_jobs: job_summaries.iter().filter(|j| j.status == JobStatus::Failed).count() as u64,
+        pending_jobs: job_summaries
+            .iter()
+            .filter(|j| j.status == JobStatus::Pending)
+            .count() as u64,
+        running_jobs: job_summaries
+            .iter()
+            .filter(|j| j.status == JobStatus::Running)
+            .count() as u64,
+        completed_jobs: job_summaries
+            .iter()
+            .filter(|j| j.status == JobStatus::Completed)
+            .count() as u64,
+        failed_jobs: job_summaries
+            .iter()
+            .filter(|j| j.status == JobStatus::Failed)
+            .count() as u64,
     };
-    
+
     let response = BatchJobHistoryResponse {
         jobs: job_summaries,
         pagination,
         summary,
     };
-    
+
     Ok(Json(SuccessResponse::new(response)))
 }
 
@@ -321,14 +349,16 @@ pub async fn export_batch_results_csv(
 
     // Load the results from PostgreSQL for each wallet
     let persistence_client = &state.persistence_client;
-    
-    
+
     // Fetch P&L results for all wallets in the batch
     let mut wallet_results = HashMap::new();
-    
+
     for wallet_address in &job.wallet_addresses {
         // Use the chain from the batch job
-        match persistence_client.get_portfolio_pnl_result(wallet_address, &job.chain).await {
+        match persistence_client
+            .get_portfolio_pnl_result(wallet_address, &job.chain)
+            .await
+        {
             Ok(Some(stored_result)) => {
                 wallet_results.insert(
                     wallet_address.clone(),
@@ -337,7 +367,7 @@ pub async fn export_batch_results_csv(
                         status: "success".to_string(),
                         pnl_report: Some(stored_result.portfolio_result),
                         error_message: None,
-                    }
+                    },
                 );
             }
             _ => {
@@ -348,7 +378,7 @@ pub async fn export_batch_results_csv(
                         status: "not_found".to_string(),
                         pnl_report: None,
                         error_message: Some("No results found".to_string()),
-                    }
+                    },
                 );
             }
         }
@@ -360,7 +390,10 @@ pub async fn export_batch_results_csv(
 
     let headers = [
         (header::CONTENT_TYPE, "text/csv"),
-        (header::CONTENT_DISPOSITION, "attachment; filename=\"batch_results.csv\""),
+        (
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"batch_results.csv\"",
+        ),
     ];
 
     Ok((headers, csv_content))
@@ -374,69 +407,83 @@ pub async fn get_discovered_wallets(
     // Use the same logic as get_all_results since discovered wallets are stored as P&L results
     let limit = query.limit.unwrap_or(50) as usize;
     let offset = query.offset.unwrap_or(0) as usize;
-    
+
     // Get P&L results (which are the discovered wallets with analysis)
     let persistence_client = &state.persistence_client;
-    
+
     // Apply database migration for new columns if needed
-    if let Err(e) = persistence_client.apply_advanced_filtering_migration().await {
+    if let Err(e) = persistence_client
+        .apply_advanced_filtering_migration()
+        .await
+    {
         warn!("Failed to apply advanced filtering migration: {}", e);
     }
-    
+
     // Use advanced filtering if new parameters are provided, otherwise use legacy method
-    let (results, total_count) = if query.min_unique_tokens.is_some() || query.min_active_days.is_some() {
-        persistence_client.get_all_pnl_results_with_filters(
-            offset, 
-            limit, 
-            query.chain.as_deref(),
-            query.min_unique_tokens,
-            query.min_active_days,
-            None // analysis_source_filter - keeping existing behavior for now
-        ).await
-    } else {
-        persistence_client.get_all_pnl_results(offset, limit, query.chain.as_deref()).await
-    }.map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
+    let (results, total_count) =
+        if query.min_unique_tokens.is_some() || query.min_active_days.is_some() {
+            persistence_client
+                .get_all_pnl_results_with_filters(
+                    offset,
+                    limit,
+                    query.chain.as_deref(),
+                    query.min_unique_tokens,
+                    query.min_active_days,
+                    None, // analysis_source_filter - keeping existing behavior for now
+                )
+                .await
+        } else {
+            persistence_client
+                .get_all_pnl_results(offset, limit, query.chain.as_deref())
+                .await
+        }
+        .map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
 
     // Convert P&L results to discovered wallets format
-    let wallets: Vec<DiscoveredWalletSummary> = results.into_iter().map(|result| {
-        // Calculate unique tokens and active days from portfolio result
-        let unique_tokens_count = result.portfolio_result.token_results.len() as u32;
-        
-        // Calculate active days from all trades
-        let mut trading_days = std::collections::HashSet::new();
-        for token_result in &result.portfolio_result.token_results {
-            for trade in &token_result.matched_trades {
-                let trade_date = trade.sell_event.timestamp.date_naive();
-                trading_days.insert(trade_date);
-            }
-        }
-        let active_days_count = trading_days.len() as u32;
+    let wallets: Vec<DiscoveredWalletSummary> = results
+        .into_iter()
+        .map(|result| {
+            // Calculate unique tokens and active days from portfolio result
+            let unique_tokens_count = result.portfolio_result.token_results.len() as u32;
 
-        DiscoveredWalletSummary {
-            wallet_address: result.wallet_address,
-            chain: result.chain,
-            discovered_at: result.analyzed_at,
-            analyzed_at: Some(result.analyzed_at),
-            pnl_usd: Some(result.portfolio_result.total_pnl_usd),
-            win_rate: Some(result.portfolio_result.overall_win_rate_percentage),
-            trade_count: Some(result.portfolio_result.total_trades as u32),
-            avg_hold_time_minutes: Some(result.portfolio_result.avg_hold_time_minutes),
-            unique_tokens_count: Some(unique_tokens_count),
-            active_days_count: Some(active_days_count),
-            status: "analyzed".to_string(),
-        }
-    }).collect();
+            // Calculate active days from all trades
+            let mut trading_days = std::collections::HashSet::new();
+            for token_result in &result.portfolio_result.token_results {
+                for trade in &token_result.matched_trades {
+                    let trade_date = trade.sell_event.timestamp.date_naive();
+                    trading_days.insert(trade_date);
+                }
+            }
+            let active_days_count = trading_days.len() as u32;
+
+            DiscoveredWalletSummary {
+                wallet_address: result.wallet_address,
+                chain: result.chain,
+                discovered_at: result.analyzed_at,
+                analyzed_at: Some(result.analyzed_at),
+                pnl_usd: Some(result.portfolio_result.total_pnl_usd),
+                win_rate: Some(result.portfolio_result.overall_win_rate_percentage),
+                trade_count: Some(result.portfolio_result.total_trades as u32),
+                avg_hold_time_minutes: Some(result.portfolio_result.avg_hold_time_minutes),
+                unique_tokens_count: Some(unique_tokens_count),
+                active_days_count: Some(active_days_count),
+                status: "analyzed".to_string(),
+            }
+        })
+        .collect();
 
     // Calculate summary statistics
     let analyzed_count = wallets.len() as u64;
-    let profitable_count = wallets.iter().filter(|w| {
-        w.pnl_usd.map_or(false, |pnl| pnl > Decimal::ZERO)
-    }).count() as u64;
-    
-    let total_pnl = wallets.iter()
+    let profitable_count = wallets
+        .iter()
+        .filter(|w| w.pnl_usd.map_or(false, |pnl| pnl > Decimal::ZERO))
+        .count() as u64;
+
+    let total_pnl = wallets
+        .iter()
         .filter_map(|w| w.pnl_usd)
         .fold(Decimal::ZERO, |acc, pnl| acc + pnl);
-    
+
     let average_pnl = if analyzed_count > 0 {
         total_pnl / Decimal::from(analyzed_count)
     } else {
@@ -476,9 +523,10 @@ pub async fn get_wallet_details(
     )))
 }
 
-
 /// Generate CSV content for batch job results
-fn generate_batch_results_csv(wallet_results: &HashMap<String, WalletResult>) -> Result<String, ApiError> {
+fn generate_batch_results_csv(
+    wallet_results: &HashMap<String, WalletResult>,
+) -> Result<String, ApiError> {
     let mut wtr = Writer::from_writer(Cursor::new(Vec::new()));
 
     // Write CSV headers
@@ -510,13 +558,23 @@ fn generate_batch_results_csv(wallet_results: &HashMap<String, WalletResult>) ->
                 report.total_realized_pnl_usd.to_string(),
                 report.total_unrealized_pnl_usd.to_string(),
                 report.total_trades.to_string(),
-                report.token_results.iter().map(|t| t.winning_trades).sum::<u32>().to_string(),
-                report.token_results.iter().map(|t| t.losing_trades).sum::<u32>().to_string(),
+                report
+                    .token_results
+                    .iter()
+                    .map(|t| t.winning_trades)
+                    .sum::<u32>()
+                    .to_string(),
+                report
+                    .token_results
+                    .iter()
+                    .map(|t| t.losing_trades)
+                    .sum::<u32>()
+                    .to_string(),
                 format!("{:.2}%", report.overall_win_rate_percentage),
                 "0.00".to_string(), // total_volume_usd field doesn't exist
                 "0.00".to_string(), // total_fees_usd not available in PortfolioPnLResult
-                "".to_string(), // first_trade_time field doesn't exist
-                "".to_string(), // last_trade_time field doesn't exist
+                "".to_string(),     // first_trade_time field doesn't exist
+                "".to_string(),     // last_trade_time field doesn't exist
                 result.error_message.clone().unwrap_or_default(),
             ]
         } else {
@@ -542,12 +600,12 @@ fn generate_batch_results_csv(wallet_results: &HashMap<String, WalletResult>) ->
             .map_err(|e| ApiError::Internal(format!("CSV write error: {}", e)))?;
     }
 
-    let data = wtr.into_inner()
+    let data = wtr
+        .into_inner()
         .map_err(|e| ApiError::Internal(format!("CSV finalization error: {}", e)))?
         .into_inner();
 
-    String::from_utf8(data)
-        .map_err(|e| ApiError::Internal(format!("CSV encoding error: {}", e)))
+    String::from_utf8(data).map_err(|e| ApiError::Internal(format!("CSV encoding error: {}", e)))
 }
 
 /// Filter traders for copy trading from batch job results
@@ -573,13 +631,15 @@ pub async fn filter_copy_traders(
 
     // Load the results from PostgreSQL for each wallet
     let persistence_client = &state.persistence_client;
-    
-    
+
     // Extract successful P&L reports
     let mut pnl_reports = Vec::new();
     for wallet_address in &job.wallet_addresses {
         // Use the chain from the batch job
-        match persistence_client.get_portfolio_pnl_result(wallet_address, &job.chain).await {
+        match persistence_client
+            .get_portfolio_pnl_result(wallet_address, &job.chain)
+            .await
+        {
             Ok(Some(stored_result)) => {
                 pnl_reports.push(stored_result.portfolio_result);
             }
@@ -587,7 +647,10 @@ pub async fn filter_copy_traders(
                 warn!("No results found for wallet {}", wallet_address);
             }
             Err(e) => {
-                warn!("Failed to fetch results for wallet {}: {}", wallet_address, e);
+                warn!(
+                    "Failed to fetch results for wallet {}: {}",
+                    wallet_address, e
+                );
             }
         }
     }
@@ -625,10 +688,16 @@ pub async fn filter_copy_traders(
         })
         .collect();
 
-    let summary = format!("Returned {} traders (filtering done on frontend)", trader_summaries.len());
+    let summary = format!(
+        "Returned {} traders (filtering done on frontend)",
+        trader_summaries.len()
+    );
 
-    info!("✅ Returned {} traders out of {} analyzed", 
-        trader_summaries.len(), job.wallet_addresses.len());
+    info!(
+        "✅ Returned {} traders out of {} analyzed",
+        trader_summaries.len(),
+        job.wallet_addresses.len()
+    );
 
     let response = TraderFilterResponse {
         job_id,
@@ -666,9 +735,12 @@ pub async fn update_services_config(
     State(state): State<AppState>,
     Json(new_config): Json<ServiceConfig>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.service_manager.update_config(new_config).await
+    state
+        .service_manager
+        .update_config(new_config)
+        .await
         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
-    
+
     let response = MessageResponse {
         message: "Service configuration updated successfully".to_string(),
     };
@@ -679,9 +751,12 @@ pub async fn update_services_config(
 pub async fn start_wallet_discovery(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.service_manager.start_wallet_discovery().await
+    state
+        .service_manager
+        .start_wallet_discovery()
+        .await
         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
-    
+
     let response = MessageResponse {
         message: "Wallet discovery service started successfully".to_string(),
     };
@@ -692,9 +767,12 @@ pub async fn start_wallet_discovery(
 pub async fn stop_wallet_discovery(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.service_manager.stop_wallet_discovery().await
+    state
+        .service_manager
+        .stop_wallet_discovery()
+        .await
         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
-    
+
     let response = MessageResponse {
         message: "Wallet discovery service stopped successfully".to_string(),
     };
@@ -705,9 +783,12 @@ pub async fn stop_wallet_discovery(
 pub async fn trigger_discovery_cycle(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let discovered_wallets = state.service_manager.trigger_discovery_cycle().await
+    let discovered_wallets = state
+        .service_manager
+        .trigger_discovery_cycle()
+        .await
         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
-    
+
     let response = DiscoveryCycleResponse {
         message: "Manual discovery cycle completed".to_string(),
         discovered_wallets,
@@ -719,9 +800,12 @@ pub async fn trigger_discovery_cycle(
 pub async fn start_pnl_analysis(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.service_manager.start_pnl_analysis().await
+    state
+        .service_manager
+        .start_pnl_analysis()
+        .await
         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
-    
+
     let response = MessageResponse {
         message: "P&L analysis service started successfully".to_string(),
     };
@@ -732,9 +816,12 @@ pub async fn start_pnl_analysis(
 pub async fn stop_pnl_analysis(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.service_manager.stop_pnl_analysis().await
+    state
+        .service_manager
+        .stop_pnl_analysis()
+        .await
         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
-    
+
     let response = MessageResponse {
         message: "P&L analysis service stopped successfully".to_string(),
     };
@@ -752,23 +839,30 @@ pub async fn get_all_results(
 ) -> Result<impl IntoResponse, ApiError> {
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(50).min(200); // Max 200 per request
-    
+
     // Get results from persistence layer (PostgreSQL)
     let persistence_client = &state.persistence_client;
-    
+
     // Apply database migration for new columns if needed to ensure data is available
-    if let Err(e) = persistence_client.apply_advanced_filtering_migration().await {
+    if let Err(e) = persistence_client
+        .apply_advanced_filtering_migration()
+        .await
+    {
         warn!("Failed to apply advanced filtering migration: {}", e);
     }
-    
+
     // Use standard method - filtering happens client-side in frontend
-    let (stored_results, total_count) = persistence_client.get_all_pnl_results(offset, limit, query.chain.as_deref()).await
+    let (stored_results, total_count) = persistence_client
+        .get_all_pnl_results(offset, limit, query.chain.as_deref())
+        .await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch results: {}", e)))?;
-    
+
     // Get summary statistics
-    let (total_results, _total_batch_jobs) = persistence_client.get_stats().await
+    let (total_results, _total_batch_jobs) = persistence_client
+        .get_stats()
+        .await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch stats: {}", e)))?;
-    
+
     // Convert to response format
     let results: Vec<StoredPnLResultSummary> = stored_results
         .into_iter()
@@ -791,36 +885,33 @@ pub async fn get_all_results(
             is_archived: stored_result.is_archived,
         })
         .collect();
-    
+
     let pagination = PaginationInfo {
         total_count: total_count as u64,
         limit: limit as u32,
         offset: offset as u32,
         has_more: offset + limit < total_count,
     };
-    
+
     // Calculate summary from results (simplified version without full DB stats)
     let total_wallets = total_results as u64;
-    let profitable_wallets = results.iter()
+    let profitable_wallets = results
+        .iter()
         .filter(|r| r.total_pnl_usd > Decimal::ZERO)
         .count() as u64;
-    let total_pnl_usd = results.iter()
-        .map(|r| r.total_pnl_usd)
-        .sum::<Decimal>();
+    let total_pnl_usd = results.iter().map(|r| r.total_pnl_usd).sum::<Decimal>();
     let average_pnl_usd = if total_wallets > 0 {
         total_pnl_usd / Decimal::from(total_wallets)
     } else {
         Decimal::ZERO
     };
-    let total_trades = results.iter()
-        .map(|r| r.total_trades)
-        .sum::<u32>() as u64;
+    let total_trades = results.iter().map(|r| r.total_trades).sum::<u32>() as u64;
     let profitability_rate = if total_wallets > 0 {
         (profitable_wallets as f64 / total_wallets as f64) * 100.0
     } else {
         0.0
     };
-    
+
     let summary = AllResultsSummary {
         total_wallets,
         profitable_wallets,
@@ -830,13 +921,13 @@ pub async fn get_all_results(
         profitability_rate,
         last_updated: chrono::Utc::now(),
     };
-    
+
     let response = AllResultsResponse {
         results,
         pagination,
         summary,
     };
-    
+
     Ok(Json(SuccessResponse::new(response)))
 }
 
@@ -848,16 +939,19 @@ pub async fn get_detailed_result(
 ) -> Result<impl IntoResponse, ApiError> {
     // Token address is ignored in the new portfolio-based system
     let _ = token_address;
-    
+
     let persistence_client = &state.persistence_client;
-    
+
     // Use chain from query parameter or default
-    let chain = query.get("chain")
+    let chain = query
+        .get("chain")
         .map(|s| s.as_str())
         .unwrap_or(&state.config.multichain.default_chain);
-    let stored_result = persistence_client.get_portfolio_pnl_result(&wallet_address, chain).await
+    let stored_result = persistence_client
+        .get_portfolio_pnl_result(&wallet_address, chain)
+        .await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch result: {}", e)))?;
-    
+
     match stored_result {
         Some(result) => {
             let response = DetailedPnLResultResponse {
@@ -876,35 +970,31 @@ pub async fn get_detailed_result(
 }
 
 /// Enhanced health check with component status
-pub async fn enhanced_health_check(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn enhanced_health_check(State(state): State<AppState>) -> impl IntoResponse {
     let start_time = std::time::Instant::now();
-    
+
     // Test Redis connectivity
     let redis_client_result = persistence_layer::RedisClient::new(&state.config.redis.url).await;
     let redis_health = match redis_client_result {
-        Ok(redis_client) => {
-            match redis_client.health_check().await {
-                Ok(status) => RedisComponentHealth {
-                    connected: status.connected,
-                    latency_ms: status.latency_ms,
-                    error: status.error,
-                },
-                Err(e) => RedisComponentHealth {
-                    connected: false,
-                    latency_ms: start_time.elapsed().as_millis() as u64,
-                    error: Some(format!("Health check failed: {}", e)),
-                },
-            }
-        }
+        Ok(redis_client) => match redis_client.health_check().await {
+            Ok(status) => RedisComponentHealth {
+                connected: status.connected,
+                latency_ms: status.latency_ms,
+                error: status.error,
+            },
+            Err(e) => RedisComponentHealth {
+                connected: false,
+                latency_ms: start_time.elapsed().as_millis() as u64,
+                error: Some(format!("Health check failed: {}", e)),
+            },
+        },
         Err(e) => RedisComponentHealth {
             connected: false,
             latency_ms: start_time.elapsed().as_millis() as u64,
             error: Some(format!("Connection failed: {}", e)),
         },
     };
-    
+
     // Test BirdEye API connectivity
     let birdeye_health = {
         let birdeye_start = std::time::Instant::now();
@@ -940,34 +1030,34 @@ pub async fn enhanced_health_check(
             },
         }
     };
-    
+
     // Get service states
     let service_stats = state.service_manager.get_stats().await;
     let services_health = ServicesComponentHealth {
         wallet_discovery: format!("{:?}", service_stats.wallet_discovery.state),
         pnl_analysis: format!("{:?}", service_stats.pnl_analysis.state),
     };
-    
+
     let components = ComponentHealthStatus {
         redis: redis_health,
         birdeye_api: birdeye_health,
         services: services_health,
     };
-    
+
     // Determine overall status
     let overall_status = if components.redis.connected && components.birdeye_api.accessible {
         "healthy"
     } else {
         "degraded"
     };
-    
+
     let response = EnhancedHealthResponse {
         status: overall_status.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: 0, // TODO: Track actual uptime
         components,
     };
-    
+
     Json(SuccessResponse::new(response))
 }
 
@@ -978,7 +1068,8 @@ pub async fn control_service(
 ) -> Result<impl IntoResponse, ApiError> {
     let response = match (request.action.as_str(), request.service.as_str()) {
         ("start", "wallet_discovery") => {
-            state.service_manager
+            state
+                .service_manager
                 .start_wallet_discovery_with_config(request.config_override)
                 .await
                 .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
@@ -987,21 +1078,30 @@ pub async fn control_service(
             }
         }
         ("stop", "wallet_discovery") => {
-            state.service_manager.stop_wallet_discovery().await
+            state
+                .service_manager
+                .stop_wallet_discovery()
+                .await
                 .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
             MessageResponse {
                 message: "Wallet discovery service stopped successfully".to_string(),
             }
         }
         ("start", "pnl_analysis") => {
-            state.service_manager.start_pnl_analysis().await
+            state
+                .service_manager
+                .start_pnl_analysis()
+                .await
                 .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
             MessageResponse {
                 message: "P&L analysis service started successfully".to_string(),
             }
         }
         ("stop", "pnl_analysis") => {
-            state.service_manager.stop_pnl_analysis().await
+            state
+                .service_manager
+                .stop_pnl_analysis()
+                .await
                 .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
             MessageResponse {
                 message: "P&L analysis service stopped successfully".to_string(),
@@ -1013,7 +1113,8 @@ pub async fn control_service(
                 "wallet_discovery" => {
                     let _ = state.service_manager.stop_wallet_discovery().await;
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                    state.service_manager
+                    state
+                        .service_manager
                         .start_wallet_discovery_with_config(request.config_override)
                         .await
                         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
@@ -1021,16 +1122,29 @@ pub async fn control_service(
                 "pnl_analysis" => {
                     let _ = state.service_manager.stop_pnl_analysis().await;
                     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                    state.service_manager.start_pnl_analysis().await
+                    state
+                        .service_manager
+                        .start_pnl_analysis()
+                        .await
                         .map_err(|e| ApiError::ServiceManager(e.to_string()))?;
                 }
-                _ => return Err(ApiError::Validation(format!("Unknown service: {}", service)))
+                _ => {
+                    return Err(ApiError::Validation(format!(
+                        "Unknown service: {}",
+                        service
+                    )))
+                }
             }
             MessageResponse {
                 message: format!("{} service restarted successfully", service),
             }
         }
-        _ => return Err(ApiError::Validation(format!("Invalid action '{}' for service '{}'", request.action, request.service)))
+        _ => {
+            return Err(ApiError::Validation(format!(
+                "Invalid action '{}' for service '{}'",
+                request.action, request.service
+            )))
+        }
     };
 
     Ok(Json(SuccessResponse::new(response)))
@@ -1043,31 +1157,39 @@ pub async fn toggle_wallet_favorite(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
     let chain = query.get("chain").map(|s| s.as_str()).unwrap_or("solana");
-    
+
     // Get current status
-    let current_result = state.persistence_client
+    let current_result = state
+        .persistence_client
         .get_portfolio_pnl_result(&wallet_address, chain)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get wallet: {}", e)))?;
-    
+
     match current_result {
         Some(result) => {
             // Toggle the favorite status
             let new_status = !result.is_favorited;
-            
-            state.persistence_client
+
+            state
+                .persistence_client
                 .update_wallet_favorite_status(&wallet_address, chain, new_status)
                 .await
-                .map_err(|e| ApiError::Internal(format!("Failed to update favorite status: {}", e)))?;
-            
+                .map_err(|e| {
+                    ApiError::Internal(format!("Failed to update favorite status: {}", e))
+                })?;
+
             let response = MessageResponse {
-                message: format!("Wallet {} favorite status set to {}", wallet_address, new_status),
+                message: format!(
+                    "Wallet {} favorite status set to {}",
+                    wallet_address, new_status
+                ),
             };
             Ok(Json(SuccessResponse::new(response)))
         }
-        None => {
-            Err(ApiError::NotFound(format!("Wallet {} not found", wallet_address)))
-        }
+        None => Err(ApiError::NotFound(format!(
+            "Wallet {} not found",
+            wallet_address
+        ))),
     }
 }
 
@@ -1078,31 +1200,39 @@ pub async fn toggle_wallet_archive(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
     let chain = query.get("chain").map(|s| s.as_str()).unwrap_or("solana");
-    
+
     // Get current status
-    let current_result = state.persistence_client
+    let current_result = state
+        .persistence_client
         .get_portfolio_pnl_result(&wallet_address, chain)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get wallet: {}", e)))?;
-    
+
     match current_result {
         Some(result) => {
             // Toggle the archive status
             let new_status = !result.is_archived;
-            
-            state.persistence_client
+
+            state
+                .persistence_client
                 .update_wallet_archive_status(&wallet_address, chain, new_status)
                 .await
-                .map_err(|e| ApiError::Internal(format!("Failed to update archive status: {}", e)))?;
-            
+                .map_err(|e| {
+                    ApiError::Internal(format!("Failed to update archive status: {}", e))
+                })?;
+
             let response = MessageResponse {
-                message: format!("Wallet {} archive status set to {}", wallet_address, new_status),
+                message: format!(
+                    "Wallet {} archive status set to {}",
+                    wallet_address, new_status
+                ),
             };
             Ok(Json(SuccessResponse::new(response)))
         }
-        None => {
-            Err(ApiError::NotFound(format!("Wallet {} not found", wallet_address)))
-        }
+        None => Err(ApiError::NotFound(format!(
+            "Wallet {} not found",
+            wallet_address
+        ))),
     }
 }
 
@@ -1111,10 +1241,12 @@ pub async fn backfill_advanced_filtering_metrics(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
     let persistence_client = &state.persistence_client;
-    
-    persistence_client.backfill_advanced_filtering_metrics().await
+
+    persistence_client
+        .backfill_advanced_filtering_metrics()
+        .await
         .map_err(|e| ApiError::Internal(format!("Backfill failed: {}", e)))?;
-    
+
     let response = MessageResponse {
         message: "Advanced filtering metrics backfill completed successfully".to_string(),
     };
@@ -1130,15 +1262,22 @@ pub async fn submit_token_analysis_job(
     State(state): State<AppState>,
     Json(request): Json<TokenAnalysisRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    info!("🚀 Received token analysis request for {} tokens", request.token_addresses.len());
+    info!(
+        "🚀 Received token analysis request for {} tokens",
+        request.token_addresses.len()
+    );
 
     // Validate token addresses
     if request.token_addresses.is_empty() {
-        return Err(ApiError::BadRequest("At least one token address is required".to_string()));
+        return Err(ApiError::BadRequest(
+            "At least one token address is required".to_string(),
+        ));
     }
 
     if request.token_addresses.len() > 10 {
-        return Err(ApiError::BadRequest("Maximum 10 tokens allowed per analysis".to_string()));
+        return Err(ApiError::BadRequest(
+            "Maximum 10 tokens allowed per analysis".to_string(),
+        ));
     }
 
     // Use default chain if not provided
@@ -1146,12 +1285,16 @@ pub async fn submit_token_analysis_job(
 
     // Validate chain is supported
     let enabled_chains = vec!["solana".to_string()]; // Add more as supported
-    crate::types::validate_chain(&chain, &enabled_chains)
-        .map_err(|e| ApiError::BadRequest(e))?;
+    crate::types::validate_chain(&chain, &enabled_chains).map_err(|e| ApiError::BadRequest(e))?;
 
     // Submit job to orchestrator
-    let job_id = state.orchestrator
-        .submit_token_analysis_job(request.token_addresses.clone(), chain, request.max_transactions)
+    let job_id = state
+        .orchestrator
+        .submit_token_analysis_job(
+            request.token_addresses.clone(),
+            chain,
+            request.max_transactions,
+        )
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to submit token analysis job: {}", e)))?;
 
@@ -1164,7 +1307,11 @@ pub async fn submit_token_analysis_job(
         submitted_at: Utc::now(),
     };
 
-    info!("✅ Token analysis job {} submitted for {} tokens", job_id, request.token_addresses.len());
+    info!(
+        "✅ Token analysis job {} submitted for {} tokens",
+        job_id,
+        request.token_addresses.len()
+    );
     Ok(Json(SuccessResponse::new(response)))
 }
 
@@ -1173,14 +1320,19 @@ pub async fn get_token_analysis_job_status(
     State(state): State<AppState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let job = state.orchestrator
+    let job = state
+        .orchestrator
         .get_token_analysis_job_status(job_id)
         .await
         .ok_or_else(|| ApiError::NotFound(format!("Token analysis job {} not found", job_id)))?;
 
     let progress = TokenAnalysisProgress {
         total_tokens: job.token_addresses.len(),
-        processed_tokens: if job.status == JobStatus::Completed { job.token_addresses.len() } else { 0 },
+        processed_tokens: if job.status == JobStatus::Completed {
+            job.token_addresses.len()
+        } else {
+            0
+        },
         total_discovered_wallets: job.discovered_wallets.len(),
         analyzed_wallets: job.analyzed_wallets.len(),
         successful_analyses: job.analyzed_wallets.len(),
@@ -1206,13 +1358,17 @@ pub async fn get_token_analysis_job_results(
     State(state): State<AppState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let job = state.orchestrator
+    let job = state
+        .orchestrator
         .get_token_analysis_job_status(job_id)
         .await
         .ok_or_else(|| ApiError::NotFound(format!("Token analysis job {} not found", job_id)))?;
 
     if job.status != JobStatus::Completed {
-        return Err(ApiError::BadRequest(format!("Job {} is not completed yet", job_id)));
+        return Err(ApiError::BadRequest(format!(
+            "Job {} is not completed yet",
+            job_id
+        )));
     }
 
     // Get the P&L results for all analyzed wallets with token_analysis source
@@ -1220,51 +1376,62 @@ pub async fn get_token_analysis_job_results(
     let (results, _total_count) = persistence_client
         .get_pnl_results_by_analysis_source("token_analysis", 0, 1000) // Get up to 1000 results
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to retrieve token analysis results: {}", e)))?;
+        .map_err(|e| {
+            ApiError::Internal(format!("Failed to retrieve token analysis results: {}", e))
+        })?;
 
     // Filter results to only those analyzed wallets from this job
-    let job_wallet_addresses: std::collections::HashSet<String> = job.analyzed_wallets.into_iter().collect();
-    let filtered_results: Vec<_> = results.into_iter()
+    let job_wallet_addresses: std::collections::HashSet<String> =
+        job.analyzed_wallets.into_iter().collect();
+    let filtered_results: Vec<_> = results
+        .into_iter()
         .filter(|result| job_wallet_addresses.contains(&result.wallet_address))
         .collect();
 
     // Convert to summary format
-    let result_summaries: Vec<StoredPnLResultSummary> = filtered_results.iter().map(|stored_result| {
-        StoredPnLResultSummary {
-            wallet_address: stored_result.wallet_address.clone(),
-            chain: stored_result.chain.clone(),
-            token_address: "multiple".to_string(), // Token analysis covers multiple tokens
-            token_symbol: "MULTI".to_string(), // Multiple tokens analyzed
-            total_pnl_usd: stored_result.portfolio_result.total_pnl_usd,
-            realized_pnl_usd: stored_result.portfolio_result.total_realized_pnl_usd,
-            unrealized_pnl_usd: stored_result.portfolio_result.total_unrealized_pnl_usd,
-            roi_percentage: stored_result.portfolio_result.profit_percentage,
-            total_trades: stored_result.portfolio_result.total_trades,
-            win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
-            avg_hold_time_minutes: stored_result.portfolio_result.avg_hold_time_minutes,
-            unique_tokens_count: stored_result.unique_tokens_count,
-            active_days_count: stored_result.active_days_count,
-            analyzed_at: stored_result.analyzed_at,
-            is_favorited: stored_result.is_favorited,
-            is_archived: stored_result.is_archived,
-        }
-    }).collect();
+    let result_summaries: Vec<StoredPnLResultSummary> = filtered_results
+        .iter()
+        .map(|stored_result| {
+            StoredPnLResultSummary {
+                wallet_address: stored_result.wallet_address.clone(),
+                chain: stored_result.chain.clone(),
+                token_address: "multiple".to_string(), // Token analysis covers multiple tokens
+                token_symbol: "MULTI".to_string(),     // Multiple tokens analyzed
+                total_pnl_usd: stored_result.portfolio_result.total_pnl_usd,
+                realized_pnl_usd: stored_result.portfolio_result.total_realized_pnl_usd,
+                unrealized_pnl_usd: stored_result.portfolio_result.total_unrealized_pnl_usd,
+                roi_percentage: stored_result.portfolio_result.profit_percentage,
+                total_trades: stored_result.portfolio_result.total_trades,
+                win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
+                avg_hold_time_minutes: stored_result.portfolio_result.avg_hold_time_minutes,
+                unique_tokens_count: stored_result.unique_tokens_count,
+                active_days_count: stored_result.active_days_count,
+                analyzed_at: stored_result.analyzed_at,
+                is_favorited: stored_result.is_favorited,
+                is_archived: stored_result.is_archived,
+            }
+        })
+        .collect();
 
     // Calculate summary statistics
-    let total_pnl_usd = filtered_results.iter()
+    let total_pnl_usd = filtered_results
+        .iter()
         .map(|r| r.portfolio_result.total_pnl_usd)
         .fold(Decimal::ZERO, |acc, x| acc + x);
-    
-    let profitable_wallets = filtered_results.iter()
+
+    let profitable_wallets = filtered_results
+        .iter()
         .filter(|r| r.portfolio_result.total_pnl_usd > Decimal::ZERO)
         .count();
 
-    let total_trades = filtered_results.iter()
+    let total_trades = filtered_results
+        .iter()
         .map(|r| r.portfolio_result.total_trades)
         .sum::<u32>();
 
     let average_win_rate = if !filtered_results.is_empty() {
-        let total_win_rate = filtered_results.iter()
+        let total_win_rate = filtered_results
+            .iter()
             .map(|r| r.portfolio_result.overall_win_rate_percentage)
             .fold(Decimal::ZERO, |acc, x| acc + x);
         total_win_rate / Decimal::from(filtered_results.len())
@@ -1280,9 +1447,9 @@ pub async fn get_token_analysis_job_results(
         failed_analyses: job.failed_wallets.len(),
         total_pnl_usd: total_pnl_usd,
         profitable_wallets,
-        average_pnl_usd: if filtered_results.is_empty() { 
-            Decimal::ZERO 
-        } else { 
+        average_pnl_usd: if filtered_results.is_empty() {
+            Decimal::ZERO
+        } else {
             total_pnl_usd / Decimal::from(filtered_results.len())
         },
         total_trades,
@@ -1311,14 +1478,18 @@ pub async fn get_token_analysis_jobs(
     let limit = params.limit.unwrap_or(50).min(100); // Max 100 per request
     let offset = params.offset.unwrap_or(0);
 
-    let (all_jobs, _total_count) = state.orchestrator
+    let (all_jobs, _total_count) = state
+        .orchestrator
         .get_all_token_analysis_jobs_from_persistence(1000, 0) // Get all first for filtering
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to retrieve token analysis jobs: {}", e)))?;
+        .map_err(|e| {
+            ApiError::Internal(format!("Failed to retrieve token analysis jobs: {}", e))
+        })?;
 
     // Apply status filter if provided
     let filtered_jobs: Vec<_> = if let Some(status_filter) = &params.status {
-        all_jobs.into_iter()
+        all_jobs
+            .into_iter()
             .filter(|job| job.status.to_string().to_lowercase() == status_filter.to_lowercase())
             .collect()
     } else {
@@ -1331,16 +1502,13 @@ pub async fn get_token_analysis_jobs(
 
     // Apply pagination
     let filtered_total_count = sorted_jobs.len();
-    
-    let paginated_jobs: Vec<_> = sorted_jobs
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect();
+
+    let paginated_jobs: Vec<_> = sorted_jobs.into_iter().skip(offset).take(limit).collect();
 
     // Convert to response format
-    let job_summaries: Vec<_> = paginated_jobs.into_iter().map(|job| {
-        TokenAnalysisJobSummary {
+    let job_summaries: Vec<_> = paginated_jobs
+        .into_iter()
+        .map(|job| TokenAnalysisJobSummary {
             id: job.id,
             token_addresses: job.token_addresses,
             chain: job.chain,
@@ -1351,8 +1519,8 @@ pub async fn get_token_analysis_jobs(
             total_wallets_discovered: job.discovered_wallets.len(),
             total_wallets_analyzed: job.analyzed_wallets.len(),
             failed_wallets_count: job.failed_wallets.len(),
-        }
-    }).collect();
+        })
+        .collect();
 
     let response = GetTokenAnalysisJobsResponse {
         jobs: job_summaries,

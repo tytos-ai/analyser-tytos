@@ -192,7 +192,6 @@ pub struct ConfigUpdateRequest {
     // Empty for now - config update not implemented
 }
 
-
 /// System logs query parameters
 #[derive(Debug, Deserialize)]
 pub struct LogsQuery {
@@ -235,9 +234,13 @@ impl From<BatchJob> for BatchJobStatusResponse {
         let completed_wallets = job.individual_jobs.len();
         // Without access to results here, we can't determine success/failure counts
         // This should be fetched from PostgreSQL when needed
-        let successful_wallets = if job.status == JobStatus::Completed { completed_wallets } else { 0 };
+        let successful_wallets = if job.status == JobStatus::Completed {
+            completed_wallets
+        } else {
+            0
+        };
         let failed_wallets = 0; // Unknown without querying results
-        
+
         let progress_percentage = if total_wallets > 0 {
             (completed_wallets as f64 / total_wallets as f64) * 100.0
         } else {
@@ -333,9 +336,9 @@ pub struct TraderPnLSummary {
 /// Service control request
 #[derive(Debug, Deserialize)]
 pub struct ServiceControlRequest {
-    pub action: String,  // "start" | "stop" | "restart"
-    pub service: String, // "wallet_discovery" | "pnl_analysis"
-    pub config_override: Option<serde_json::Value>,  // Optional runtime configuration as JSON
+    pub action: String,                             // "start" | "stop" | "restart"
+    pub service: String,                            // "wallet_discovery" | "pnl_analysis"
+    pub config_override: Option<serde_json::Value>, // Optional runtime configuration as JSON
 }
 
 /// Simple message response
@@ -613,7 +616,7 @@ pub struct GetTokenAnalysisJobsResponse {
 pub fn validate_chain(chain: &str, enabled_chains: &[String]) -> Result<(), String> {
     if !enabled_chains.contains(&chain.to_string()) {
         return Err(format!(
-            "Unsupported chain: {}. Supported chains: {:?}", 
+            "Unsupported chain: {}. Supported chains: {:?}",
             chain, enabled_chains
         ));
     }
@@ -623,9 +626,9 @@ pub fn validate_chain(chain: &str, enabled_chains: &[String]) -> Result<(), Stri
 /// Get chain from optional parameter or use default
 #[allow(dead_code)]
 pub fn get_chain_or_default<'a>(
-    chain_param: Option<&'a str>, 
+    chain_param: Option<&'a str>,
     default_chain: &'a str,
-    enabled_chains: &[String]
+    enabled_chains: &[String],
 ) -> Result<&'a str, String> {
     let chain = chain_param.unwrap_or(default_chain);
     validate_chain(chain, enabled_chains)?;

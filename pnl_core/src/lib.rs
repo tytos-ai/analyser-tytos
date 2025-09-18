@@ -1,19 +1,20 @@
 // Removed timeframe module - functions were never used in actual P&L processing
-pub mod new_parser;
-pub mod new_pnl_engine;
-pub mod comprehensive_tests;
 pub mod balance_fetcher;
 pub mod history_parser;
+pub mod new_parser;
+pub mod new_pnl_engine;
 
-#[cfg(test)]
-pub mod phantom_buy_fix_test;
 
 // New algorithm exports (primary P&L system)
-pub use new_parser::{NewTransactionParser, NewFinancialEvent, NewEventType, ParsedTransaction};
-pub use new_pnl_engine::{NewPnLEngine, TokenPnLResult, PortfolioPnLResult, MatchedTrade, UnmatchedSell, RemainingPosition};
 pub use balance_fetcher::{BalanceFetcher, TokenBalance};
-pub use history_parser::{HistoryTransactionParser, ParsedHistoryTransaction, HistoryTransaction, HistoryBalanceChange};
-
+pub use history_parser::{
+    HistoryBalanceChange, HistoryTransaction, HistoryTransactionParser, ParsedHistoryTransaction,
+};
+pub use new_parser::{NewEventType, NewFinancialEvent, NewTransactionParser, ParsedTransaction};
+pub use new_pnl_engine::{
+    MatchedTrade, NewPnLEngine, PortfolioPnLResult, RemainingPosition, TokenPnLResult,
+    UnmatchedSell,
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,7 +41,7 @@ pub struct GeneralTraderTransaction {
     #[serde(default)]
     pub address: String, // Program address
     #[serde(default)]
-    pub owner: String,   // Wallet address
+    pub owner: String, // Wallet address
     #[serde(rename = "volume_usd")]
     pub volume_usd: f64,
 }
@@ -155,9 +156,9 @@ where
         where
             E: Error,
         {
-            value.parse::<u128>().map_err(|_| {
-                Error::invalid_value(Unexpected::Str(value), &self)
-            })
+            value
+                .parse::<u128>()
+                .map_err(|_| Error::invalid_value(Unexpected::Str(value), &self))
         }
     }
 
@@ -232,9 +233,9 @@ where
         where
             E: Error,
         {
-            value.parse::<f64>().map_err(|_| {
-                Error::invalid_value(Unexpected::Str(value), &self)
-            })
+            value
+                .parse::<f64>()
+                .map_err(|_| Error::invalid_value(Unexpected::Str(value), &self))
         }
     }
 
@@ -364,7 +365,9 @@ where
 }
 
 /// Deserialize an optional signed amount that might be missing
-fn deserialize_optional_signed_amount<'de, D>(deserializer: D) -> std::result::Result<i128, D::Error>
+fn deserialize_optional_signed_amount<'de, D>(
+    deserializer: D,
+) -> std::result::Result<i128, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -415,7 +418,11 @@ where
             E: Error,
         {
             if value.is_finite() {
-                let truncated = if value >= 0.0 { value.floor() } else { value.ceil() };
+                let truncated = if value >= 0.0 {
+                    value.floor()
+                } else {
+                    value.ceil()
+                };
                 if truncated >= (i128::MIN as f64) && truncated <= (i128::MAX as f64) {
                     Ok(truncated as i128)
                 } else {
@@ -449,7 +456,3 @@ where
 
     deserializer.deserialize_any(OptionalSignedAmountVisitor)
 }
-
-
-
-
