@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use chrono::Utc;
+use config_manager::normalize_chain_for_zerion;
 use csv::Writer;
 use persistence_layer::JobStatus;
 use rust_decimal::Decimal;
@@ -47,7 +48,7 @@ pub async fn get_system_status(
     let config_summary = ConfigSummary {
         birdeye_api_configured: !state.config.birdeye.api_key.is_empty(),
         zerion_api_configured: !state.config.zerion.api_key.is_empty(),
-        architecture: "Zerion+BirdEye Hybrid".to_string(),
+        architecture: "Zerion+DexScreener Hybrid".to_string(),
         parallel_batch_size: state.config.system.pnl_parallel_batch_size.unwrap_or(10),
     };
 
@@ -94,11 +95,12 @@ pub async fn update_config(
 /// Submit a batch P&L job
 pub async fn submit_batch_job(
     State(state): State<AppState>,
-    Json(request): Json<BatchJobRequest>,
+    Json(mut request): Json<BatchJobRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     info!(
-        "Batch job submitted for {} wallets",
-        request.wallet_addresses.len()
+        "Batch job submitted for {} wallets on chain: {}",
+        request.wallet_addresses.len(),
+        request.chain
     );
 
     // Validate wallet addresses
@@ -114,12 +116,35 @@ pub async fn submit_batch_job(
         ));
     }
 
+    // Validate time_range if provided
+    if let Some(ref time_range) = request.time_range {
+        // Import time_utils validation
+        use zerion_client::time_utils::is_valid_time_range;
+        if !is_valid_time_range(time_range) {
+            return Err(ApiError::Validation(
+                format!("Invalid time range '{}'. Use formats like: 1h, 7d, 1m, 1y", time_range),
+            ));
+        }
+    }
+
+    // Normalize chain parameter to ensure Zerion API compatibility
+    let original_chain = request.chain.clone();
+    request.chain = normalize_chain_for_zerion(&request.chain)
+        .map_err(|e| ApiError::Validation(e))?;
+
+    info!(
+        "Chain normalized for Zerion API: '{}' -> '{}'",
+        original_chain,
+        request.chain
+    );
+
     // Submit the job
     let job_id = state
         .orchestrator
         .submit_batch_job(
             request.wallet_addresses.clone(),
             request.chain.clone(),
+            request.time_range.clone(),
             request.max_transactions,
         )
         .await?;
@@ -608,8 +633,8 @@ fn generate_batch_results_csv(
     String::from_utf8(data).map_err(|e| ApiError::Internal(format!("CSV encoding error: {}", e)))
 }
 
-/// Filter traders for copy trading from batch job results
-pub async fn filter_copy_traders(
+/// Get batch job results formatted as trader summaries for copy trading analysis
+pub async fn get_batch_traders(
     State(state): State<AppState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -627,7 +652,7 @@ pub async fn filter_copy_traders(
         )));
     }
 
-    info!("🔍 Filtering traders for copy trading from job {}", job_id);
+    info!("📊 Fetching trader summaries for batch job {}", job_id);
 
     // Load the results from PostgreSQL for each wallet
     let persistence_client = &state.persistence_client;
@@ -661,11 +686,11 @@ pub async fn filter_copy_traders(
             total_analyzed: job.wallet_addresses.len(),
             qualified_traders: 0,
             traders: Vec::new(),
-            summary: "No successful P&L analyses to filter".to_string(),
+            summary: "No successful P&L analyses found".to_string(),
         })));
     }
 
-    // Return all successful reports - filtering done on frontend
+    // Convert P&L reports to trader summaries
     let trader_summaries: Vec<QualifiedTrader> = pnl_reports
         .iter()
         .map(|report| QualifiedTrader {
@@ -689,12 +714,12 @@ pub async fn filter_copy_traders(
         .collect();
 
     let summary = format!(
-        "Returned {} traders (filtering done on frontend)",
+        "Retrieved {} trader summaries from batch job results",
         trader_summaries.len()
     );
 
     info!(
-        "✅ Returned {} traders out of {} analyzed",
+        "✅ Returned {} trader summaries out of {} analyzed wallets",
         trader_summaries.len(),
         job.wallet_addresses.len()
     );
@@ -1253,281 +1278,3 @@ pub async fn backfill_advanced_filtering_metrics(
     Ok(Json(SuccessResponse::new(response)))
 }
 
-// =====================================
-// Token Analysis Handlers
-// =====================================
-
-/// Submit a token analysis job
-pub async fn submit_token_analysis_job(
-    State(state): State<AppState>,
-    Json(request): Json<TokenAnalysisRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    info!(
-        "🚀 Received token analysis request for {} tokens",
-        request.token_addresses.len()
-    );
-
-    // Validate token addresses
-    if request.token_addresses.is_empty() {
-        return Err(ApiError::BadRequest(
-            "At least one token address is required".to_string(),
-        ));
-    }
-
-    if request.token_addresses.len() > 10 {
-        return Err(ApiError::BadRequest(
-            "Maximum 10 tokens allowed per analysis".to_string(),
-        ));
-    }
-
-    // Use default chain if not provided
-    let chain = request.chain.unwrap_or_else(|| "solana".to_string());
-
-    // Validate chain is supported
-    let enabled_chains = vec!["solana".to_string()]; // Add more as supported
-    crate::types::validate_chain(&chain, &enabled_chains).map_err(|e| ApiError::BadRequest(e))?;
-
-    // Submit job to orchestrator
-    let job_id = state
-        .orchestrator
-        .submit_token_analysis_job(
-            request.token_addresses.clone(),
-            chain,
-            request.max_transactions,
-        )
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to submit token analysis job: {}", e)))?;
-
-    // Create response
-    let response = TokenAnalysisResponse {
-        job_id,
-        token_count: request.token_addresses.len(),
-        estimated_wallets: request.token_addresses.len() * 50, // Rough estimate
-        status: JobStatus::Pending,
-        submitted_at: Utc::now(),
-    };
-
-    info!(
-        "✅ Token analysis job {} submitted for {} tokens",
-        job_id,
-        request.token_addresses.len()
-    );
-    Ok(Json(SuccessResponse::new(response)))
-}
-
-/// Get token analysis job status
-pub async fn get_token_analysis_job_status(
-    State(state): State<AppState>,
-    Path(job_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
-    let job = state
-        .orchestrator
-        .get_token_analysis_job_status(job_id)
-        .await
-        .ok_or_else(|| ApiError::NotFound(format!("Token analysis job {} not found", job_id)))?;
-
-    let progress = TokenAnalysisProgress {
-        total_tokens: job.token_addresses.len(),
-        processed_tokens: if job.status == JobStatus::Completed {
-            job.token_addresses.len()
-        } else {
-            0
-        },
-        total_discovered_wallets: job.discovered_wallets.len(),
-        analyzed_wallets: job.analyzed_wallets.len(),
-        successful_analyses: job.analyzed_wallets.len(),
-        failed_analyses: job.failed_wallets.len(),
-    };
-
-    let response = TokenAnalysisStatusResponse {
-        job_id: job.id,
-        status: job.status,
-        token_addresses: job.token_addresses,
-        chain: job.chain,
-        created_at: job.created_at,
-        started_at: job.started_at,
-        completed_at: job.completed_at,
-        progress,
-    };
-
-    Ok(Json(SuccessResponse::new(response)))
-}
-
-/// Get token analysis job results
-pub async fn get_token_analysis_job_results(
-    State(state): State<AppState>,
-    Path(job_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
-    let job = state
-        .orchestrator
-        .get_token_analysis_job_status(job_id)
-        .await
-        .ok_or_else(|| ApiError::NotFound(format!("Token analysis job {} not found", job_id)))?;
-
-    if job.status != JobStatus::Completed {
-        return Err(ApiError::BadRequest(format!(
-            "Job {} is not completed yet",
-            job_id
-        )));
-    }
-
-    // Get the P&L results for all analyzed wallets with token_analysis source
-    let persistence_client = &state.persistence_client;
-    let (results, _total_count) = persistence_client
-        .get_pnl_results_by_analysis_source("token_analysis", 0, 1000) // Get up to 1000 results
-        .await
-        .map_err(|e| {
-            ApiError::Internal(format!("Failed to retrieve token analysis results: {}", e))
-        })?;
-
-    // Filter results to only those analyzed wallets from this job
-    let job_wallet_addresses: std::collections::HashSet<String> =
-        job.analyzed_wallets.into_iter().collect();
-    let filtered_results: Vec<_> = results
-        .into_iter()
-        .filter(|result| job_wallet_addresses.contains(&result.wallet_address))
-        .collect();
-
-    // Convert to summary format
-    let result_summaries: Vec<StoredPnLResultSummary> = filtered_results
-        .iter()
-        .map(|stored_result| {
-            StoredPnLResultSummary {
-                wallet_address: stored_result.wallet_address.clone(),
-                chain: stored_result.chain.clone(),
-                token_address: "multiple".to_string(), // Token analysis covers multiple tokens
-                token_symbol: "MULTI".to_string(),     // Multiple tokens analyzed
-                total_pnl_usd: stored_result.portfolio_result.total_pnl_usd,
-                realized_pnl_usd: stored_result.portfolio_result.total_realized_pnl_usd,
-                unrealized_pnl_usd: stored_result.portfolio_result.total_unrealized_pnl_usd,
-                roi_percentage: stored_result.portfolio_result.profit_percentage,
-                total_trades: stored_result.portfolio_result.total_trades,
-                win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
-                avg_hold_time_minutes: stored_result.portfolio_result.avg_hold_time_minutes,
-                unique_tokens_count: stored_result.unique_tokens_count,
-                active_days_count: stored_result.active_days_count,
-                analyzed_at: stored_result.analyzed_at,
-                is_favorited: stored_result.is_favorited,
-                is_archived: stored_result.is_archived,
-            }
-        })
-        .collect();
-
-    // Calculate summary statistics
-    let total_pnl_usd = filtered_results
-        .iter()
-        .map(|r| r.portfolio_result.total_pnl_usd)
-        .fold(Decimal::ZERO, |acc, x| acc + x);
-
-    let profitable_wallets = filtered_results
-        .iter()
-        .filter(|r| r.portfolio_result.total_pnl_usd > Decimal::ZERO)
-        .count();
-
-    let total_trades = filtered_results
-        .iter()
-        .map(|r| r.portfolio_result.total_trades)
-        .sum::<u32>();
-
-    let average_win_rate = if !filtered_results.is_empty() {
-        let total_win_rate = filtered_results
-            .iter()
-            .map(|r| r.portfolio_result.overall_win_rate_percentage)
-            .fold(Decimal::ZERO, |acc, x| acc + x);
-        total_win_rate / Decimal::from(filtered_results.len())
-    } else {
-        Decimal::ZERO
-    };
-
-    let average_win_rate_f64 = average_win_rate.to_string().parse::<f64>().unwrap_or(0.0);
-
-    let summary = TokenAnalysisSummary {
-        total_wallets_analyzed: filtered_results.len(),
-        successful_analyses: filtered_results.len(),
-        failed_analyses: job.failed_wallets.len(),
-        total_pnl_usd: total_pnl_usd,
-        profitable_wallets,
-        average_pnl_usd: if filtered_results.is_empty() {
-            Decimal::ZERO
-        } else {
-            total_pnl_usd / Decimal::from(filtered_results.len())
-        },
-        total_trades,
-        average_win_rate: average_win_rate_f64,
-        tokens_processed: job.token_addresses.len(),
-    };
-
-    let response = TokenAnalysisResultsResponse {
-        job_id: job.id,
-        status: job.status,
-        token_addresses: job.token_addresses,
-        chain: job.chain,
-        summary,
-        results: result_summaries,
-    };
-
-    Ok(Json(SuccessResponse::new(response)))
-}
-
-/// Get all token analysis jobs with optional filtering and pagination
-pub async fn get_token_analysis_jobs(
-    State(state): State<AppState>,
-    Query(params): Query<GetJobsQueryParams>,
-) -> Result<impl IntoResponse, ApiError> {
-    // Get all jobs with pagination applied directly in persistence layer
-    let limit = params.limit.unwrap_or(50).min(100); // Max 100 per request
-    let offset = params.offset.unwrap_or(0);
-
-    let (all_jobs, _total_count) = state
-        .orchestrator
-        .get_all_token_analysis_jobs_from_persistence(1000, 0) // Get all first for filtering
-        .await
-        .map_err(|e| {
-            ApiError::Internal(format!("Failed to retrieve token analysis jobs: {}", e))
-        })?;
-
-    // Apply status filter if provided
-    let filtered_jobs: Vec<_> = if let Some(status_filter) = &params.status {
-        all_jobs
-            .into_iter()
-            .filter(|job| job.status.to_string().to_lowercase() == status_filter.to_lowercase())
-            .collect()
-    } else {
-        all_jobs
-    };
-
-    // Sort by created_at descending (newest first)
-    let mut sorted_jobs = filtered_jobs;
-    sorted_jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-    // Apply pagination
-    let filtered_total_count = sorted_jobs.len();
-
-    let paginated_jobs: Vec<_> = sorted_jobs.into_iter().skip(offset).take(limit).collect();
-
-    // Convert to response format
-    let job_summaries: Vec<_> = paginated_jobs
-        .into_iter()
-        .map(|job| TokenAnalysisJobSummary {
-            id: job.id,
-            token_addresses: job.token_addresses,
-            chain: job.chain,
-            status: job.status,
-            created_at: job.created_at,
-            started_at: job.started_at,
-            completed_at: job.completed_at,
-            total_wallets_discovered: job.discovered_wallets.len(),
-            total_wallets_analyzed: job.analyzed_wallets.len(),
-            failed_wallets_count: job.failed_wallets.len(),
-        })
-        .collect();
-
-    let response = GetTokenAnalysisJobsResponse {
-        jobs: job_summaries,
-        total_count: filtered_total_count,
-        offset,
-        limit,
-    };
-
-    Ok(Json(SuccessResponse::new(response)))
-}

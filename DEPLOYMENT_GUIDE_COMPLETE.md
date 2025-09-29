@@ -598,10 +598,10 @@ ssh root@134.199.211.155 "/opt/pnl_tracker/status_check.sh"
 - [ ] CPU usage minimal when idle
 
 ### ✅ Data Processing
-- [ ] BirdEye API integration working
+- [ ] BirdEye API integration for trending/transactions working
+- [ ] Zerion API integration for wallet balances working (NEW)
 - [ ] Large number handling functioning (u128 support)
 - [ ] Embedded price extraction working
-- [ ] BirdEye price fetcher for current prices working (NEW)
 - [ ] Transaction parsing accurate
 - [ ] Time filtering optimization working (NEW)
 
@@ -609,7 +609,7 @@ ssh root@134.199.211.155 "/opt/pnl_tracker/status_check.sh"
 - [ ] Smart parameter merging working (user overrides + config defaults)
 - [ ] Runtime configuration override via API working
 - [ ] Parameter validation and conflict resolution working
-- [ ] Time filtering with BirdEye API optimization working
+- [ ] Time filtering with API optimization working
 - [ ] Legacy Jupiter configuration removed
 - [ ] max_transactions_to_fetch parameter working correctly
 
@@ -799,11 +799,11 @@ journalctl -u pnl-tracker > /backup/pnl-tracker-logs.txt
 - **Reliability:** Large number edge cases resolved
 - **NEW Features:**
   - ✅ Universal service control with runtime configuration
-  - ✅ Smart parameter merging (user overrides + config defaults)  
-  - ✅ Time filtering optimization for BirdEye API
+  - ✅ Smart parameter merging (user overrides + config defaults)
+  - ✅ Time filtering optimization for API calls
   - ✅ Parameter validation and conflict resolution
   - ✅ Legacy Jupiter configuration removed
-  - ✅ Enhanced BirdEye price fetcher integration
+  - ✅ Zerion integration for wallet balance fetching
 
 ## 📞 Support and Contact
 

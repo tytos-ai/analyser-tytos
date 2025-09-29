@@ -2,7 +2,7 @@ use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Error, Debug)]
 pub enum ConfigurationError {
@@ -28,17 +28,15 @@ pub struct SystemConfig {
     /// Redis configuration
     pub redis: RedisConfig,
 
-    /// BirdEye API configuration
+    /// BirdEye API configuration (used for trending tokens and top traders discovery only)
     pub birdeye: BirdEyeConfig,
 
-    /// Zerion API configuration
+    /// Zerion API configuration (used for wallet transactions and balance fetching)
     pub zerion: ZerionConfig,
 
     /// DexScreener API configuration
     pub dexscreener: DexScreenerConfig,
 
-    /// Advanced trader filtering for copy trading
-    pub trader_filter: TraderFilterConfig,
 
     /// API server configuration
     pub api: ApiConfig,
@@ -53,10 +51,15 @@ pub struct SystemConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultichainConfig {
     /// List of enabled blockchain networks
+    /// Supported values: solana, ethereum, binance-smart-chain, base
+    /// Additional chains can be added as supported by Zerion API
     pub enabled_chains: Vec<String>,
 
     /// Default chain for operations when not specified
     pub default_chain: String,
+
+    /// Whether to fetch transactions from all chains simultaneously
+    pub fetch_all_chains: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +94,7 @@ pub struct RedisConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BirdEyeConfig {
-    /// BirdEye API key
+    /// BirdEye API key (used for trending tokens and top traders discovery only)
     pub api_key: String,
 
     /// BirdEye API base URL
@@ -130,7 +133,9 @@ pub struct ZerionConfig {
     /// Operation types to filter (e.g., "trade,send")
     pub operation_types: String,
 
-    /// Chain IDs to filter (e.g., "solana")
+    /// Chain IDs to filter (e.g., "solana,ethereum,binance-smart-chain,base")
+    /// Primary supported chains: solana, ethereum, binance-smart-chain, base
+    /// Additional chains supported by Zerion: arbitrum, optimism, polygon, avalanche, etc.
     pub chain_ids: String,
 
     /// Trash filter setting ("only_non_trash", "no_filter", "only_trash")
@@ -174,17 +179,6 @@ pub struct DexScreenerConfig {
 // PnLConfig struct removed - all fields were unused in actual P&L processing
 // These were legacy configs from the JavaScript version that were never implemented
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraderFilterConfig {
-    /// Minimum capital deployed in SOL
-    pub min_capital_deployed_sol: f64,
-
-    /// Minimum total trades
-    pub min_total_trades: u32,
-
-    /// Minimum win rate percentage (0-100)
-    pub min_win_rate: f64,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
@@ -216,10 +210,11 @@ impl Default for SystemConfig {
                 enabled_chains: vec![
                     "solana".to_string(),
                     "ethereum".to_string(),
+                    "binance-smart-chain".to_string(), // Use Zerion's official chain ID
                     "base".to_string(),
-                    "bsc".to_string(),
                 ],
                 default_chain: "solana".to_string(),
+                fetch_all_chains: true,
             },
             redis: RedisConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
@@ -234,8 +229,8 @@ impl Default for SystemConfig {
                 default_max_transactions: 1000,
                 rate_limit_delay_ms: 200, // Conservative rate limiting
                 page_size: 100,
-                operation_types: "trade,send".to_string(),
-                chain_ids: "solana".to_string(),
+                operation_types: "trade,send,receive".to_string(),
+                chain_ids: "solana,ethereum,binance-smart-chain,base".to_string(),
                 trash_filter: "only_non_trash".to_string(),
             },
             birdeye: BirdEyeConfig {
@@ -255,11 +250,6 @@ impl Default for SystemConfig {
                 chrome_executable_path: None, // Use system default Chrome
                 headless_mode: true,          // Run in headless mode by default
                 anti_detection_enabled: true, // Enable stealth mode by default
-            },
-            trader_filter: TraderFilterConfig {
-                min_capital_deployed_sol: 0.05,
-                min_total_trades: 3,
-                min_win_rate: 35.0,
             },
             api: ApiConfig {
                 host: "0.0.0.0".to_string(),
@@ -356,7 +346,64 @@ impl SystemConfig {
             debug!("Failed to get birdeye.api_key as string");
         }
 
-        let system_config: SystemConfig = config.try_deserialize()?;
+        let mut system_config: SystemConfig = config.try_deserialize()?;
+
+        // Normalize chain_ids in configuration to ensure Zerion compatibility
+        let original_chain_ids = system_config.zerion.chain_ids.clone();
+        let chain_list: Vec<String> = original_chain_ids
+            .split(',')
+            .map(|chain| {
+                normalize_chain_for_zerion(chain.trim())
+                    .unwrap_or_else(|_| {
+                        warn!("Skipping unsupported chain in config: '{}'", chain.trim());
+                        chain.trim().to_string() // Keep original if normalization fails
+                    })
+            })
+            .collect();
+
+        system_config.zerion.chain_ids = chain_list.join(",");
+
+        if original_chain_ids != system_config.zerion.chain_ids {
+            info!(
+                "Normalized chain_ids in configuration: '{}' -> '{}'",
+                original_chain_ids, system_config.zerion.chain_ids
+            );
+        }
+
+        // Also normalize multichain.enabled_chains
+        let original_enabled_chains = system_config.multichain.enabled_chains.clone();
+        system_config.multichain.enabled_chains = original_enabled_chains
+            .iter()
+            .map(|chain| {
+                normalize_chain_for_zerion(chain.trim())
+                    .unwrap_or_else(|_| {
+                        warn!("Skipping unsupported chain in multichain config: '{}'", chain.trim());
+                        chain.clone() // Keep original if normalization fails
+                    })
+            })
+            .collect();
+
+        if original_enabled_chains != system_config.multichain.enabled_chains {
+            info!(
+                "Normalized enabled_chains in configuration: {:?} -> {:?}",
+                original_enabled_chains, system_config.multichain.enabled_chains
+            );
+        }
+
+        // Normalize default_chain as well
+        let original_default_chain = system_config.multichain.default_chain.clone();
+        system_config.multichain.default_chain = normalize_chain_for_zerion(&original_default_chain)
+            .unwrap_or_else(|_| {
+                warn!("Using original default_chain as normalization failed: '{}'", original_default_chain);
+                original_default_chain.clone()
+            });
+
+        if original_default_chain != system_config.multichain.default_chain {
+            info!(
+                "Normalized default_chain in configuration: '{}' -> '{}'",
+                original_default_chain, system_config.multichain.default_chain
+            );
+        }
 
         // Validate configuration
         system_config.validate()?;
@@ -399,6 +446,21 @@ impl SystemConfig {
         updated_config.validate()?;
         *self = updated_config;
         Ok(())
+    }
+}
+
+/// Normalize chain names to Zerion API compatible format
+/// This function ensures that no matter what format chain names come in,
+/// they are standardized before reaching the Zerion API
+pub fn normalize_chain_for_zerion(input: &str) -> std::result::Result<String, String> {
+    match input.trim().to_lowercase().as_str() {
+        "solana" | "sol" => Ok("solana".to_string()),
+        "ethereum" | "eth" => Ok("ethereum".to_string()),
+        "base" => Ok("base".to_string()),
+        "binance" | "bsc" | "binance-smart-chain" | "bnb" | "binance smart chain" => {
+            Ok("binance-smart-chain".to_string())
+        },
+        _ => Err(format!("Unsupported chain: '{}'", input))
     }
 }
 

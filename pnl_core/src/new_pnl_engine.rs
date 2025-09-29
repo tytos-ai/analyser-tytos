@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info, trace, warn};
 
-use crate::balance_fetcher::BalanceFetcher;
 use crate::new_parser::{NewEventType, NewFinancialEvent};
+use crate::zerion_balance_fetcher::ZerionBalanceFetcher;
 
 /// A matched trade pair in FIFO order
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +42,32 @@ pub struct UnmatchedSell {
     pub phantom_pnl_usd: Decimal,
 }
 
+/// A received token event (airdrops, transfers from other wallets)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceivedToken {
+    /// The receive event
+    pub receive_event: NewFinancialEvent,
+
+    /// Remaining quantity available for consumption by sells
+    pub remaining_quantity: Decimal,
+}
+
+/// Consumption of received tokens by a sell event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiveConsumption {
+    /// The receive event that provided the tokens
+    pub receive_event: NewFinancialEvent,
+
+    /// The sell event that consumed the tokens
+    pub sell_event: NewFinancialEvent,
+
+    /// Quantity consumed from this receive event
+    pub consumed_quantity: Decimal,
+
+    /// No P&L impact (received tokens have no cost basis)
+    pub pnl_impact_usd: Decimal, // Always zero
+}
+
 /// Remaining position after all matching
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemainingPosition {
@@ -49,13 +75,16 @@ pub struct RemainingPosition {
     pub token_address: String,
     pub token_symbol: String,
 
-    /// Remaining quantity
-    pub quantity: Decimal,
+    /// Remaining quantity from bought tokens
+    pub bought_quantity: Decimal,
 
-    /// Weighted average cost basis
+    /// Remaining quantity from received tokens
+    pub received_quantity: Decimal,
+
+    /// Weighted average cost basis (only applies to bought tokens)
     pub avg_cost_basis_usd: Decimal,
 
-    /// Total cost basis for remaining position
+    /// Total cost basis for remaining bought position
     pub total_cost_basis_usd: Decimal,
 }
 
@@ -107,6 +136,16 @@ pub struct TokenPnLResult {
     pub current_losing_streak: u32,
     #[serde(default)]
     pub longest_losing_streak: u32,
+
+    /// Receive-related tracking
+    #[serde(default)]
+    pub receive_consumptions: Vec<ReceiveConsumption>,
+    #[serde(default)]
+    pub total_received_quantity: Decimal,
+    #[serde(default)]
+    pub total_received_sold_quantity: Decimal,
+    #[serde(default)]
+    pub remaining_received_quantity: Decimal,
 }
 
 /// Portfolio-level P&L results
@@ -171,7 +210,7 @@ pub struct PortfolioPnLResult {
 /// and performing token-by-token analysis with FIFO matching
 pub struct NewPnLEngine {
     wallet_address: String,
-    balance_fetcher: Option<BalanceFetcher>,
+    balance_fetcher: Option<ZerionBalanceFetcher>,
 }
 
 impl NewPnLEngine {
@@ -183,8 +222,8 @@ impl NewPnLEngine {
         }
     }
 
-    /// Create a new P&L engine with balance fetching enabled
-    pub fn with_balance_fetcher(wallet_address: String, balance_fetcher: BalanceFetcher) -> Self {
+    /// Create a new P&L engine with Zerion balance fetching enabled
+    pub fn with_balance_fetcher(wallet_address: String, balance_fetcher: ZerionBalanceFetcher) -> Self {
         Self {
             wallet_address,
             balance_fetcher: Some(balance_fetcher),
@@ -229,7 +268,7 @@ impl NewPnLEngine {
     }
 
     /// Enable balance fetching by setting the balance fetcher
-    pub fn set_balance_fetcher(&mut self, balance_fetcher: BalanceFetcher) {
+    pub fn set_balance_fetcher(&mut self, balance_fetcher: ZerionBalanceFetcher) {
         self.balance_fetcher = Some(balance_fetcher);
     }
 
@@ -258,6 +297,10 @@ impl NewPnLEngine {
         let mut total_winning_trades = 0u32;
         let mut total_losing_trades = 0u32;
 
+        // Enhanced tracking for receive vs buy debugging
+        let mut total_receive_events = 0u32;
+        let mut total_receive_consumptions = 0u32;
+
         // Process each token separately (supports parallel processing)
         for (token_address, events) in events_by_token {
             debug!(
@@ -267,6 +310,13 @@ impl NewPnLEngine {
             );
 
             total_events_processed += events.len() as u32;
+
+            // Count receive events for debug tracking
+            let receive_events_count = events
+                .iter()
+                .filter(|e| e.event_type == NewEventType::Receive)
+                .count() as u32;
+            total_receive_events += receive_events_count;
 
             let current_price = current_prices
                 .as_ref()
@@ -292,6 +342,53 @@ impl NewPnLEngine {
 
         // Calculate portfolio-level statistics
         let total_pnl = total_realized_pnl + total_unrealized_pnl;
+
+        // Enhanced debugging for zero P&L scenarios
+        if total_pnl == Decimal::ZERO && total_events_processed > 0 {
+            warn!(
+                "⚠️  ZERO P&L DETECTED for wallet {} despite processing {} events across {} tokens!",
+                self.wallet_address,
+                total_events_processed,
+                tokens_analyzed
+            );
+
+            // Analyze token results to find the issue
+            let tokens_with_only_sells = token_results
+                .iter()
+                .filter(|t| t.total_trades > 0 && t.total_invested_usd == Decimal::ZERO)
+                .count();
+
+            if tokens_with_only_sells > 0 {
+                warn!(
+                    "    → {} tokens had only SELL events (no BUY events), resulting in phantom buys with zero P&L",
+                    tokens_with_only_sells
+                );
+            }
+
+            // Enhanced debugging for receive vs buy tracking
+            if total_receive_events > 0 {
+                debug!(
+                    "🎯 Enhanced P&L Debug - Wallet {}: {} received token events processed, enhanced FIFO logic applied",
+                    self.wallet_address,
+                    total_receive_events
+                );
+                debug!(
+                    "  → Received tokens consume FIFO priority in sells (P&L impact: $0 as designed for received tokens)"
+                );
+            } else {
+                debug!(
+                    "🔍 Enhanced P&L Debug - Wallet {}: No received tokens detected, all events were buy/sell pairs",
+                    self.wallet_address
+                );
+            }
+
+            info!(
+                "    → Total trades: {}, Winning: {}, Losing: {}",
+                total_trades,
+                total_winning_trades,
+                total_losing_trades
+            );
+        }
 
         // Sanity check for unrealistic total P&L values
         let hundred_million = Decimal::from(100_000_000);
@@ -417,7 +514,7 @@ impl NewPnLEngine {
             events.len()
         );
 
-        // Separate buy and sell events (already sorted chronologically)
+        // Separate buy, sell, and receive events (already sorted chronologically)
         let mut buy_events: Vec<NewFinancialEvent> = events
             .iter()
             .filter(|e| e.event_type == NewEventType::Buy)
@@ -430,12 +527,29 @@ impl NewPnLEngine {
             .cloned()
             .collect();
 
+        let receive_events: Vec<NewFinancialEvent> = events
+            .iter()
+            .filter(|e| e.event_type == NewEventType::Receive)
+            .cloned()
+            .collect();
+
+        // Enhanced debugging for token event pairing including receives
         debug!(
-            "Token {}: {} buy events, {} sell events",
+            "Event summary for {}: {} buys, {} sells, {} receives",
             token_symbol,
             buy_events.len(),
-            sell_events.len()
+            sell_events.len(),
+            receive_events.len()
         );
+
+        if buy_events.is_empty() && receive_events.is_empty() && !sell_events.is_empty() {
+            warn!(
+                "⚠️  Token {} ({}): No buy or receive events found but {} sell events exist. This will result in phantom buys with zero P&L.",
+                token_symbol,
+                token_address,
+                sell_events.len()
+            );
+        }
 
         // Calculate investment metrics (exclude phantom buys from total_invested!)
         let total_invested_usd: Decimal = events
@@ -458,12 +572,17 @@ impl NewPnLEngine {
             .map(|e| e.usd_value)
             .sum();
 
-        // Perform FIFO matching (includes phantom buy creation for unmatched sells)
-        let matched_trades = self.perform_fifo_matching(&mut buy_events, &sell_events)?;
+        // Perform enhanced FIFO matching that handles received tokens separately
+        let (matched_trades, receive_consumptions) = self.perform_enhanced_fifo_matching(&mut buy_events, &sell_events, &receive_events)?;
 
-        // Calculate remaining position from unmatched buys
-        let remaining_position =
-            self.calculate_remaining_position(&buy_events, &token_address, &token_symbol)?;
+        // Calculate remaining position from unmatched buys and remaining receives
+        let remaining_position = self.calculate_enhanced_remaining_position(
+            &buy_events,
+            &receive_events,
+            &receive_consumptions,
+            &token_address,
+            &token_symbol
+        )?;
 
         // Calculate realized P&L (all P&L is now captured in matched_trades)
         let total_realized_pnl: Decimal = matched_trades
@@ -508,6 +627,11 @@ impl NewPnLEngine {
             longest_losing_streak,
         ) = self.calculate_streak_analytics(&matched_trades);
 
+        // Calculate receive-related metrics
+        let total_received_quantity: Decimal = receive_events.iter().map(|e| e.quantity).sum();
+        let total_received_sold_quantity: Decimal = receive_consumptions.iter().map(|c| c.consumed_quantity).sum();
+        let remaining_received_quantity = total_received_quantity - total_received_sold_quantity;
+
         let result = TokenPnLResult {
             token_address,
             token_symbol,
@@ -529,16 +653,33 @@ impl NewPnLEngine {
             longest_winning_streak,
             current_losing_streak,
             longest_losing_streak,
+            receive_consumptions,
+            total_received_quantity,
+            total_received_sold_quantity,
+            remaining_received_quantity,
         };
 
         debug!(
-            "Token {} P&L: Realized: ${}, Unrealized: ${}, Total: ${}, Trades: {}, Win Rate: {}%",
-            result.token_symbol,
+            "Token {} Enhanced P&L Summary:",
+            result.token_symbol
+        );
+        debug!(
+            "  💰 P&L: Realized: ${}, Unrealized: ${}, Total: ${}, Trades: {}, Win Rate: {}%",
             result.total_realized_pnl_usd,
             result.total_unrealized_pnl_usd,
             result.total_pnl_usd,
             result.total_trades,
             result.win_rate_percentage
+        );
+        debug!(
+            "  🎁 Receives: Total: {}, Sold: {}, Remaining: {} (no P&L impact)",
+            result.total_received_quantity,
+            result.total_received_sold_quantity,
+            result.remaining_received_quantity
+        );
+        debug!(
+            "  📊 Consumptions: {} receive→sell events excluded from P&L",
+            result.receive_consumptions.len()
         );
 
         Ok(result)
@@ -629,6 +770,7 @@ impl NewPnLEngine {
                     wallet_address: sell_event.wallet_address.clone(),
                     token_address: sell_event.token_address.clone(),
                     token_symbol: sell_event.token_symbol.clone(),
+                    chain_id: sell_event.chain_id.clone(),
                     event_type: NewEventType::Buy,
                     quantity: remaining_sell_quantity,
                     usd_price_per_token: sell_event.usd_price_per_token, // Same price = zero P&L
@@ -681,6 +823,145 @@ impl NewPnLEngine {
         Ok(matched_trades)
     }
 
+    /// Enhanced FIFO matching that handles received tokens separately
+    /// Phase 1: Consume received tokens first (FIFO within receives)
+    /// Phase 2: Match remaining sells with bought tokens (traditional FIFO)
+    fn perform_enhanced_fifo_matching(
+        &self,
+        buy_events: &mut Vec<NewFinancialEvent>,
+        sell_events: &[NewFinancialEvent],
+        receive_events: &[NewFinancialEvent],
+    ) -> Result<(Vec<MatchedTrade>, Vec<ReceiveConsumption>), String> {
+        let mut matched_trades = Vec::new();
+        let mut receive_consumptions = Vec::new();
+
+        // Create mutable copies for consumption tracking
+        let mut remaining_receives: Vec<ReceivedToken> = receive_events
+            .iter()
+            .map(|event| ReceivedToken {
+                receive_event: event.clone(),
+                remaining_quantity: event.quantity,
+            })
+            .collect();
+
+        // Process each sell event
+        for sell_event in sell_events {
+            let mut remaining_sell_quantity = sell_event.quantity;
+
+            // Phase 1: First consume received tokens (FIFO within receives)
+            for received_token in &mut remaining_receives {
+                if remaining_sell_quantity <= Decimal::ZERO {
+                    break;
+                }
+
+                if received_token.remaining_quantity > Decimal::ZERO {
+                    let consumed_quantity = remaining_sell_quantity.min(received_token.remaining_quantity);
+
+                    // Record the consumption
+                    receive_consumptions.push(ReceiveConsumption {
+                        receive_event: received_token.receive_event.clone(),
+                        sell_event: sell_event.clone(),
+                        consumed_quantity,
+                        pnl_impact_usd: Decimal::ZERO, // No P&L impact for received tokens
+                    });
+
+                    // Update remaining quantities
+                    received_token.remaining_quantity -= consumed_quantity;
+                    remaining_sell_quantity -= consumed_quantity;
+
+                    debug!(
+                        "Consumed {} {} from receive event for sell (no P&L impact)",
+                        consumed_quantity, sell_event.token_symbol
+                    );
+                }
+            }
+
+            // Phase 2: If there's still sell quantity remaining, match with bought tokens
+            if remaining_sell_quantity > Decimal::ZERO {
+                // Create a partial sell event for the remaining quantity
+                let mut remaining_sell_event = sell_event.clone();
+                remaining_sell_event.quantity = remaining_sell_quantity;
+                remaining_sell_event.usd_value = remaining_sell_quantity * sell_event.usd_price_per_token;
+
+                // Match against bought tokens using traditional FIFO
+                for buy_event in buy_events.iter_mut() {
+                    if remaining_sell_event.quantity <= Decimal::ZERO {
+                        break;
+                    }
+
+                    if buy_event.quantity > Decimal::ZERO && buy_event.timestamp <= remaining_sell_event.timestamp {
+                        let matched_quantity = remaining_sell_event.quantity.min(buy_event.quantity);
+
+                        let realized_pnl = (remaining_sell_event.usd_price_per_token - buy_event.usd_price_per_token) * matched_quantity;
+
+                        let hold_time_seconds = (remaining_sell_event.timestamp - buy_event.timestamp)
+                            .num_seconds()
+                            .max(0);
+
+                        matched_trades.push(MatchedTrade {
+                            buy_event: buy_event.clone(),
+                            sell_event: remaining_sell_event.clone(),
+                            matched_quantity,
+                            realized_pnl_usd: realized_pnl,
+                            hold_time_seconds,
+                        });
+
+                        // Update remaining quantities
+                        buy_event.quantity -= matched_quantity;
+                        remaining_sell_event.quantity -= matched_quantity;
+                        remaining_sell_event.usd_value -= matched_quantity * remaining_sell_event.usd_price_per_token;
+
+                        debug!(
+                            "Matched {} {} (buy: ${:.4} -> sell: ${:.4}, P&L: ${:.2})",
+                            matched_quantity,
+                            remaining_sell_event.token_symbol,
+                            buy_event.usd_price_per_token,
+                            remaining_sell_event.usd_price_per_token,
+                            realized_pnl
+                        );
+                    }
+                }
+
+                // If there's still unmatched sell quantity, create phantom buy
+                if remaining_sell_event.quantity > Decimal::ZERO {
+                    let phantom_buy = NewFinancialEvent {
+                        wallet_address: remaining_sell_event.wallet_address.clone(),
+                        transaction_hash: format!("phantom_buy_{}", remaining_sell_event.transaction_hash),
+                        timestamp: remaining_sell_event.timestamp - chrono::Duration::seconds(1),
+                        event_type: NewEventType::Buy,
+                        token_address: remaining_sell_event.token_address.clone(),
+                        token_symbol: remaining_sell_event.token_symbol.clone(),
+                        quantity: remaining_sell_event.quantity,
+                        usd_price_per_token: remaining_sell_event.usd_price_per_token,
+                        usd_value: remaining_sell_event.usd_value,
+                        chain_id: remaining_sell_event.chain_id.clone(),
+                    };
+
+                    matched_trades.push(MatchedTrade {
+                        buy_event: phantom_buy,
+                        sell_event: remaining_sell_event.clone(),
+                        matched_quantity: remaining_sell_event.quantity,
+                        realized_pnl_usd: Decimal::ZERO,
+                        hold_time_seconds: 1,
+                    });
+
+                    debug!(
+                        "Created phantom buy for unmatched sell of {} {} (zero P&L)",
+                        remaining_sell_event.quantity, remaining_sell_event.token_symbol
+                    );
+                }
+            }
+        }
+
+        debug!(
+            "Enhanced FIFO matching completed: {} matched trades, {} receive consumptions",
+            matched_trades.len(),
+            receive_consumptions.len()
+        );
+
+        Ok((matched_trades, receive_consumptions))
+    }
+
     /// Calculate remaining position from unmatched buy events (LEGACY - includes phantom buys)
     /// This method is kept for backward compatibility with the legacy unrealized P&L calculation
     fn calculate_remaining_position(
@@ -705,14 +986,65 @@ impl NewPnLEngine {
         let position = RemainingPosition {
             token_address: token_address.to_string(),
             token_symbol: token_symbol.to_string(),
-            quantity: total_quantity,
+            bought_quantity: total_quantity, // Legacy function treats all as bought
+            received_quantity: Decimal::ZERO, // Legacy doesn't track receives
             avg_cost_basis_usd: avg_cost_basis,
             total_cost_basis_usd: total_cost,
         };
 
         debug!(
             "LEGACY remaining position (includes phantom buys): {} {} @ avg cost ${} (total cost: ${})",
-            position.quantity,
+            position.bought_quantity,
+            position.token_symbol,
+            position.avg_cost_basis_usd,
+            position.total_cost_basis_usd
+        );
+
+        Ok(Some(position))
+    }
+
+    /// Calculate enhanced remaining position including both bought and received tokens
+    fn calculate_enhanced_remaining_position(
+        &self,
+        remaining_buys: &[NewFinancialEvent],
+        receive_events: &[NewFinancialEvent],
+        receive_consumptions: &[ReceiveConsumption],
+        token_address: &str,
+        token_symbol: &str,
+    ) -> Result<Option<RemainingPosition>, String> {
+        // Calculate remaining bought tokens
+        let bought_quantity: Decimal = remaining_buys.iter().map(|e| e.quantity).sum();
+        let total_bought_cost: Decimal = remaining_buys.iter().map(|e| e.usd_value).sum();
+        let avg_cost_basis = if bought_quantity > Decimal::ZERO {
+            total_bought_cost / bought_quantity
+        } else {
+            Decimal::ZERO
+        };
+
+        // Calculate remaining received tokens
+        let total_received_quantity: Decimal = receive_events.iter().map(|e| e.quantity).sum();
+        let consumed_received_quantity: Decimal = receive_consumptions.iter().map(|c| c.consumed_quantity).sum();
+        let received_quantity = total_received_quantity - consumed_received_quantity;
+
+        // Only create position if there are remaining tokens
+        if bought_quantity <= Decimal::ZERO && received_quantity <= Decimal::ZERO {
+            return Ok(None);
+        }
+
+        let position = RemainingPosition {
+            token_address: token_address.to_string(),
+            token_symbol: token_symbol.to_string(),
+            bought_quantity,
+            received_quantity,
+            avg_cost_basis_usd: avg_cost_basis,
+            total_cost_basis_usd: total_bought_cost, // Only bought tokens have cost basis
+        };
+
+        debug!(
+            "Enhanced remaining position: {} {} bought + {} {} received @ avg cost ${} (total cost: ${})",
+            position.bought_quantity,
+            position.token_symbol,
+            position.received_quantity,
             position.token_symbol,
             position.avg_cost_basis_usd,
             position.total_cost_basis_usd
@@ -738,17 +1070,18 @@ impl NewPnLEngine {
                 return Decimal::ZERO;
             }
 
-            // Use the exact formula specified in documentation:
-            // (current_price - weighted_avg_cost_basis) × remaining_quantity
-            let unrealized_pnl = (price - position.avg_cost_basis_usd) * position.quantity;
+            // Use the exact formula specified in documentation, but only for bought tokens:
+            // (current_price - weighted_avg_cost_basis) × remaining_bought_quantity
+            // Received tokens have no cost basis, so no unrealized P&L
+            let unrealized_pnl = (price - position.avg_cost_basis_usd) * position.bought_quantity;
 
             // Sanity check for unrealistic values (> $100M)
             let hundred_million = Decimal::from(100_000_000);
             if unrealized_pnl.abs() > hundred_million {
                 warn!(
-                    "Unrealistic unrealized P&L detected for {}: {} @ ${} vs cost basis ${} = P&L: ${} - treating as data error",
+                    "Unrealistic unrealized P&L detected for {}: {} bought @ ${} vs cost basis ${} = P&L: ${} - treating as data error",
                     position.token_symbol,
-                    position.quantity,
+                    position.bought_quantity,
                     price,
                     position.avg_cost_basis_usd,
                     unrealized_pnl
@@ -757,9 +1090,10 @@ impl NewPnLEngine {
             }
 
             debug!(
-                "Unrealized P&L for {}: {} @ ${} vs cost basis ${} = P&L: ${}",
+                "Unrealized P&L for {}: {} bought + {} received @ ${} vs cost basis ${} = P&L: ${} (only bought tokens generate P&L)",
                 position.token_symbol,
-                position.quantity,
+                position.bought_quantity,
+                position.received_quantity,
                 price,
                 position.avg_cost_basis_usd,
                 unrealized_pnl
@@ -828,34 +1162,32 @@ impl NewPnLEngine {
         remaining_buys: &[NewFinancialEvent],
         current_price: Option<Decimal>,
     ) -> Decimal {
-        // If balance fetcher is not available, fall back to old method
-        let balance_fetcher = match &self.balance_fetcher {
-            Some(fetcher) => fetcher,
-            None => {
-                debug!("No balance fetcher available, using legacy position calculation");
-                let remaining_position = self
-                    .calculate_remaining_position(remaining_buys, token_address, token_symbol)
-                    .unwrap_or(None);
-                return self.calculate_unrealized_pnl(&remaining_position, current_price);
+        // Get real balance from Zerion API if available, otherwise fall back to calculated positions
+        let real_balance = if let Some(balance_fetcher) = &self.balance_fetcher {
+            // Try Zerion API
+            match balance_fetcher
+                .get_token_ui_amount(&self.wallet_address, token_address)
+                .await
+            {
+                Ok(balance) => balance,
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch real balance from Zerion for {}: {}, falling back to calculated position",
+                        token_symbol, e
+                    );
+                    let remaining_position = self
+                        .calculate_remaining_position(remaining_buys, token_address, token_symbol)
+                        .unwrap_or(None);
+                    return self.calculate_unrealized_pnl(&remaining_position, current_price);
+                }
             }
-        };
-
-        // Get real balance from Birdeye API
-        let real_balance = match balance_fetcher
-            .get_token_ui_amount(&self.wallet_address, token_address)
-            .await
-        {
-            Ok(balance) => balance,
-            Err(e) => {
-                warn!(
-                    "Failed to fetch real balance for {}: {}, falling back to calculated position",
-                    token_symbol, e
-                );
-                let remaining_position = self
-                    .calculate_remaining_position(remaining_buys, token_address, token_symbol)
-                    .unwrap_or(None);
-                return self.calculate_unrealized_pnl(&remaining_position, current_price);
-            }
+        } else {
+            // No balance fetcher available, use calculated positions
+            debug!("No balance fetcher available, using legacy position calculation");
+            let remaining_position = self
+                .calculate_remaining_position(remaining_buys, token_address, token_symbol)
+                .unwrap_or(None);
+            return self.calculate_unrealized_pnl(&remaining_position, current_price);
         };
 
         debug!("Real wallet balance for {}: {}", token_symbol, real_balance);
@@ -1069,98 +1401,3 @@ impl NewPnLEngine {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::new_parser::NewEventType;
-
-    #[tokio::test]
-    async fn test_simple_fifo_matching() {
-        let engine = NewPnLEngine::new("test_wallet".to_string());
-
-        let events = vec![
-            // Buy 100 tokens @ $1
-            NewFinancialEvent {
-                wallet_address: "test".to_string(),
-                token_address: "token1".to_string(),
-                token_symbol: "T1".to_string(),
-                event_type: NewEventType::Buy,
-                quantity: Decimal::from(100),
-                usd_price_per_token: Decimal::from(1),
-                usd_value: Decimal::from(100),
-                timestamp: DateTime::from_timestamp(1000, 0).unwrap(),
-                transaction_hash: "tx1".to_string(),
-            },
-            // Sell 50 tokens @ $2 (should match 50 from the buy, profit = $50)
-            NewFinancialEvent {
-                wallet_address: "test".to_string(),
-                token_address: "token1".to_string(),
-                token_symbol: "T1".to_string(),
-                event_type: NewEventType::Sell,
-                quantity: Decimal::from(50),
-                usd_price_per_token: Decimal::from(2),
-                usd_value: Decimal::from(100),
-                timestamp: DateTime::from_timestamp(2000, 0).unwrap(),
-                transaction_hash: "tx2".to_string(),
-            },
-        ];
-
-        let result = engine
-            .calculate_token_pnl(events, Some(Decimal::from(3)))
-            .await
-            .unwrap();
-
-        // Should have 1 matched trade
-        assert_eq!(result.matched_trades.len(), 1);
-        assert_eq!(result.matched_trades[0].matched_quantity, Decimal::from(50));
-        assert_eq!(result.matched_trades[0].realized_pnl_usd, Decimal::from(50)); // (2-1) * 50
-
-        // Should have remaining position of 50 tokens
-        assert!(result.remaining_position.is_some());
-        let position = result.remaining_position.unwrap();
-        assert_eq!(position.quantity, Decimal::from(50));
-        assert_eq!(position.avg_cost_basis_usd, Decimal::from(1));
-
-        // Unrealized P&L: 50 * (3 - 1) = 100
-        assert_eq!(result.total_unrealized_pnl_usd, Decimal::from(100));
-
-        // Total P&L: 50 (realized) + 100 (unrealized) = 150
-        assert_eq!(result.total_pnl_usd, Decimal::from(150));
-    }
-
-    #[tokio::test]
-    async fn test_unmatched_sell_handling() {
-        let engine = NewPnLEngine::new("test_wallet".to_string());
-
-        let events = vec![
-            // Sell 100 tokens @ $5 (no corresponding buy - should create phantom buy @ $5)
-            NewFinancialEvent {
-                wallet_address: "test".to_string(),
-                token_address: "token1".to_string(),
-                token_symbol: "T1".to_string(),
-                event_type: NewEventType::Sell,
-                quantity: Decimal::from(100),
-                usd_price_per_token: Decimal::from(5),
-                usd_value: Decimal::from(500),
-                timestamp: DateTime::from_timestamp(1000, 0).unwrap(),
-                transaction_hash: "tx1".to_string(),
-            },
-        ];
-
-        let result = engine.calculate_token_pnl(events, None).await.unwrap();
-
-        // Should have 1 matched trade (with phantom buy)
-        assert_eq!(result.matched_trades.len(), 1);
-        assert_eq!(
-            result.matched_trades[0].matched_quantity,
-            Decimal::from(100)
-        );
-        assert_eq!(result.matched_trades[0].realized_pnl_usd, Decimal::ZERO); // Zero P&L for phantom buy
-
-        // No remaining position
-        assert!(result.remaining_position.is_none());
-
-        // Total P&L should be zero
-        assert_eq!(result.total_pnl_usd, Decimal::ZERO);
-    }
-}

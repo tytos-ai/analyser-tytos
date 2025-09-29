@@ -5,8 +5,7 @@ use axum::{
     response::Json,
 };
 use chrono::Utc;
-use job_orchestrator::JobOrchestrator;
-use pnl_core::{BalanceFetcher, NewPnLEngine, NewTransactionParser, PortfolioPnLResult};
+use pnl_core::{NewPnLEngine, PortfolioPnLResult, ZerionBalanceFetcher};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -55,66 +54,44 @@ pub async fn get_wallet_analysis_v2(
     validate_chain(chain, &state.config.multichain.enabled_chains)
         .map_err(|e| ApiError::BadRequest(e))?;
 
-    // Fetch transaction data using BirdEye data source
-    let transactions = {
+    // Fetch transaction data using Zerion data source
+    let financial_events = {
         debug!(
-            "Using BirdEye data source for wallet analysis on chain: {}",
+            "Using Zerion data source for wallet analysis on chain: {}",
             chain
         );
-        state
-            .birdeye_client
-            .get_all_trader_transactions_paginated(
+
+        let zerion_client = state.orchestrator.get_zerion_client()
+            .ok_or_else(|| ApiError::InternalServerError("Zerion client not initialized".to_string()))?;
+        let zerion_transactions = zerion_client
+            .get_wallet_transactions_with_time_range(
                 &wallet_address,
-                chain,
-                None,
-                None,
-                max_transactions,
+                "usd",
+                None, // No time range filtering for V2 API
+                Some(max_transactions as usize),
+                Some(chain),
             )
             .await
-            .map_err(|e| ApiError::InternalServerError(format!("BirdEye error: {}", e)))?
+            .map_err(|e| ApiError::InternalServerError(format!("Zerion error: {}", e)))?;
+
+        debug!(
+            "Fetched {} Zerion transactions for wallet {}",
+            zerion_transactions.len(),
+            wallet_address
+        );
+
+        // Convert Zerion transactions directly to financial events
+        zerion_client.convert_to_financial_events(&zerion_transactions, &wallet_address)
     };
 
     debug!(
-        "Fetched {} transactions for wallet {}",
-        transactions.len(),
-        wallet_address
-    );
-
-    // Step 0: Preprocessing - Consolidate duplicate transaction hashes (DEX aggregation fix)
-    let original_count = transactions.len();
-    let consolidated_transactions = JobOrchestrator::consolidate_duplicate_hashes(transactions);
-    let consolidated_count = consolidated_transactions.len();
-
-    if original_count != consolidated_count {
-        info!(
-            "🔄 API preprocessing: {} transactions → {} consolidated transactions",
-            original_count, consolidated_count
-        );
-    }
-
-    // Parse consolidated transactions into financial events using new parser
-    let parser = NewTransactionParser::new(wallet_address.clone());
-
-    let events = parser
-        .parse_transactions(consolidated_transactions)
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("Transaction parsing error: {}", e)))?;
-
-    debug!(
-        "Parsed {} events for wallet {}",
-        events.len(),
+        "Converted {} financial events for wallet {}",
+        financial_events.len(),
         wallet_address
     );
 
     // Group events by token
-    let mut events_by_token: std::collections::HashMap<String, Vec<pnl_core::NewFinancialEvent>> =
-        std::collections::HashMap::new();
-    for event in events {
-        events_by_token
-            .entry(event.token_address.clone())
-            .or_insert_with(Vec::new)
-            .push(event);
-    }
+    let events_by_token = pnl_core::NewTransactionParser::group_events_by_token(financial_events);
 
     let total_events: usize = events_by_token.values().map(|events| events.len()).sum();
     debug!(
@@ -123,45 +100,37 @@ pub async fn get_wallet_analysis_v2(
         events_by_token.len()
     );
 
-    // Get current prices for unrealized P&L calculation using BirdEye client directly
-    let token_addresses: Vec<String> = events_by_token.keys().cloned().collect();
-    let current_prices = if !token_addresses.is_empty() {
-        match state
-            .birdeye_client
-            .get_current_prices(&token_addresses, chain)
-            .await
-        {
-            Ok(birdeye_prices) => {
-                // Convert f64 prices to Decimal
-                let mut decimal_prices = HashMap::new();
-                for (token, price) in birdeye_prices {
-                    decimal_prices.insert(
-                        token,
-                        rust_decimal::Decimal::from_f64_retain(price)
-                            .unwrap_or(rust_decimal::Decimal::ZERO),
-                    );
-                }
-                Some(decimal_prices)
+    // Get current prices for unrealized P&L calculation using Zerion portfolio
+    let current_prices = {
+        debug!("Fetching current portfolio from Zerion for current prices on chain: {}", chain);
+
+        // Create Zerion balance fetcher
+        let balance_fetcher = ZerionBalanceFetcher::new(
+            state.config.zerion.api_key.clone(),
+            Some("https://api.zerion.io".to_string()),
+        );
+
+        match balance_fetcher.fetch_wallet_balances_for_chain(&wallet_address, chain).await {
+            Ok(zerion_balances) => {
+                // Convert Zerion balances to portfolio format using orchestrator
+                let portfolio = state.orchestrator.convert_zerion_to_wallet_token_balance(&zerion_balances, chain);
+                debug!("✅ Successfully fetched {} tokens from Zerion portfolio for prices", portfolio.len());
+
+                // Extract current prices from portfolio
+                Some(dex_client::extract_current_prices_from_portfolio(&portfolio))
             }
             Err(e) => {
-                warn!("Failed to fetch current prices from BirdEye: {}", e);
+                warn!("Failed to fetch current prices from Zerion portfolio: {}", e);
                 None
             }
         }
-    } else {
-        None
     };
 
-    // Calculate P&L using new engine with balance API integration (direct PortfolioPnLResult)
-    let balance_fetcher = if true {
-        // Always enabled for hybrid mode
-        BalanceFetcher::new(
-            state.config.birdeye.api_key.clone(),
-            Some(state.config.birdeye.api_base_url.clone()),
-        )
-    } else {
-        BalanceFetcher::new("disabled".to_string(), None)
-    };
+    // Calculate P&L using new engine with Zerion balance API integration (direct PortfolioPnLResult)
+    let balance_fetcher = ZerionBalanceFetcher::new(
+        state.config.zerion.api_key.clone(),
+        Some("https://api.zerion.io".to_string()),
+    );
 
     let pnl_engine = if true {
         // Always enabled for hybrid mode
@@ -214,7 +183,7 @@ pub async fn get_wallet_analysis_v2(
 
     let metadata = AnalysisMetadata {
         analyzed_at: Utc::now(),
-        data_source: "Zerion+BirdEye Hybrid".to_string(),
+        data_source: "Zerion".to_string(),
         tokens_processed: portfolio_result.tokens_analyzed,
         events_processed: portfolio_result.events_processed,
         analysis_duration_ms: analysis_duration.as_millis() as u64,

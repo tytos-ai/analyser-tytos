@@ -1,7 +1,7 @@
 use anyhow::Result;
 use config_manager::SystemConfig;
 use dex_client::{
-    BirdEyeClient, DexScreenerClient, DexScreenerTrendingToken, GeneralTraderTransaction,
+    DexScreenerClient, DexScreenerTrendingToken, GeneralTraderTransaction,
     TopTrader, TrendingToken as BirdEyeTrendingToken,
 };
 use persistence_layer::{DiscoveredWalletToken, RedisClient};
@@ -116,7 +116,6 @@ impl TokenCache {
 /// Orchestrates trending token discovery using DexScreener scraping (replaces BirdEye trending)
 pub struct BirdEyeTrendingOrchestrator {
     config: SystemConfig,
-    birdeye_client: BirdEyeClient,
     dexscreener_client: Option<Arc<Mutex<DexScreenerClient>>>,
     redis_client: Arc<Mutex<Option<RedisClient>>>,
     is_running: Arc<Mutex<bool>>,
@@ -124,12 +123,8 @@ pub struct BirdEyeTrendingOrchestrator {
 }
 
 impl BirdEyeTrendingOrchestrator {
-    /// Create a new BirdEye trending orchestrator
+    /// Create a new DexScreener trending orchestrator
     pub fn new(config: SystemConfig, redis_client: Option<RedisClient>) -> Result<Self> {
-        // Use BirdEye config from SystemConfig
-        let birdeye_config = config.birdeye.clone();
-        let birdeye_client = BirdEyeClient::new(birdeye_config)?;
-
         // Initialize DexScreener client if enabled
         let dexscreener_client = if config.dexscreener.enabled {
             let dexscreener_config = dex_client::DexScreenerClientConfig {
@@ -156,7 +151,6 @@ impl BirdEyeTrendingOrchestrator {
 
         Ok(Self {
             config,
-            birdeye_client,
             dexscreener_client,
             redis_client: redis_arc,
             is_running: Arc::new(Mutex::new(false)),
@@ -542,74 +536,53 @@ impl BirdEyeTrendingOrchestrator {
         }
     }
 
-    /// Get top traders for a specific token on a specific chain
+    /// Get top traders for a specific token on a specific chain using DexScreener scraping
     async fn get_top_traders_for_token(
         &self,
         token_address: &str,
         chain: &str,
     ) -> Result<Vec<TopTrader>> {
         debug!(
-            "👥 Fetching top traders for token: {} on chain: {}",
+            "👥 Fetching top traders for token: {} on chain: {} using DexScreener scraping",
             token_address, chain
         );
 
-        match self
-            .birdeye_client
-            .get_top_traders_paginated(token_address, chain)
-            .await
-        {
-            Ok(traders) => {
-                debug!(
-                    "📊 Retrieved {} raw traders for token {} on chain {}",
-                    traders.len(),
-                    token_address,
-                    chain
-                );
+        // Use DexScreener scraping to get top traders
+        if let Some(ref dexscreener_client_arc) = self.dexscreener_client {
+            let mut dexscreener_client = dexscreener_client_arc.lock().await;
 
-                // Apply quality filtering using trader filter config
-                let quality_traders = self.birdeye_client.filter_top_traders(
-                    traders,
-                    self.config.trader_filter.min_capital_deployed_sol * 230.0, // Convert SOL to USD roughly
-                    self.config.trader_filter.min_total_trades,
-                    Some(self.config.trader_filter.min_win_rate),
-                    Some(24), // Default to 24 hours
-                );
+            match dexscreener_client
+                .get_top_traders_scraped(token_address, chain)
+                .await
+            {
+                Ok(scraped_traders) => {
+                    info!(
+                        "✅ DexScreener scraping: {} traders found for token {} on chain {}",
+                        scraped_traders.len(),
+                        token_address,
+                        chain
+                    );
 
-                // Limit to max traders per token
-                let mut filtered_traders = quality_traders;
-                let max_traders_per_token = 100; // Default limit for discovery
-                if filtered_traders.len() > max_traders_per_token as usize {
-                    filtered_traders.truncate(max_traders_per_token as usize);
-                }
-
-                debug!(
-                    "✅ Filtered to {} quality traders for token {} on chain {}",
-                    filtered_traders.len(),
-                    token_address,
-                    chain
-                );
-
-                if self.config.system.debug_mode && !filtered_traders.is_empty() {
-                    for (i, trader) in filtered_traders.iter().enumerate().take(3) {
-                        debug!(
-                            "  {}. {} - Volume: ${:.0}, Trades: {}",
-                            i + 1,
-                            trader.owner,
-                            trader.volume,
-                            trader.trade
-                        );
+                    if self.config.system.debug_mode && !scraped_traders.is_empty() {
+                        debug!("🎯 Top traders from DexScreener scraping:");
+                        for (i, trader) in scraped_traders.iter().enumerate().take(5) {
+                            debug!("  {}. {}", i + 1, trader.owner);
+                        }
                     }
-                }
 
-                Ok(filtered_traders)
+                    return Ok(scraped_traders);
+                }
+                Err(e) => {
+                    warn!(
+                        "❌ DexScreener scraping failed for token {} on chain {}: {}",
+                        token_address, chain, e
+                    );
+                    return Ok(vec![]); // Return empty vec instead of error for graceful degradation
+                }
             }
-            Err(e) => {
-                warn!(
-                    "❌ Failed to fetch top traders for token {} on chain {}: {}",
-                    token_address, chain, e
-                );
-                Err(e.into())
-            }
+        } else {
+            warn!("⚠️ DexScreener client not available for top traders scraping");
+            return Ok(vec![]); // Return empty vec if client not available
         }
     }
 

@@ -6,7 +6,7 @@ pnl_parallel_batch_size = 20
 # Using Zerion+BirdEye hybrid: Zerion for transactions, BirdEye for current portfolio
 
 [multichain]
-enabled_chains = ["solana"]
+enabled_chains = ["solana", "ethereum", "base", "binance-smart-chain"]
 default_chain = "solana"
 
 [redis]
@@ -33,25 +33,20 @@ request_timeout_seconds = 30
 # Zerion API configuration (alternative to BirdEye)
 [zerion]
 api_key = "zk_dev_69a0a2c7a84b433787f44efe5d1d6082"
-api_base_url = "https://api.zerion.io/v1"
+api_base_url = "https://api.zerion.io"
 request_timeout_seconds = 30
 enabled = true
 default_currency = "usd"
 default_max_transactions = 1000
 rate_limit_delay_ms = 200
 page_size = 100
-operation_types = "trade,send"
-chain_ids = "solana"
+operation_types = "trade,send,receive"
+chain_ids = "solana,ethereum,base,binance-smart-chain"
 trash_filter = "only_non_trash"
 
 # PnL filtering configuration section removed - these were never used in actual P&L processing
 # All P&L calculations are performed without filtering based on capital, hold time, trades, or win rate
-
-# Trader filtering for wallet discovery (only these 3 fields are actually used)
-[trader_filter]
-min_capital_deployed_sol = 0.001   # Minimum capital in SOL
-min_total_trades = 2               # Minimum number of trades
-min_win_rate = 25.0                # Minimum win rate percentage
+# Trader filtering configs also removed - they were defined but never actually used
 
 [api]
 host = "0.0.0.0"

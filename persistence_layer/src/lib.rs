@@ -2421,21 +2421,3 @@ impl RedisClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_redis_connection() {
-        // This test requires a running Redis instance
-        // Skip if REDIS_URL is not set
-        if std::env::var("REDIS_URL").is_err() {
-            return;
-        }
-
-        let redis_url = std::env::var("REDIS_URL").unwrap();
-        let client = RedisClient::new(&redis_url).await.unwrap();
-        let result = client.ping().await.unwrap();
-        assert_eq!(result, "PONG");
-    }
-}

@@ -14,6 +14,8 @@ tracing = "0.1"
 base64 = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1.32", features = ["serde"] }
+futures = "0.3"
 
 pnl_core = { path = "../pnl_core" }
 persistence_layer = { path = "../persistence_layer" }
+config_manager = { path = "../config_manager" }

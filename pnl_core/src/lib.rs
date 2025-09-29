@@ -1,12 +1,11 @@
 // Removed timeframe module - functions were never used in actual P&L processing
-pub mod balance_fetcher;
 pub mod history_parser;
 pub mod new_parser;
 pub mod new_pnl_engine;
-
+pub mod zerion_balance_fetcher;
 
 // New algorithm exports (primary P&L system)
-pub use balance_fetcher::{BalanceFetcher, TokenBalance};
+pub use zerion_balance_fetcher::{TokenBalance, ZerionBalanceFetcher};
 pub use history_parser::{
     HistoryBalanceChange, HistoryTransaction, HistoryTransactionParser, ParsedHistoryTransaction,
 };
@@ -20,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, warn};
 
-/// Single transaction from general BirdEye trader API
+/// Single transaction from general trader API
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralTraderTransaction {
     pub quote: TokenTransactionSide,

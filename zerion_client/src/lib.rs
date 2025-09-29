@@ -1,12 +1,16 @@
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
+use config_manager::normalize_chain_for_zerion;
 use pnl_core::{NewEventType, NewFinancialEvent};
 use reqwest::{header::HeaderMap, Client};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod time_utils;
 use tracing::{debug, error, info, warn};
 
 #[derive(Error, Debug)]
@@ -21,6 +25,10 @@ pub enum ZerionError {
     NoData,
     #[error("Configuration error: {0}")]
     Config(String),
+    #[error("Invalid time range: {0}")]
+    InvalidTimeRange(String),
+    #[error("Invalid chain parameter: {0}")]
+    InvalidChain(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +37,24 @@ pub struct ZerionTransaction {
     pub transaction_type: String,
     pub id: String,
     pub attributes: ZerionTransactionAttributes,
+    pub relationships: Option<ZerionRelationships>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZerionRelationships {
+    pub chain: Option<ZerionChainRelation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZerionChainRelation {
+    pub data: ZerionChainData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZerionChainData {
+    #[serde(rename = "type")]
+    pub chain_type: String,
+    pub id: String,  // This is the chain_id like "solana", "ethereum", etc.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +82,7 @@ pub struct ZerionFee {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZerionTransfer {
-    pub fungible_info: ZerionFungibleInfo,
+    pub fungible_info: Option<ZerionFungibleInfo>,
     pub direction: String,
     pub quantity: ZerionQuantity,
     pub value: Option<f64>,
@@ -183,6 +209,137 @@ impl ZerionClient {
         })
     }
 
+    /// Get wallet transactions for a specific chain
+    pub async fn get_wallet_transactions_for_chain(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        chain_id: &str,
+    ) -> Result<Vec<ZerionTransaction>, ZerionError> {
+        // Final normalization before Zerion API call - this is the critical layer
+        let original_chain = chain_id.to_string();
+        let normalized_chain = normalize_chain_for_zerion(chain_id)
+            .map_err(|e| ZerionError::InvalidChain(e))?;
+
+        if original_chain != normalized_chain {
+            info!(
+                "Final chain normalization at Zerion client: '{}' -> '{}'",
+                original_chain, normalized_chain
+            );
+        }
+
+        let start_time = std::time::Instant::now();
+        let mut all_transactions = Vec::new();
+        let mut page_num = 1u32;
+        let mut next_url = Some(format!(
+            "{}/v1/wallets/{}/transactions/?currency={}&page[size]={}&filter[chain_ids]={}&filter[trash]={}&filter[operation_types]={}",
+            self.base_url, wallet_address, currency, self.page_size, normalized_chain, self.trash_filter, self.operation_types
+        ));
+
+        info!(
+            "🔄 Starting unlimited transaction fetch for wallet: {} on chain: {}",
+            wallet_address, normalized_chain
+        );
+        info!(
+            "🎯 Filters: page_size={}, chain={}, trash={}, types={}",
+            self.page_size, normalized_chain, self.trash_filter, self.operation_types
+        );
+
+        while let Some(url) = next_url.take() {
+            let page_start = std::time::Instant::now();
+
+            info!("📄 Page {}: Fetching from Zerion API...", page_num);
+            debug!("🌐 URL: {}", url);
+
+            let response = self.client.get(&url).send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                error!(
+                    "❌ Zerion API error {} on page {}: {}",
+                    status, page_num, text
+                );
+                return Err(ZerionError::Api {
+                    message: format!("HTTP {}: {}", status, text),
+                });
+            }
+
+            let response_text = response.text().await?;
+            debug!(
+                "📄 Page {}: Response size: {} bytes",
+                page_num,
+                response_text.len()
+            );
+
+            let zerion_response: ZerionResponse = match serde_json::from_str(&response_text) {
+                Ok(response) => response,
+                Err(e) => {
+                    error!("❌ JSON parsing failed on page {}: {}", page_num, e);
+                    error!(
+                        "🔍 Response snippet: {}",
+                        &response_text.chars().take(500).collect::<String>()
+                    );
+                    return Err(ZerionError::Json(e));
+                }
+            };
+
+            if zerion_response.data.is_empty() {
+                info!(
+                    "📄 Page {}: No more transactions, stopping pagination",
+                    page_num
+                );
+                break;
+            }
+
+            let page_elapsed = page_start.elapsed();
+            let has_next = zerion_response.links.next.is_some();
+
+            info!(
+                "📄 Page {}: Fetched {} transactions in {}ms, has_next: {}",
+                page_num,
+                zerion_response.data.len(),
+                page_elapsed.as_millis(),
+                has_next
+            );
+
+            all_transactions.extend(zerion_response.data);
+
+            // Use the complete next URL provided by Zerion API
+            next_url = zerion_response.links.next;
+            if next_url.is_some() {
+                debug!("🔗 Next URL available for page {}", page_num + 1);
+            }
+
+            page_num += 1;
+        }
+
+        let total_elapsed = start_time.elapsed();
+        let avg_per_page = if page_num > 1 {
+            total_elapsed.as_millis() / (page_num - 1) as u128
+        } else {
+            0
+        };
+
+        info!(
+            "📊 Pagination Summary: {} pages, {} total transactions in {}ms",
+            page_num - 1,
+            all_transactions.len(),
+            total_elapsed.as_millis()
+        );
+        info!(
+            "⏱️ Performance: avg {}ms per page, {} transactions/second",
+            avg_per_page,
+            if total_elapsed.as_secs() > 0 {
+                all_transactions.len() as u64 / total_elapsed.as_secs()
+            } else {
+                0
+            }
+        );
+
+        Ok(all_transactions)
+    }
+
     pub async fn get_wallet_transactions(
         &self,
         wallet_address: &str,
@@ -192,7 +349,7 @@ impl ZerionClient {
         let mut all_transactions = Vec::new();
         let mut page_num = 1u32;
         let mut next_url = Some(format!(
-            "{}/wallets/{}/transactions/?currency={}&page[size]={}&filter[chain_ids]={}&filter[trash]={}&filter[operation_types]={}",
+            "{}/v1/wallets/{}/transactions/?currency={}&page[size]={}&filter[chain_ids]={}&filter[trash]={}&filter[operation_types]={}",
             self.base_url, wallet_address, currency, self.page_size, self.chain_ids, self.trash_filter, self.operation_types
         ));
 
@@ -300,18 +457,37 @@ impl ZerionClient {
         Ok(all_transactions)
     }
 
+
     pub async fn get_wallet_transactions_with_limit(
         &self,
         wallet_address: &str,
         currency: &str,
         limit: usize,
+        chain_id: Option<&str>,
     ) -> Result<Vec<ZerionTransaction>, ZerionError> {
         let start_time = std::time::Instant::now();
         let mut all_transactions = Vec::new();
         let mut page_num = 1u32;
+
+        // Use provided chain_id or fallback to configured chain_ids
+        let base_chain_filter = chain_id.unwrap_or(&self.chain_ids);
+
+        // Final normalization before Zerion API call
+        let normalized_chain = normalize_chain_for_zerion(base_chain_filter)
+            .map_err(|e| ZerionError::InvalidChain(e))?;
+
+        if base_chain_filter != normalized_chain {
+            info!(
+                "Final chain normalization at Zerion client (with limit): '{}' -> '{}'",
+                base_chain_filter, normalized_chain
+            );
+        }
+
+        let chain_filter = normalized_chain;
+
         let mut next_url = Some(format!(
-            "{}/wallets/{}/transactions/?currency={}&page[size]={}&filter[chain_ids]={}&filter[trash]={}&filter[operation_types]={}",
-            self.base_url, wallet_address, currency, self.page_size, self.chain_ids, self.trash_filter, self.operation_types
+            "{}/v1/wallets/{}/transactions/?currency={}&page[size]={}&filter[chain_ids]={}&filter[trash]={}&filter[operation_types]={}",
+            self.base_url, wallet_address, currency, self.page_size, chain_filter, self.trash_filter, self.operation_types
         ));
 
         info!(
@@ -320,7 +496,7 @@ impl ZerionClient {
         );
         info!(
             "🎯 Filters: page_size={}, chain={}, trash={}, types={}",
-            self.page_size, self.chain_ids, self.trash_filter, self.operation_types
+            self.page_size, chain_filter, self.trash_filter, self.operation_types
         );
 
         while all_transactions.len() < limit {
@@ -449,6 +625,213 @@ impl ZerionClient {
         Ok(all_transactions)
     }
 
+    /// Get wallet transactions with time-range filtering (ignores transaction limits)
+    /// When time_range is provided, fetches ALL transactions within that period
+    /// When time_range is None, falls back to max_transactions limit behavior
+    pub async fn get_wallet_transactions_with_time_range(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        time_range: Option<&str>,
+        max_transactions: Option<usize>,
+        chain_id: Option<&str>,
+    ) -> Result<Vec<ZerionTransaction>, ZerionError> {
+        // If time_range is provided, use time-based filtering (ignore transaction limits)
+        if let Some(time_range) = time_range {
+            return self.get_wallet_transactions_time_filtered(
+                wallet_address,
+                currency,
+                time_range,
+                chain_id,
+            ).await;
+        }
+
+        // Otherwise use limit-based approach
+        if let Some(max_tx) = max_transactions {
+            self.get_wallet_transactions_with_limit(wallet_address, currency, max_tx, chain_id).await
+        } else {
+            // Default: unlimited fetch
+            self.get_wallet_transactions_for_chain(wallet_address, currency, chain_id.unwrap_or(&self.chain_ids)).await
+        }
+    }
+
+    /// Get wallet transactions filtered by time range (fetches ALL transactions in period)
+    async fn get_wallet_transactions_time_filtered(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        time_range: &str,
+        chain_id: Option<&str>,
+    ) -> Result<Vec<ZerionTransaction>, ZerionError> {
+        use crate::time_utils::calculate_time_range;
+
+        let start_time = std::time::Instant::now();
+        let mut all_transactions = Vec::new();
+        let mut page_num = 1u32;
+
+        // Calculate time range timestamps
+        let (min_mined_at, max_mined_at) = calculate_time_range(time_range)
+            .map_err(|e| ZerionError::InvalidTimeRange(e.to_string()))?;
+
+        // Use provided chain_id or fallback to configured chain_ids
+        let base_chain_filter = chain_id.unwrap_or(&self.chain_ids);
+
+        // Final normalization before Zerion API call
+        let normalized_chain = normalize_chain_for_zerion(base_chain_filter)
+            .map_err(|e| ZerionError::InvalidChain(e))?;
+
+        if base_chain_filter != normalized_chain {
+            info!(
+                "Final chain normalization at Zerion client (time filtered): '{}' -> '{}'",
+                base_chain_filter, normalized_chain
+            );
+        }
+
+        let chain_filter = normalized_chain;
+
+        // Build URL with time filters
+        let mut next_url = Some(format!(
+            "{}/v1/wallets/{}/transactions/?currency={}&page[size]={}&filter[chain_ids]={}&filter[trash]={}&filter[operation_types]={}&filter[min_mined_at]={}&filter[max_mined_at]={}",
+            self.base_url, wallet_address, currency, self.page_size, chain_filter, self.trash_filter, self.operation_types, min_mined_at, max_mined_at
+        ));
+
+        info!(
+            "🔄 Starting time-filtered transaction fetch for wallet: {} (time_range: {})",
+            wallet_address, time_range
+        );
+        info!(
+            "🎯 Time filters: {} to {} ({}ms to {}ms)",
+            time_range, "now", min_mined_at, max_mined_at
+        );
+        info!(
+            "🎯 Other filters: page_size={}, chain={}, trash={}, types={}",
+            self.page_size, chain_filter, self.trash_filter, self.operation_types
+        );
+
+        // Fetch all pages (no transaction limit when using time filtering)
+        while let Some(url) = next_url.take() {
+            let page_start = std::time::Instant::now();
+
+            info!("📄 Page {}: Fetching transactions in time range", page_num);
+            debug!("🌐 URL: {}", url);
+
+            let response = self.client.get(&url).send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                error!(
+                    "❌ Zerion API error {} on page {}: {}",
+                    status, page_num, text
+                );
+                return Err(ZerionError::Api {
+                    message: format!("HTTP {}: {}", status, text),
+                });
+            }
+
+            let zerion_response: ZerionResponse = response.json().await?;
+            let page_elapsed = page_start.elapsed();
+            let has_next = zerion_response.links.next.is_some();
+
+            info!(
+                "📄 Page {}: Fetched {} transactions in {}ms, has_next: {}",
+                page_num,
+                zerion_response.data.len(),
+                page_elapsed.as_millis(),
+                has_next
+            );
+
+            if zerion_response.data.is_empty() {
+                info!(
+                    "📄 Page {}: No more transactions in time range, stopping pagination",
+                    page_num
+                );
+                break;
+            }
+
+            all_transactions.extend(zerion_response.data);
+
+            // Use the complete next URL provided by Zerion API
+            next_url = zerion_response.links.next;
+            if next_url.is_some() {
+                debug!("🔗 Next URL available for page {}", page_num + 1);
+            }
+
+            page_num += 1;
+        }
+
+        let total_elapsed = start_time.elapsed();
+        let avg_per_page = if page_num > 1 {
+            total_elapsed.as_millis() / (page_num - 1) as u128
+        } else {
+            0
+        };
+
+        info!(
+            "📊 Time-filtered fetch summary: {} pages, {} total transactions in {}ms",
+            page_num - 1,
+            all_transactions.len(),
+            total_elapsed.as_millis()
+        );
+        info!(
+            "⏱️ Performance: avg {}ms per page, {} transactions/second",
+            avg_per_page,
+            if total_elapsed.as_secs() > 0 {
+                all_transactions.len() as u64 / total_elapsed.as_secs()
+            } else {
+                0
+            }
+        );
+
+        Ok(all_transactions)
+    }
+
+    /// Parse a decimal string with robust precision handling.
+    /// Truncates excessive decimal places to fit within Decimal's 28-digit limit.
+    fn parse_decimal_with_precision_handling(numeric_str: &str) -> Result<Decimal, String> {
+        // First try exact parsing
+        if let Ok(decimal) = Decimal::from_str_exact(numeric_str) {
+            return Ok(decimal);
+        }
+
+        // If exact parsing fails, try regular parsing (allows some precision loss)
+        if let Ok(decimal) = Decimal::from_str(numeric_str) {
+            debug!("🔧 Truncated precision for amount: {} -> {}", numeric_str, decimal);
+            return Ok(decimal);
+        }
+
+        // If both fail, try to manually truncate excessive decimal places
+        if let Some(dot_pos) = numeric_str.find('.') {
+            let integer_part = &numeric_str[..dot_pos];
+            let decimal_part = &numeric_str[dot_pos + 1..];
+
+            // Rust Decimal supports up to 28 decimal places, so truncate if needed
+            let truncated_decimal_part = if decimal_part.len() > 28 {
+                warn!("⚠️  Truncating excessive decimal precision: {} decimal places -> 28", decimal_part.len());
+                &decimal_part[..28]
+            } else {
+                decimal_part
+            };
+
+            let truncated_str = format!("{}.{}", integer_part, truncated_decimal_part);
+
+            if let Ok(decimal) = Decimal::from_str(&truncated_str) {
+                debug!("🔧 Successfully parsed after truncation: {} -> {}", numeric_str, decimal);
+                return Ok(decimal);
+            }
+        }
+
+        // If all else fails, try parsing as f64 and converting
+        if let Ok(float_val) = numeric_str.parse::<f64>() {
+            if let Ok(decimal) = Decimal::try_from(float_val) {
+                warn!("⚠️  Parsed via f64 conversion (precision loss): {} -> {}", numeric_str, decimal);
+                return Ok(decimal);
+            }
+        }
+
+        Err(format!("Unable to parse '{}' as Decimal with any method", numeric_str))
+    }
+
     pub fn convert_to_financial_events(
         &self,
         transactions: &[ZerionTransaction],
@@ -486,18 +869,27 @@ impl ZerionClient {
                     );
 
                     let mut tx_events = 0u32;
+                    // Extract chain_id from transaction relationships
+                    let chain_id = tx
+                        .relationships
+                        .as_ref()
+                        .and_then(|rel| rel.chain.as_ref())
+                        .map(|chain| chain.data.id.as_str())
+                        .unwrap_or("unknown");
+
                     for (transfer_index, transfer) in tx.attributes.transfers.iter().enumerate() {
                         debug!(
-                            "🔄 Processing transfer {}/{} in tx {}: {} {} (direction: {})",
+                            "🔄 Processing transfer {}/{} in tx {} (chain: {}): {} {} (direction: {})",
                             transfer_index + 1,
                             transfer_count,
                             tx.id,
+                            chain_id,
                             transfer.quantity.numeric,
-                            transfer.fungible_info.symbol,
+                            transfer.fungible_info.as_ref().map(|f| &f.symbol).unwrap_or(&"UNKNOWN".to_string()),
                             transfer.direction
                         );
 
-                        match self.convert_transfer_to_event(tx, transfer, wallet_address) {
+                        match self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
                             Some(event) => {
                                 debug!(
                                     "✅ Created {} event: {} {} @ {} USD = {} USD",
@@ -515,8 +907,18 @@ impl ZerionClient {
                                 tx_events += 1;
                             }
                             None => {
-                                warn!("⚠️ Skipped transfer {}/{} in tx {} due to invalid data (price: {:?}, value: {:?})",
+                                // Log more specific reason for skipping the transfer
+                                let skip_reason = if transfer.fungible_info.is_none() {
+                                    "missing fungible_info (token metadata)"
+                                } else if transfer.price.is_none() && transfer.value.is_none() {
+                                    "both price and value are null"
+                                } else {
+                                    "conversion failed (check earlier warnings for details)"
+                                };
+
+                                warn!("⚠️ Skipped transfer {}/{} in tx {} due to: {} (price: {:?}, value: {:?})",
                                       transfer_index + 1, transfer_count, tx.id,
+                                      skip_reason,
                                       transfer.price, transfer.value);
                                 error_count += 1;
                             }
@@ -575,17 +977,27 @@ impl ZerionClient {
         tx: &ZerionTransaction,
         transfer: &ZerionTransfer,
         wallet_address: &str,
+        chain_id: &str,
     ) -> Option<NewFinancialEvent> {
-        // Skip native SOL transfers in send operations (treating as wallet-to-wallet transfer, not trading)
-        if transfer.fungible_info.symbol == "SOL" && tx.attributes.operation_type == "send" {
-            return None;
-        }
+        // Check if fungible_info is available, if not skip this transfer
+        let fungible_info = match &transfer.fungible_info {
+            Some(info) => info,
+            None => {
+                warn!(
+                    "⚠️  Skipping transfer in tx {} due to missing fungible_info (this can happen with tokens that have no current holdings)",
+                    tx.id
+                );
+                return None;
+            }
+        };
 
-        let amount = match Decimal::from_str_exact(&transfer.quantity.numeric) {
+        // All transfers (including SOL sends) are treated as trading events for P&L calculation
+
+        let amount = match Self::parse_decimal_with_precision_handling(&transfer.quantity.numeric) {
             Ok(amt) => amt,
             Err(e) => {
                 warn!(
-                    "Failed to parse amount '{}': {}",
+                    "Failed to parse amount '{}' after precision handling: {}",
                     transfer.quantity.numeric, e
                 );
                 return None;
@@ -607,7 +1019,17 @@ impl ZerionClient {
                 match transfer.direction.as_str() {
                     "out" => NewEventType::Sell,
                     _ => {
-                        // Skip "in" transfers for sends (those are receives, not relevant for this wallet's P&L)
+                        // Skip "in" transfers for sends (those are receives, handled by "receive" operation type)
+                        return None;
+                    }
+                }
+            },
+            "receive" => {
+                // Handle received tokens (airdrops, transfers from other wallets)
+                match transfer.direction.as_str() {
+                    "in" => NewEventType::Receive,
+                    _ => {
+                        // Skip "out" transfers for receives (doesn't make logical sense)
                         return None;
                     }
                 }
@@ -621,13 +1043,32 @@ impl ZerionClient {
             }
         };
 
-        // Extract Solana contract address
-        let mint_address = transfer
-            .fungible_info
+        // Extract token address for the specific chain
+        let mint_address = match fungible_info
             .implementations
             .iter()
-            .find(|impl_| impl_.chain_id == "solana")
-            .and_then(|impl_| impl_.address.as_ref())?;
+            .find(|impl_| impl_.chain_id == chain_id)
+            .and_then(|impl_| impl_.address.as_ref())
+        {
+            Some(addr) => addr,
+            None => {
+                // Log available implementations for debugging
+                let available_chains: Vec<String> = fungible_info
+                    .implementations
+                    .iter()
+                    .map(|impl_| impl_.chain_id.clone())
+                    .collect();
+
+                warn!(
+                    "⚠️  No {} implementation found for token {} in tx {}. Available chains: {:?}",
+                    chain_id,
+                    fungible_info.symbol,
+                    tx.id,
+                    available_chains
+                );
+                return None;
+            }
+        };
 
         // Handle potentially null price/value fields with smart inference
         let (usd_price_per_token, usd_value) = match (transfer.price, transfer.value) {
@@ -635,7 +1076,7 @@ impl ZerionClient {
                 // Both price and value available - use directly
                 debug!(
                     "✅ Using direct price data: price=${:.6}, value=${:.6} for {}",
-                    price, value, transfer.fungible_info.symbol
+                    price, value, fungible_info.symbol
                 );
                 (
                     Decimal::from_f64_retain(price).unwrap_or(Decimal::ZERO),
@@ -647,7 +1088,7 @@ impl ZerionClient {
                 let calculated_value = price * amount.to_f64().unwrap_or(0.0);
                 info!(
                     "🔄 Inferring value from price: price=${:.6} * quantity={} = ${:.6} for {}",
-                    price, amount, calculated_value, transfer.fungible_info.symbol
+                    price, amount, calculated_value, fungible_info.symbol
                 );
                 (
                     Decimal::from_f64_retain(price).unwrap_or(Decimal::ZERO),
@@ -661,7 +1102,7 @@ impl ZerionClient {
                     let calculated_price = value / quantity_f64;
                     info!(
                         "🔄 Inferring price from value: value=${:.6} / quantity={} = ${:.6} for {}",
-                        value, amount, calculated_price, transfer.fungible_info.symbol
+                        value, amount, calculated_price, fungible_info.symbol
                     );
                     (
                         Decimal::from_f64_retain(calculated_price).unwrap_or(Decimal::ZERO),
@@ -670,7 +1111,7 @@ impl ZerionClient {
                 } else {
                     warn!(
                         "⚠️  Cannot calculate price: zero quantity for {}",
-                        transfer.fungible_info.symbol
+                        fungible_info.symbol
                     );
                     (
                         Decimal::ZERO,
@@ -682,7 +1123,7 @@ impl ZerionClient {
                 // Both price and value are null - skip this transaction
                 warn!(
                     "⚠️  Skipping transaction: both price and value are null for {} ({})",
-                    transfer.fungible_info.symbol, mint_address
+                    fungible_info.symbol, mint_address
                 );
                 return None;
             }
@@ -691,7 +1132,8 @@ impl ZerionClient {
         Some(NewFinancialEvent {
             wallet_address: wallet_address.to_string(),
             token_address: mint_address.clone(),
-            token_symbol: transfer.fungible_info.symbol.clone(),
+            token_symbol: fungible_info.symbol.clone(),
+            chain_id: chain_id.to_string(),
             event_type,
             quantity: amount,
             usd_price_per_token,
@@ -702,72 +1144,3 @@ impl ZerionClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_zerion_client_creation() {
-        let client = ZerionClient::new(
-            "https://api.zerion.io/v1".to_string(),
-            "test_key".to_string(),
-            100,
-            "trade,send".to_string(),
-            "solana".to_string(),
-            "only_non_trash".to_string(),
-        );
-        assert!(client.is_ok());
-    }
-
-    #[tokio::test]
-    #[ignore] // Run manually with: cargo test test_real_api_call -- --ignored
-    async fn test_real_api_call() {
-        let client = ZerionClient::new(
-            "https://api.zerion.io/v1".to_string(),
-            "zk_dev_69a0a2c7a84b433787f44efe5d1d6082".to_string(),
-            100,
-            "trade,send".to_string(),
-            "solana".to_string(),
-            "only_non_trash".to_string(),
-        )
-        .unwrap();
-
-        let wallet_address = "5ngDQ3vMT7GHeFvXP5GLX79t6fqG2t15kyQTtst9zFdw";
-        let result = client
-            .get_wallet_transactions_with_limit(wallet_address, "usd", 10)
-            .await;
-
-        match result {
-            Ok(transactions) => {
-                println!("Successfully fetched {} transactions", transactions.len());
-                for tx in &transactions {
-                    println!(
-                        "Transaction: {} - Type: {} - Transfers: {}",
-                        tx.attributes.hash,
-                        tx.attributes.operation_type,
-                        tx.attributes.transfers.len()
-                    );
-                }
-
-                // Test financial event conversion
-                let events = client.convert_to_financial_events(&transactions, wallet_address);
-                println!("Converted to {} financial events", events.len());
-
-                for event in events.iter().take(5) {
-                    println!(
-                        "Event: {:?} {} {} @ {} USD = {} USD",
-                        event.event_type,
-                        event.quantity,
-                        event.token_symbol,
-                        event.usd_price_per_token,
-                        event.usd_value
-                    );
-                }
-            }
-            Err(e) => {
-                println!("Error fetching transactions: {:?}", e);
-                panic!("API call failed: {:?}", e);
-            }
-        }
-    }
-}

@@ -184,9 +184,9 @@ impl ServiceManager {
             info!("🔧 Starting with runtime configuration: {}", config_json);
         }
 
-        info!("🚀 Starting BirdEye wallet discovery service");
+        info!("🚀 Starting DexScreener wallet discovery service");
 
-        // Create BirdEye trending orchestrator using SystemConfig directly
+        // Create DexScreener trending orchestrator using SystemConfig directly
         let redis_client = RedisClient::new(&self.system_config.redis.url).await?;
         let orchestrator =
             BirdEyeTrendingOrchestrator::new(self.system_config.clone(), Some(redis_client))?;
@@ -214,7 +214,7 @@ impl ServiceManager {
                 *state = ServiceState::Running;
             }
 
-            info!("✅ BirdEye wallet discovery service is now running - starting discovery loop");
+            info!("✅ DexScreener wallet discovery service is now running - starting discovery loop");
 
             // Get the orchestrator and start the discovery loop
             loop {
@@ -242,7 +242,7 @@ impl ServiceManager {
                             }
                         }
                     } else {
-                        error!("❌ BirdEye orchestrator instance lost");
+                        error!("❌ DexScreener orchestrator instance lost");
                         false // Stop the loop
                     }
                 };

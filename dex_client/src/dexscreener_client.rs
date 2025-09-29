@@ -9,6 +9,8 @@ use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::page::Page;
 use futures::StreamExt;
 use rand::Rng;
+// Import TopTrader for scraping integration
+use crate::birdeye_client::TopTrader;
 
 #[derive(Error, Debug)]
 pub enum DexScreenerError {
@@ -500,6 +502,40 @@ impl DexScreenerClient {
         match nav_result {
             Ok(Ok(_)) => {
                 debug!("✅ Successfully navigated to: {}", url);
+
+                // Add detailed page debugging
+                if let Ok(title) = page.get_title().await {
+                    info!("📄 Page title: {}", title.unwrap_or("No title".to_string()));
+                }
+
+                // Log page HTML (first 1000 chars for debugging)
+                if let Ok(html) = page.content().await {
+                    let html_preview = if html.len() > 1000 {
+                        format!("{}...[TRUNCATED, total length: {}]", &html[..1000], html.len())
+                    } else {
+                        html.clone()
+                    };
+                    debug!("🔍 Page HTML preview: {}", html_preview);
+
+                    // Check for key indicators
+                    if html.contains("dexscreener") {
+                        debug!("✅ Page contains 'dexscreener' - likely correct page");
+                    } else {
+                        warn!("⚠️ Page does not contain 'dexscreener' - possible redirect or error page");
+                    }
+
+                    if html.contains("table") {
+                        debug!("✅ Page contains table elements");
+                    } else {
+                        warn!("⚠️ Page does not contain any table elements");
+                    }
+
+                    if html.contains("trending") {
+                        debug!("✅ Page contains 'trending' - likely on correct page");
+                    } else {
+                        warn!("⚠️ Page does not contain 'trending' - may not be on trending page");
+                    }
+                }
             }
             Ok(Err(e)) => {
                 return Err(DexScreenerError::BrowserError(format!(
@@ -518,17 +554,48 @@ impl DexScreenerClient {
         // Wait for table elements to load (matching JS scraper approach)
         let table_wait_result = tokio::time::timeout(Duration::from_secs(15), async {
             // Try multiple selectors as fallback (matching working JS scraper)
-            for selector in [
+            let selectors = [
                 ".ds-dex-table-row",
                 ".ds-dex-table-top",
                 "table",
                 "[class*=\"table\"]",
-            ] {
-                if page.find_element(selector).await.is_ok() {
-                    debug!("✅ Found table selector: {}", selector);
-                    return Ok(());
+            ];
+
+            info!("🔍 Searching for table selectors on page...");
+            for selector in selectors {
+                debug!("🔍 Trying selector: {}", selector);
+                match page.find_element(selector).await {
+                    Ok(element) => {
+                        info!("✅ Found table selector: {}", selector);
+
+                        // Log some details about the found element
+                        if let Ok(Some(class_name)) = element.attribute("class").await {
+                            debug!("📝 Element classes: {}", class_name);
+                        }
+
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        debug!("❌ Selector '{}' not found: {}", selector, e);
+                    }
                 }
             }
+
+            // Log all available elements for debugging
+            if let Ok(all_elements) = page.find_elements("*").await {
+                let element_count = all_elements.len();
+                info!("📊 Total elements found on page: {}", element_count);
+
+                // Log first few element IDs for debugging
+                for (i, element) in all_elements.iter().enumerate().take(10) {
+                    if let Ok(Some(id)) = element.attribute("id").await {
+                        if !id.is_empty() {
+                            debug!("📝 Element {} id: {}", i, id);
+                        }
+                    }
+                }
+            }
+
             Err("No table selectors found")
         })
         .await;
@@ -776,6 +843,7 @@ impl DexScreenerClient {
         page: &Page,
         chain: &str,
     ) -> Result<Vec<DexScreenerTrendingToken>, DexScreenerError> {
+        info!("🔍 Attempting server data extraction for chain: {}", chain);
         let script = r#"
             (() => {
                 try {
@@ -865,20 +933,55 @@ impl DexScreenerClient {
         let extraction_result: serde_json::Value = result
             .value()
             .ok_or_else(|| {
+                warn!("❌ No result value from server data extraction script");
                 DexScreenerError::BrowserError("No result from server data extraction".to_string())
             })?
             .clone();
+
+        // Log the raw extraction result for debugging
+        debug!("📋 Server data extraction result: {}", serde_json::to_string_pretty(&extraction_result).unwrap_or_else(|_| "Failed to serialize".to_string()));
 
         let success = extraction_result
             .get("success")
             .and_then(|s| s.as_bool())
             .unwrap_or(false);
 
+        debug!("📊 Server data extraction success: {}", success);
+
         if !success {
             let error = extraction_result
                 .get("error")
                 .and_then(|e| e.as_str())
                 .unwrap_or("Unknown error");
+
+            warn!("❌ Server data extraction failed with error: {}", error);
+
+            // Additional debugging - log if window.__SERVER_DATA exists
+            let check_server_data_script = r#"
+                (() => {
+                    const hasWindow = typeof window !== 'undefined';
+                    const hasServerData = hasWindow && typeof window.__SERVER_DATA !== 'undefined';
+                    const hasRoute = hasServerData && window.__SERVER_DATA.route;
+                    const hasData = hasRoute && window.__SERVER_DATA.route.data;
+                    const hasPairs = hasData && window.__SERVER_DATA.route.data.pairs;
+
+                    return {
+                        hasWindow,
+                        hasServerData,
+                        hasRoute,
+                        hasData,
+                        hasPairs,
+                        pairCount: hasPairs ? window.__SERVER_DATA.route.data.pairs.length : 0
+                    };
+                })()
+            "#;
+
+            if let Ok(debug_result) = page.evaluate(check_server_data_script).await {
+                if let Some(debug_value) = debug_result.value() {
+                    debug!("🔍 Server data availability check: {}", serde_json::to_string_pretty(debug_value).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                }
+            }
+
             return Err(DexScreenerError::BrowserError(format!(
                 "Server data extraction failed: {}",
                 error
@@ -1440,5 +1543,294 @@ impl DexScreenerClient {
             );
             tokio::time::sleep(Duration::from_millis(retry_delay)).await;
         }
+    }
+
+    /// Get top traders for a specific token by scraping DexScreener
+    /// Extracts trader wallet addresses from block explorer links in the "Top Traders" tab
+    pub async fn get_top_traders_scraped(
+        &mut self,
+        token_address: &str,
+        chain: &str,
+    ) -> Result<Vec<TopTrader>, DexScreenerError> {
+        if !self.config.enabled {
+            return Ok(vec![]);
+        }
+
+        let browser = self.ensure_browser().await?;
+        let page = browser
+            .new_page("about:blank")
+            .await
+            .map_err(|e| DexScreenerError::BrowserError(format!("Failed to create page: {}", e)))?;
+
+        // Configure anti-detection BEFORE navigation
+        if self.config.anti_detection_enabled {
+            self.setup_anti_detection(&page).await?;
+        }
+
+        // Build DexScreener token page URL
+        let chain_path = self.get_dexscreener_chain_path(chain);
+        let url = format!("https://dexscreener.com/{}/{}", chain_path, token_address);
+
+        debug!(
+            "🔍 Navigating to DexScreener token page for top traders: {}",
+            url
+        );
+
+        // Add random delay before navigation
+        let pre_nav_delay = {
+            let mut rng = rand::thread_rng();
+            rng.gen_range(500..1500)
+        };
+        tokio::time::sleep(Duration::from_millis(pre_nav_delay)).await;
+
+        // Navigate with timeout
+        let nav_result = tokio::time::timeout(Duration::from_secs(60), page.goto(&url)).await;
+
+        match nav_result {
+            Ok(Ok(_)) => {
+                debug!("✅ Successfully navigated to token page: {}", url);
+            }
+            Ok(Err(e)) => {
+                return Err(DexScreenerError::BrowserError(format!(
+                    "Navigation failed: {}",
+                    e
+                )));
+            }
+            Err(_) => {
+                return Err(DexScreenerError::BrowserError(format!(
+                    "Navigation timed out after 60 seconds: {}",
+                    url
+                )));
+            }
+        }
+
+        // Wait for page to load
+        let load_delay = {
+            let mut rng = rand::thread_rng();
+            rng.gen_range(2000..4000)
+        };
+        tokio::time::sleep(Duration::from_millis(load_delay)).await;
+
+        // Simulate human behavior
+        self.simulate_human_behavior(&page).await?;
+
+        // Look for and click the "Top Traders" button
+        debug!("🎯 Looking for Top Traders button...");
+
+        let top_traders_clicked = tokio::time::timeout(Duration::from_secs(15), async {
+            // Try multiple selectors for the Top Traders button
+            let selectors = [
+                "button:has-text('Top Traders')",
+                "button.chakra-button.custom-165cjlo",
+                "button[type='button']:has-text('Top Traders')",
+                "button:contains('Top Traders')",
+                "//button[contains(text(), 'Top Traders')]",
+            ];
+
+            for selector in &selectors {
+                debug!("Trying Top Traders button selector: {}", selector);
+
+                // Use JavaScript to find and click the button containing "Top Traders"
+                let click_result = page.evaluate(
+                    r#"
+                    () => {
+                        // Find all buttons on the page
+                        const buttons = Array.from(document.querySelectorAll('button'));
+
+                        // Look for button containing "Top Traders" text
+                        const topTradersButton = buttons.find(btn =>
+                            btn.textContent && btn.textContent.includes('Top Traders')
+                        );
+
+                        if (topTradersButton) {
+                            topTradersButton.click();
+                            return 'clicked';
+                        }
+                        return 'not_found';
+                    }
+                    "#
+                ).await;
+
+                match click_result {
+                    Ok(result) => {
+                        if let Ok(value) = result.into_value::<String>() {
+                            if value == "clicked" {
+                                debug!("✅ Successfully clicked Top Traders button");
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("❌ Failed to click Top Traders button with selector {}: {}", selector, e);
+                    }
+                }
+            }
+
+            Err(DexScreenerError::BrowserError("Top Traders button not found".to_string()))
+        })
+        .await;
+
+        match top_traders_clicked {
+            Ok(Ok(_)) => {
+                debug!("✅ Top Traders button clicked successfully");
+            }
+            Ok(Err(e)) => {
+                warn!("❌ Could not click Top Traders button: {}", e);
+                return Ok(vec![]); // Return empty vec instead of error for graceful degradation
+            }
+            Err(_) => {
+                warn!("⏰ Timeout waiting for Top Traders button");
+                return Ok(vec![]);
+            }
+        }
+
+        // Wait for top traders table to load after clicking
+        let table_load_delay = {
+            let mut rng = rand::thread_rng();
+            rng.gen_range(3000..5000)
+        };
+        debug!("⏳ Waiting {} ms for top traders table to load...", table_load_delay);
+        tokio::time::sleep(Duration::from_millis(table_load_delay)).await;
+
+        // Extract block explorer links from the top traders table
+        debug!("🔍 Extracting trader addresses from block explorer links...");
+
+        let trader_addresses: Result<Result<Vec<String>, _>, _> = tokio::time::timeout(Duration::from_secs(20), async {
+            let extraction_result = page.evaluate(
+                r#"
+                () => {
+                    // Find all links that appear to be block explorer links
+                    const explorerLinks = Array.from(document.querySelectorAll('a[href]'))
+                        .filter(link => {
+                            const href = link.href;
+                            return href.includes('scan.io') ||
+                                   href.includes('scan.com') ||
+                                   href.includes('scan.org') ||
+                                   href.includes('etherscan.io') ||
+                                   href.includes('bscscan.com') ||
+                                   href.includes('basescan.org') ||
+                                   href.includes('solscan.io');
+                        })
+                        .map(link => link.href);
+
+                    return explorerLinks;
+                }
+                "#
+            ).await;
+
+            match extraction_result {
+                Ok(result) => {
+                    if let Ok(value) = result.into_value() {
+                        if let Ok(links) = serde_json::from_value::<Vec<String>>(value) {
+                            return Ok::<Vec<String>, Box<dyn std::error::Error>>(links);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("❌ Failed to extract block explorer links: {}", e);
+                }
+            }
+
+            Ok::<Vec<String>, Box<dyn std::error::Error>>(vec![])
+        })
+        .await;
+
+        let explorer_links = match trader_addresses {
+            Ok(Ok(links)) => links,
+            Ok(Err(_)) | Err(_) => {
+                warn!("⏰ Timeout or error extracting trader addresses");
+                return Ok(vec![]);
+            }
+        };
+
+        debug!("🔗 Found {} block explorer links", explorer_links.len());
+
+        // Parse wallet addresses from the explorer URLs
+        let mut top_traders = Vec::new();
+        let mut seen_addresses = std::collections::HashSet::new();
+
+        for link in explorer_links.iter().take(15) { // Take up to 15 links to get ~10 unique traders
+            let wallet_address = self.extract_wallet_address_from_url(link, chain);
+
+            if let Some(address) = wallet_address {
+                // Only add unique addresses
+                if seen_addresses.insert(address.clone()) {
+                    let trader = TopTrader {
+                        token_address: token_address.to_string(),
+                        owner: address,
+                        tags: vec![],
+                        trader_type: "24h".to_string(),
+                        volume: 0.0, // Placeholder - no volume data from scraping
+                        trade: 0,    // Placeholder
+                        trade_buy: 0,    // Placeholder
+                        trade_sell: 0,   // Placeholder
+                        volume_buy: 0.0,  // Placeholder
+                        volume_sell: 0.0, // Placeholder
+                    };
+
+                    top_traders.push(trader);
+
+                    // Limit to 10 traders maximum
+                    if top_traders.len() >= 10 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        info!(
+            "✅ Successfully scraped {} top traders for token {} on {}",
+            top_traders.len(),
+            token_address,
+            chain
+        );
+
+        if self.config.headless_mode == false && !top_traders.is_empty() {
+            debug!("🎯 Top traders found:");
+            for (i, trader) in top_traders.iter().enumerate().take(5) {
+                debug!("  {}. {}", i + 1, trader.owner);
+            }
+        }
+
+        Ok(top_traders)
+    }
+
+    /// Extract wallet address from block explorer URL based on chain
+    fn extract_wallet_address_from_url(&self, url: &str, chain: &str) -> Option<String> {
+        use regex::Regex;
+
+        let address_regex = match chain.to_lowercase().as_str() {
+            "solana" => {
+                // Solana addresses: alphanumeric, 32-44 characters
+                Regex::new(r"solscan\.io/account/([A-Za-z0-9]{32,44})").ok()?
+            }
+            "ethereum" => {
+                // Ethereum addresses: 0x followed by 40 hex characters
+                Regex::new(r"etherscan\.io/address/(0x[a-fA-F0-9]{40})").ok()?
+            }
+            "bsc" | "binance-smart-chain" => {
+                // BSC addresses: same format as Ethereum
+                Regex::new(r"bscscan\.com/address/(0x[a-fA-F0-9]{40})").ok()?
+            }
+            "base" => {
+                // Base addresses: same format as Ethereum
+                Regex::new(r"basescan\.org/address/(0x[a-fA-F0-9]{40})").ok()?
+            }
+            _ => {
+                warn!("⚠️ Unknown chain for address extraction: {}", chain);
+                return None;
+            }
+        };
+
+        if let Some(captures) = address_regex.captures(url) {
+            if let Some(address_match) = captures.get(1) {
+                let address = address_match.as_str().to_string();
+                debug!("📍 Extracted wallet address: {} from URL: {}", address, url);
+                return Some(address);
+            }
+        }
+
+        debug!("❌ Could not extract address from URL: {}", url);
+        None
     }
 }

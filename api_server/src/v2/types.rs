@@ -375,8 +375,9 @@ pub struct AnalysisFilters {
     /// Minimum win rate percentage
     pub min_win_rate: Option<Decimal>,
 
-    /// Maximum analysis timeframe
-    pub timeframe_days: Option<u32>,
+    /// Time range for transaction filtering (e.g., "1h", "7d", "1m")
+    /// When provided, fetches ALL transactions within this period (replaces timeframe_days)
+    pub time_range: Option<String>,
 
     /// Include only active traders
     pub active_traders_only: Option<bool>,

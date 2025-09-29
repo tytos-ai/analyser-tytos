@@ -2,7 +2,7 @@
 
 ## 🎯 Service Control Overview
 
-The P&L Tracker includes **automatic wallet discovery** and **P&L analysis** services that can be **controlled via API endpoints**. This ensures you have full control over API usage and can prevent exhausting your BirdEye API limits.
+The P&L Tracker includes **automatic wallet discovery** and **P&L analysis** services that can be **controlled via API endpoints**. This ensures you have full control over resource usage and web scraping activity.
 
 ## 🚦 Service States & Control
 
@@ -25,28 +25,20 @@ The P&L Tracker includes **automatic wallet discovery** and **P&L analysis** ser
 
 ### Configure Services Before Starting
 ```bash
-# Configure both services with rate limiting (VERIFIED WORKING)
-curl -X POST http://134.199.211.155:8080/api/services/config \
+# Configure both services (VERIFIED WORKING)
+curl -X POST http://localhost:8080/api/services/config \
   -H "Content-Type: application/json" \
   -d '{
     "enable_wallet_discovery": true,
-    "enable_pnl_analysis": true,
-    "birdeye_config": {
-          "max_trending_tokens": 10000,
-          "max_traders_per_token": 100,
-          "cycle_interval_seconds": 7200,
-          "min_trader_volume_usd": 1000.0,
-          "min_trader_trades": 5,
-    }
+    "enable_pnl_analysis": true
   }'
 ```
 
-**Key Rate Limiting Parameters:**
-- `max_trending_tokens`: Limit how many trending tokens to analyze per cycle
-- `max_traders_per_token`: Limit traders discovered per token
-- `cycle_interval_seconds`: Time between discovery cycles (300s = 5 minutes)
-- `min_trader_volume_usd`: Filter traders by minimum volume
-- `min_trader_trades`: Filter traders by minimum trade count
+**Service Configuration:**
+- `enable_wallet_discovery`: Enable/disable automatic wallet discovery via DexScreener scraping
+- `enable_pnl_analysis`: Enable/disable P&L analysis of discovered wallets
+
+**Note**: The system now uses DexScreener web scraping instead of BirdEye API calls, with built-in rate limiting and quality filtering.
 
 ## 🚀 Starting Services
 
@@ -147,112 +139,81 @@ curl -s http://localhost:8080/api/services/status
 - `Stopping`: Service is shutting down
 - `Error(message)`: Service encountered an error
 
-## 🔧 API Rate Management Strategies
+## 🔧 Resource Management Strategies
 
-### Conservative Configuration (Low API Usage)
+### Conservative Configuration (Lower Resource Usage)
 ```json
 {
   "enable_wallet_discovery": true,
-  "enable_pnl_analysis": false,
-  "birdeye_config": {
-    "max_trending_tokens": 2,
-    "max_traders_per_token": 5,
-    "cycle_interval_seconds": 600,
-    "min_trader_volume_usd": 5000.0,
-    "min_trader_trades": 10,
-    "debug_mode": false
-  }
+  "enable_pnl_analysis": false
 }
 ```
-**API Usage:** ~10 calls every 10 minutes
+**Usage:** Only runs wallet discovery via DexScreener scraping. Analysis can be done manually later.
 
-### Aggressive Configuration (High API Usage)
+### Full Pipeline Configuration (Normal Usage)
 ```json
 {
   "enable_wallet_discovery": true,
-  "enable_pnl_analysis": true,
-  "birdeye_config": {
-    "max_trending_tokens": 10,
-    "max_traders_per_token": 20,
-    "cycle_interval_seconds": 60,
-    "min_trader_volume_usd": 100.0,
-    "min_trader_trades": 2,
-    "debug_mode": true
-  }
+  "enable_pnl_analysis": true
 }
 ```
-**API Usage:** ~200+ calls per minute (⚠️ High rate)
+**Usage:** Runs both discovery and analysis continuously. Built-in rate limiting for DexScreener scraping.
 
-### Testing Configuration (Minimal API Usage)
+### Manual Analysis Configuration (Discovery Off)
 ```json
 {
-  "enable_wallet_discovery": true,
-  "enable_pnl_analysis": false,
-  "birdeye_config": {
-    "max_trending_tokens": 1,
-    "max_traders_per_token": 2,
-    "cycle_interval_seconds": 1800,
-    "min_trader_volume_usd": 10000.0,
-    "min_trader_trades": 20,
-    "debug_mode": true
-  }
+  "enable_wallet_discovery": false,
+  "enable_pnl_analysis": true
 }
 ```
-**API Usage:** ~2-3 calls every 30 minutes
+**Usage:** Only processes manually queued wallets. Use for batch analysis jobs only.
 
 ## 📊 Service Workflow
 
 ### Automatic Discovery Workflow
-1. **Trending Tokens:** Service fetches trending tokens from BirdEye
-2. **Top Traders:** For each token, discovers top traders
-3. **Queue Wallets:** Discovered wallets are queued for P&L analysis
-4. **Rate Limiting:** Respects configured cycle intervals and limits
-5. **Filtering:** Only high-quality traders are queued based on filters
+1. **Trending Tokens:** Service scrapes trending tokens from DexScreener using browser automation
+2. **Top Traders:** For each token, navigates to DexScreener pages and extracts top traders
+3. **Wallet Extraction:** Parses block explorer links to extract wallet addresses
+4. **Queue Wallets:** Discovered wallets are queued for P&L analysis
+5. **Rate Limiting:** Built-in delays and anti-detection features prevent blocking
+6. **Quality Filtering:** Only high-volume traders are queued based on scraping criteria
 
-### P&L Analysis Workflow  
+### P&L Analysis Workflow
 1. **Queue Monitoring:** Monitors Redis queue for discovered wallets
-2. **Transaction Fetching:** Fetches wallet transactions via BirdEye
-3. **P&L Calculation:** Calculates P&L using embedded prices
-4. **Result Storage:** Stores results in Redis for API retrieval
+2. **Transaction Fetching:** Fetches wallet transactions via Zerion API
+3. **P&L Calculation:** Calculates P&L using embedded transaction prices
+4. **Result Storage:** Stores results in PostgreSQL for API retrieval
 5. **Continuous Processing:** Processes queue continuously when running
 
-## 🚨 API Rate Limit Protection
+## 🚨 Web Scraping Protection & Resource Management
 
 ### Built-in Protections
-- ✅ **Configurable Intervals:** Control frequency of discovery cycles
-- ✅ **Trader Limits:** Limit number of traders per token
-- ✅ **Token Limits:** Limit number of trending tokens analyzed
-- ✅ **Volume Filters:** Only analyze high-volume traders
+- ✅ **Anti-Detection:** Browser fingerprinting and stealth mode
+- ✅ **Request Spacing:** Intelligent delays between page requests
+- ✅ **Browser Rotation:** Prevents detection patterns
+- ✅ **Resource Limits:** Controls CPU and memory usage
 - ✅ **Stop Controls:** Immediate stop capability via API
+- ✅ **Error Handling:** Graceful recovery from failed requests
 
-### BirdEye API Rate Limits
-- **Free Tier:** ~1,000 requests per day
-- **Pro Tier:** ~10,000 requests per day
-- **Enterprise:** Custom limits
+### DexScreener Scraping Considerations
+- **Rate Limiting:** Built into browser automation (no external limits)
+- **Anti-Detection:** Headless Chrome with stealth features
+- **Resource Usage:** CPU and memory for browser automation
+- **Network Usage:** Standard HTTP requests (not API calls)
 
-### Recommended Settings by Tier
+### Resource Management Strategies
 
-#### Free Tier (1,000 requests/day)
-```json
-{
-  "max_trending_tokens": 1,
-  "max_traders_per_token": 3,
-  "cycle_interval_seconds": 3600,
-  "min_trader_volume_usd": 10000.0
-}
-```
-**Usage:** ~72 requests/day
+#### Lightweight Scraping (Lower Resource Usage)
+- Uses headless browser with minimal features
+- Longer delays between requests
+- Processes fewer tokens per cycle
+- **Usage:** Suitable for lower-spec servers
 
-#### Pro Tier (10,000 requests/day)  
-```json
-{
-  "max_trending_tokens": 5,
-  "max_traders_per_token": 10,
-  "cycle_interval_seconds": 300,
-  "min_trader_volume_usd": 1000.0
-}
-```
-**Usage:** ~1,440 requests/day
+#### Standard Scraping (Balanced Usage)
+- Full browser automation features
+- Moderate request timing
+- Standard anti-detection measures
+- **Usage:** Recommended for most deployments
 
 ## 🔍 Monitoring & Logging
 
@@ -290,15 +251,7 @@ curl -X POST http://localhost:8080/api/services/config \
   -H "Content-Type: application/json" \
   -d '{
     "enable_wallet_discovery": true,
-    "enable_pnl_analysis": false,
-    "birdeye_config": {
-      "max_trending_tokens": 2,
-      "max_traders_per_token": 5,
-      "cycle_interval_seconds": 1800,
-      "min_trader_volume_usd": 5000.0,
-      "min_trader_trades": 10,
-      "debug_mode": false
-    }
+    "enable_pnl_analysis": false
   }'
 
 # Start discovery only
@@ -320,20 +273,48 @@ For maximum control over API usage, you can operate in **manual mode**:
 3. **Controlled Discovery:** Start discovery for short periods, then stop
 4. **Monitor Usage:** Check logs and status regularly
 
-### Manual Batch Analysis Example
+### Manual Batch Analysis Examples
+
+#### Time-Based Analysis (NEW - Recommended)
 ```bash
-# Analyze specific wallets without automatic discovery
+# Analyze last 7 days of activity for specific wallets
 curl -X POST http://134.199.211.155:8080/api/pnl/batch/run \
   -H "Content-Type: application/json" \
   -d '{
     "wallet_addresses": ["wallet1", "wallet2"],
-    "filters": {
-      "min_capital_sol": "1",
-      "min_trades": 5,
-      "max_signatures": 1000
-    }
+    "chain": "solana",
+    "time_range": "7d"
+  }'
+
+# Analyze last hour (useful for recent trading activity)
+curl -X POST http://134.199.211.155:8080/api/pnl/batch/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "wallet_addresses": ["wallet1"],
+    "chain": "solana",
+    "time_range": "1h"
   }'
 ```
+
+#### Transaction Limit Analysis (Legacy)
+```bash
+# Analyze most recent 500 transactions
+curl -X POST http://134.199.211.155:8080/api/pnl/batch/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "wallet_addresses": ["wallet1", "wallet2"],
+    "chain": "solana",
+    "max_transactions": 500
+  }'
+```
+
+### Time-Based vs Transaction-Based Analysis
+
+| Approach | When to Use | Benefits | Limitations |
+|----------|------------|----------|-------------|
+| **Time Range** (`time_range`) | Analyzing specific periods | Gets ALL transactions in period, no limits | May fetch many transactions for active traders |
+| **Transaction Limit** (`max_transactions`) | Quick analysis of recent activity | Predictable data volume | May miss older important trades |
+| **Default** (no params) | General analysis | Gets most recent 1000 transactions | Fixed limit may not suit all wallets |
 
 ## 📋 Best Practices
 
@@ -355,7 +336,7 @@ curl -X POST http://134.199.211.155:8080/api/pnl/batch/run \
 ### 4. **Plan for Limits**
 - Calculate expected API usage before starting
 - Keep emergency stop commands ready
-- Consider upgrading BirdEye plan if needed
+- Consider server resource upgrades if scraping performance is limited
 
 ## 🎯 Summary
 

@@ -10,6 +10,7 @@ job_orchestrator = { path = "../job_orchestrator" }
 pnl_core = { path = "../pnl_core" }
 dex_client = { path = "../dex_client" }
 persistence_layer = { path = "../persistence_layer" }
+zerion_client = { path = "../zerion_client" }
 
 # Web framework and async runtime
 axum = { version = "0.7", features = ["json", "query"] }

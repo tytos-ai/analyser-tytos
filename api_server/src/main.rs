@@ -145,10 +145,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   • GET /api/v2/wallets/:address/trades - Individual trade details");
     info!("   • GET /api/v2/wallets/:address/positions - Current positions tracking");
     info!("   • POST /api/v2/pnl/batch/run - Enhanced batch analysis");
-    info!("🎯 Token Analysis endpoints:");
-    info!("   • POST /api/token-analysis - Submit token analysis job");
-    info!("   • GET /api/token-analysis/:job_id/status - Get job status");
-    info!("   • GET /api/token-analysis/:job_id/results - Get analysis results");
 
     // Bind and serve
     let bind_addr = format!("{}:{}", config.api.host, config.api.port);
@@ -218,20 +214,9 @@ async fn create_router(state: AppState) -> Router {
         )
         .route(
             "/api/pnl/batch/results/:job_id/traders",
-            get(filter_copy_traders),
+            get(get_batch_traders),
         )
         .route("/api/pnl/batch/history", get(get_batch_job_history))
-        // Token analysis endpoints
-        .route("/api/token-analysis", post(submit_token_analysis_job))
-        .route(
-            "/api/token-analysis/:job_id/status",
-            get(get_token_analysis_job_status),
-        )
-        .route(
-            "/api/token-analysis/:job_id/results",
-            get(get_token_analysis_job_results),
-        )
-        .route("/api/token-analysis/jobs", get(get_token_analysis_jobs))
         // Continuous mode endpoints
         .route(
             "/api/pnl/continuous/discovered-wallets",
