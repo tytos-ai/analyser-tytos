@@ -217,7 +217,7 @@ impl ZerionClient {
         );
 
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(120))
             .default_headers(headers)
             .build()?;
 

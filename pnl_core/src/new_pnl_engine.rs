@@ -659,7 +659,15 @@ impl NewPnLEngine {
         ) = self.calculate_streak_analytics(&matched_trades);
 
         // Calculate receive-related metrics
-        let total_received_quantity: Decimal = receive_events.iter().map(|e| e.quantity).sum();
+        // Count both original receive_events and implicit receives created during FIFO matching
+        let original_received_quantity: Decimal = receive_events.iter().map(|e| e.quantity).sum();
+        let implicit_received_quantity: Decimal = receive_consumptions
+            .iter()
+            .filter(|c| c.receive_event.transaction_hash.starts_with("implicit_receive_"))
+            .map(|c| c.consumed_quantity)
+            .sum();
+        let total_received_quantity = original_received_quantity + implicit_received_quantity;
+
         let total_received_sold_quantity: Decimal = receive_consumptions.iter().map(|c| c.consumed_quantity).sum();
         let remaining_received_quantity = total_received_quantity - total_received_sold_quantity;
 
@@ -999,9 +1007,18 @@ impl NewPnLEngine {
     ) -> Result<Option<RemainingPosition>, String> {
         info!("📦 Calculating remaining position for {}", token_symbol);
 
-        // Calculate remaining bought tokens
-        let bought_quantity: Decimal = remaining_buys.iter().map(|e| e.quantity).sum();
-        let total_bought_cost: Decimal = remaining_buys.iter().map(|e| e.usd_value).sum();
+        // Calculate remaining bought tokens (exclude phantom buys)
+        let bought_quantity: Decimal = remaining_buys
+            .iter()
+            .filter(|e| !e.transaction_hash.starts_with("phantom_buy_"))
+            .map(|e| e.quantity)
+            .sum();
+
+        let total_bought_cost: Decimal = remaining_buys
+            .iter()
+            .filter(|e| !e.transaction_hash.starts_with("phantom_buy_"))
+            .map(|e| e.usd_value)
+            .sum();
         let avg_cost_basis = if bought_quantity > Decimal::ZERO {
             total_bought_cost / bought_quantity
         } else {
