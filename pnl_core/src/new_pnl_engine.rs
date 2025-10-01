@@ -602,21 +602,16 @@ impl NewPnLEngine {
             .map(|e| e.usd_value)
             .sum();
 
-        let total_returned_usd: Decimal = sell_events
-            .iter()
-            .filter(|e| {
-                // Exclude sells that are part of phantom buy pairs (exchange currency swaps)
-                // These are sells of exchange currencies (SOL, ETH, etc) to buy target tokens
-                !events.iter().any(|buy| {
-                    buy.transaction_hash.starts_with("phantom_buy_")
-                        && buy.transaction_hash.contains(&e.transaction_hash)
-                })
-            })
-            .map(|e| e.usd_value)
-            .sum();
-
         // Perform enhanced FIFO matching that handles received tokens separately
         let (matched_trades, receive_consumptions) = self.perform_enhanced_fifo_matching(&mut buy_events, &sell_events, &receive_events)?;
+
+        // Calculate total_returned_usd from matched trades only
+        // This ensures we only count proceeds from selling BOUGHT tokens,
+        // excluding proceeds from selling received or pre-existing (implicit receive) tokens
+        let total_returned_usd: Decimal = matched_trades
+            .iter()
+            .map(|t| t.sell_event.usd_value)
+            .sum();
 
         // Calculate remaining position from unmatched buys and remaining receives
         let remaining_position = self.calculate_enhanced_remaining_position(
@@ -848,9 +843,25 @@ impl NewPnLEngine {
                             usd_value: matched_quantity * buy_event.usd_price_per_token,
                         };
 
+                        // Create matched sell portion (only the matched quantity)
+                        let matched_sell_portion = NewFinancialEvent {
+                            wallet_address: remaining_sell_event.wallet_address.clone(),
+                            transaction_hash: remaining_sell_event.transaction_hash.clone(),
+                            timestamp: remaining_sell_event.timestamp,
+                            token_address: remaining_sell_event.token_address.clone(),
+                            token_symbol: remaining_sell_event.token_symbol.clone(),
+                            chain_id: remaining_sell_event.chain_id.clone(),
+                            event_type: remaining_sell_event.event_type.clone(),
+
+                            // Only the matched portion, not remaining quantity
+                            quantity: matched_quantity,
+                            usd_price_per_token: remaining_sell_event.usd_price_per_token,
+                            usd_value: matched_quantity * remaining_sell_event.usd_price_per_token,
+                        };
+
                         matched_trades.push(MatchedTrade {
                             buy_event: matched_buy_portion,
-                            sell_event: remaining_sell_event.clone(),
+                            sell_event: matched_sell_portion,
                             matched_quantity,
                             realized_pnl_usd: realized_pnl,
                             hold_time_seconds,
