@@ -158,6 +158,29 @@ pub struct ZerionLinks {
     pub prev: Option<String>,
 }
 
+/// Result of conversion with enrichment tracking
+#[derive(Debug, Clone)]
+pub struct ConversionResult {
+    pub events: Vec<NewFinancialEvent>,
+    pub skipped_transactions: Vec<SkippedTransactionInfo>,
+}
+
+/// Information about a skipped transaction that needs price enrichment
+#[derive(Debug, Clone)]
+pub struct SkippedTransactionInfo {
+    pub zerion_tx_id: String,
+    pub tx_hash: String,              // Solana signature for BirdEye historical price lookup
+    pub wallet_address: String,
+    pub token_mint: String,
+    pub token_symbol: String,
+    pub token_amount: Decimal,
+    pub event_type: NewEventType,     // Buy/Sell/Receive
+    pub timestamp: DateTime<Utc>,
+    pub unix_timestamp: i64,
+    pub chain_id: String,
+    pub skip_reason: String,
+}
+
 #[derive(Clone)]
 pub struct ZerionClient {
     client: Client,
@@ -916,8 +939,8 @@ impl ZerionClient {
                                     "conversion failed (check earlier warnings for details)"
                                 };
 
-                                warn!("⚠️ Skipped transfer {}/{} in tx {} due to: {} (price: {:?}, value: {:?})",
-                                      transfer_index + 1, transfer_count, tx.id,
+                                warn!("⚠️ Skipped transfer {}/{} in tx {} (hash: {}) due to: {} (price: {:?}, value: {:?})",
+                                      transfer_index + 1, transfer_count, tx.id, tx.attributes.hash,
                                       skip_reason,
                                       transfer.price, transfer.value);
                                 error_count += 1;
@@ -1122,8 +1145,8 @@ impl ZerionClient {
             (None, None) => {
                 // Both price and value are null - skip this transaction
                 warn!(
-                    "⚠️  Skipping transaction: both price and value are null for {} ({})",
-                    fungible_info.symbol, mint_address
+                    "⚠️  Skipping transaction {}: both price and value are null for {} ({}) - tx_hash: {}",
+                    tx.id, fungible_info.symbol, mint_address, tx.attributes.hash
                 );
                 return None;
             }
@@ -1141,6 +1164,109 @@ impl ZerionClient {
             timestamp: tx.attributes.mined_at,
             transaction_hash: tx.attributes.hash.clone(),
         })
+    }
+
+    /// Extract information about transactions that would be skipped (missing price/value data)
+    /// This is used for enrichment via BirdEye historical price API
+    pub fn extract_skipped_transaction_info(
+        &self,
+        transactions: &[ZerionTransaction],
+        wallet_address: &str,
+    ) -> Vec<SkippedTransactionInfo> {
+        let mut skipped_info = Vec::new();
+
+        for tx in transactions {
+            // Only process trade, send, and receive types
+            if !matches!(
+                tx.attributes.operation_type.as_str(),
+                "trade" | "send" | "receive"
+            ) {
+                continue;
+            }
+
+            // Extract chain_id
+            let chain_id = tx
+                .relationships
+                .as_ref()
+                .and_then(|r| r.chain.as_ref())
+                .map(|c| c.data.id.clone())
+                .unwrap_or_else(|| "solana".to_string());
+
+            // Check each transfer
+            for transfer in &tx.attributes.transfers {
+                // Skip if no fungible_info
+                let fungible_info = match &transfer.fungible_info {
+                    Some(info) => info,
+                    None => continue,
+                };
+
+                // Only collect skip info if BOTH price and value are None
+                if transfer.price.is_none() && transfer.value.is_none() {
+                    // Parse amount
+                    let amount = match Self::parse_decimal_with_precision_handling(&transfer.quantity.numeric) {
+                        Ok(amt) => amt,
+                        Err(_) => continue, // Skip if can't parse amount
+                    };
+
+                    // Determine event type
+                    let event_type = match tx.attributes.operation_type.as_str() {
+                        "trade" => match transfer.direction.as_str() {
+                            "in" => NewEventType::Buy,
+                            "out" => NewEventType::Sell,
+                            _ => continue,
+                        },
+                        "send" => match transfer.direction.as_str() {
+                            "out" => NewEventType::Sell,
+                            _ => continue,
+                        },
+                        "receive" => match transfer.direction.as_str() {
+                            "in" => NewEventType::Receive,
+                            _ => continue,
+                        },
+                        _ => continue,
+                    };
+
+                    // Extract token address for the specific chain
+                    let mint_address = match fungible_info
+                        .implementations
+                        .iter()
+                        .find(|impl_| impl_.chain_id == chain_id)
+                        .and_then(|impl_| impl_.address.as_ref())
+                    {
+                        Some(addr) => addr.clone(),
+                        None => continue, // Skip if no implementation for this chain
+                    };
+
+                    // Create skip info
+                    let skip_info = SkippedTransactionInfo {
+                        zerion_tx_id: tx.id.clone(),
+                        tx_hash: tx.attributes.hash.clone(),
+                        wallet_address: wallet_address.to_string(),
+                        token_mint: mint_address,
+                        token_symbol: fungible_info.symbol.clone(),
+                        token_amount: amount,
+                        event_type,
+                        timestamp: tx.attributes.mined_at,
+                        unix_timestamp: tx.attributes.mined_at.timestamp(),
+                        chain_id: chain_id.clone(),
+                        skip_reason: "missing_price_and_value".to_string(),
+                    };
+
+                    info!(
+                        "📋 Identified skipped transaction for enrichment: {} {} ({})",
+                        skip_info.token_symbol, skip_info.token_mint, skip_info.tx_hash
+                    );
+
+                    skipped_info.push(skip_info);
+                }
+            }
+        }
+
+        if !skipped_info.is_empty() {
+            info!("📊 Found {} transactions needing price enrichment", skipped_info.len());
+        }
+
+        skipped_info
     }
 }
 

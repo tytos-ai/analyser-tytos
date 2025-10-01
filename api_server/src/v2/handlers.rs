@@ -140,7 +140,6 @@ pub async fn get_wallet_analysis_v2(
     };
     let portfolio_result = pnl_engine
         .calculate_portfolio_pnl(events_by_token, current_prices)
-        .await
         .map_err(|e| ApiError::InternalServerError(format!("P&L calculation error: {}", e)))?;
 
     // Calculate copy trading metrics if requested

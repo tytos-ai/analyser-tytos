@@ -2886,6 +2886,24 @@ impl Default for NewListingTokenFilter {
     }
 }
 
+/// Historical price response from BirdEye
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BirdEyeHistoricalPriceResponse {
+    pub data: BirdEyeHistoricalPriceData,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BirdEyeHistoricalPriceData {
+    #[serde(rename = "isScaledUiToken")]
+    pub is_scaled_ui_token: bool,
+    pub address: String,
+    #[serde(rename = "updateUnixTime")]
+    pub update_unix_time: i64,
+    pub value: f64,
+}
+
 // LEGACY: PriceFetcher implementation removed
 // BirdEyeClient now provides current prices directly via get_current_prices()
 // Historical prices come from embedded transaction data via NewTransactionParser
+// NEW: Added historical price API for enriching missing transaction data

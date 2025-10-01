@@ -28,8 +28,8 @@ struct ZerionPositionsResponse {
 #[derive(Debug, Deserialize)]
 struct ZerionPosition {
     #[serde(rename = "type")]
-    _position_type: String,
-    _id: String,
+    _position_type: Option<String>,
+    id: Option<String>,
     attributes: ZerionPositionAttributes,
 }
 

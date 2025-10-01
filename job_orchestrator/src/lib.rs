@@ -1,8 +1,6 @@
 use chrono::Utc;
 use config_manager::{SystemConfig, normalize_chain_for_zerion};
 use dex_client::{
-    // Portfolio API imports
-    extract_current_prices_from_portfolio,
     GeneralTraderTransaction,
     TokenTransactionSide,
     WalletTokenBalance,
@@ -235,6 +233,7 @@ pub struct JobOrchestrator {
     config: SystemConfig,
     zerion_client: Option<ZerionClient>,
     zerion_balance_fetcher: Option<ZerionBalanceFetcher>,
+    birdeye_client: Option<dex_client::BirdEyeClient>,
     persistence_client: Arc<PersistenceClient>,
     running_jobs: Arc<Mutex<HashMap<Uuid, PnLJob>>>,
     running_token_analysis_jobs: Arc<Mutex<HashMap<Uuid, TokenAnalysisJob>>>,
@@ -286,6 +285,23 @@ impl JobOrchestrator {
             None
         };
 
+        // Initialize BirdEye client for historical price enrichment
+        let birdeye_client = if !config.birdeye.api_key.is_empty() {
+            match dex_client::BirdEyeClient::new(config.birdeye.clone()) {
+                Ok(client) => {
+                    info!("BirdEye client initialized successfully for historical price enrichment");
+                    Some(client)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize BirdEye client: {} - historical price enrichment will be unavailable", e);
+                    None
+                }
+            }
+        } else {
+            warn!("BirdEye API key not provided - historical price enrichment will be unavailable");
+            None
+        };
+
         // Generate unique instance ID using hostname and process ID
         let instance_id = format!(
             "{}:{}:{}",
@@ -300,6 +316,7 @@ impl JobOrchestrator {
             config,
             zerion_client,
             zerion_balance_fetcher,
+            birdeye_client,
             persistence_client,
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
             running_token_analysis_jobs: Arc::new(Mutex::new(HashMap::new())),
@@ -1142,107 +1159,59 @@ impl JobOrchestrator {
         }
 
 
-        // Step 2: Fetch current portfolio based on chain
-        let portfolio_start = std::time::Instant::now();
-        let current_portfolio = match chain.to_lowercase().as_str() {
-            "solana" => {
-                info!("📈 Step 2/3: Fetching current portfolio from Zerion for Solana...");
-                info!(
-                    "🔄 Requesting current wallet portfolio from Zerion API for wallet {} on Solana",
-                    wallet_address
-                );
+        // Step 2: Fetch current prices for unrealized P&L
+        info!("💲 Step 2a/3: Fetching current prices from BirdEye for unrealized P&L...");
 
-                match &self.zerion_balance_fetcher {
-                    Some(fetcher) => {
-                        match fetcher.fetch_wallet_balances_for_chain(wallet_address, "solana").await {
-                            Ok(zerion_balances) => {
-                                let portfolio = self.convert_zerion_to_wallet_token_balance(&zerion_balances, "solana");
-                                info!("✅ Successfully fetched {} tokens from Zerion for Solana", portfolio.len());
-                                portfolio
-                            }
-                            Err(e) => {
-                                warn!("⚠️  Failed to fetch portfolio from Zerion for Solana: {}", e);
-                                Vec::new()
+        // Extract unique token addresses from transactions
+        let mut token_addresses: Vec<String> = Vec::new();
+        for tx in &zerion_transactions {
+            for transfer in &tx.attributes.transfers {
+                if let Some(fungible_info) = &transfer.fungible_info {
+                    // Get the token address for the current chain
+                    for implementation in &fungible_info.implementations {
+                        if implementation.chain_id.to_lowercase() == chain.to_lowercase() {
+                            if let Some(address) = &implementation.address {
+                                if !token_addresses.contains(address) {
+                                    token_addresses.push(address.clone());
+                                }
                             }
                         }
                     }
-                    None => {
-                        warn!("⚠️ Zerion balance fetcher not available");
-                        Vec::new()
-                    }
                 }
-            }
-            "ethereum" | "base" | "bsc" | "binance-smart-chain" => {
-                info!("📈 Step 2/3: Fetching current portfolio from Zerion for EVM chain {}...", chain);
-                info!(
-                    "🔄 Requesting current wallet portfolio from Zerion API for wallet {} on chain {}",
-                    wallet_address, chain
-                );
-
-                match &self.zerion_balance_fetcher {
-                    Some(fetcher) => {
-                        match fetcher.fetch_wallet_balances_for_chain(wallet_address, chain).await {
-                            Ok(zerion_balances) => {
-                                let portfolio = self.convert_zerion_to_wallet_token_balance(&zerion_balances, chain);
-                                info!("✅ Successfully fetched {} tokens from Zerion for EVM chain {}", portfolio.len(), chain);
-                                portfolio
-                            }
-                            Err(e) => {
-                                warn!("⚠️  Failed to fetch portfolio from Zerion for EVM chain {}: {}", chain, e);
-                                vec![]
-                            }
-                        }
-                    }
-                    None => {
-                        warn!("⚠️  Zerion balance fetcher not available for EVM portfolio fetching");
-                        vec![]
-                    }
-                }
-            }
-            _ => {
-                warn!("📈 Step 2/3: Unknown chain {}, skipping portfolio fetching", chain);
-                vec![]
-            }
-        };
-        let portfolio_elapsed = portfolio_start.elapsed();
-
-        let portfolio_total_value = current_portfolio.iter().map(|t| t.value_usd).sum::<f64>();
-        info!("✅ Step 2 completed in {:.2}s: Current portfolio fetched - {} tokens with total value ${:.2}",
-              portfolio_elapsed.as_secs_f64(), current_portfolio.len(), portfolio_total_value);
-
-        // Extract current prices from portfolio for accurate unrealized P&L
-        info!("🔍 Processing current portfolio holdings for unrealized P&L...");
-        if !current_portfolio.is_empty() {
-            info!("📋 Current Holdings Detail:");
-            for (i, token) in current_portfolio.iter().enumerate().take(10) {
-                // Show first 10 tokens
-                info!(
-                    "   Token {}: {} {} (${:.6}/token) = ${:.2} value (balance: {:.6})",
-                    i + 1,
-                    token.symbol.as_ref().unwrap_or(&"UNKNOWN".to_string()),
-                    token.address,
-                    token.price_usd,
-                    token.value_usd,
-                    token.ui_amount
-                );
-            }
-            if current_portfolio.len() > 10 {
-                info!("   ... and {} more tokens", current_portfolio.len() - 10);
             }
         }
 
-        let current_prices = extract_current_prices_from_portfolio(&current_portfolio);
-        info!(
-            "💲 Extracted {} current token prices for unrealized P&L calculation",
-            current_prices.len()
-        );
+        info!("📊 Found {} unique tokens to fetch prices for", token_addresses.len());
 
-        // Step 3: Calculate P&L using Zerion transactions with embedded prices + Zerion current prices
+        // Fetch current prices from BirdEye and convert f64 to Decimal
+        let current_prices = if let Some(birdeye_client) = &self.birdeye_client {
+            match birdeye_client.get_current_prices(&token_addresses, &chain).await {
+                Ok(prices) => {
+                    // Convert HashMap<String, f64> to HashMap<String, Decimal>
+                    let decimal_prices: HashMap<String, Decimal> = prices
+                        .into_iter()
+                        .filter_map(|(addr, price)| {
+                            Decimal::try_from(price).ok().map(|decimal_price| (addr, decimal_price))
+                        })
+                        .collect();
+                    info!("✅ Successfully fetched {} current prices from BirdEye", decimal_prices.len());
+                    decimal_prices
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to fetch prices from BirdEye: {}, unrealized P&L will be 0", e);
+                    HashMap::new()
+                }
+            }
+        } else {
+            warn!("⚠️  BirdEye client not available, unrealized P&L will be 0");
+            HashMap::new()
+        };
+
+        // Step 2b: Calculate P&L using Zerion transactions
+        // Note: Unrealized P&L now uses remaining positions from FIFO matching,
+        // not external portfolio data. This ensures we only calculate P&L on analyzed tokens.
         info!(
-            "🧮 Step 3/3: Calculating P&L using Zerion embedded prices + Zerion current prices..."
-        );
-        info!(
-            "🔧 Processing {} Zerion transactions with {} current prices",
+            "🧮 Step 2b/3: Calculating P&L from {} Zerion transactions with {} current prices...",
             zerion_transactions.len(),
             current_prices.len()
         );
@@ -1259,7 +1228,7 @@ impl JobOrchestrator {
 
         let total_elapsed = step_start.elapsed();
         info!(
-            "✅ Step 3 completed in {:.2}s: P&L calculation finished",
+            "✅ Step 2b completed in {:.2}s: P&L calculation finished",
             pnl_elapsed.as_secs_f64()
         );
         info!("🎉 Zerion P&L analysis completed for wallet {} on chain {} in {:.2}s total - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens",
@@ -1284,10 +1253,31 @@ impl JobOrchestrator {
         })?;
 
         // Step 1: Convert Zerion transactions to financial events
-        let financial_events =
+        let mut financial_events =
             zerion_client.convert_to_financial_events(&zerion_transactions, wallet_address);
         info!("📊 Converted {} Zerion transactions into {} financial events (including send transactions)",
               zerion_transactions.len(), financial_events.len());
+
+        // Step 1.5: Extract and enrich skipped transactions using BirdEye historical prices
+        let skipped_txs = zerion_client.extract_skipped_transaction_info(&zerion_transactions, wallet_address);
+        if !skipped_txs.is_empty() {
+            info!("🔍 Found {} transactions with missing price data - attempting BirdEye historical price enrichment",
+                skipped_txs.len());
+
+            match self.enrich_with_birdeye_historical_prices(&skipped_txs).await {
+                Ok(enriched_events) => {
+                    if !enriched_events.is_empty() {
+                        info!("✅ Successfully enriched {} transactions via BirdEye historical prices",
+                            enriched_events.len());
+                        financial_events.extend(enriched_events);
+                        info!("📊 Total financial events after enrichment: {}", financial_events.len());
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️  BirdEye enrichment failed: {} - continuing with non-enriched data", e);
+                }
+            }
+        }
 
         if financial_events.is_empty() {
             warn!(
@@ -1324,7 +1314,6 @@ impl JobOrchestrator {
         // Step 4: Calculate portfolio totals using the engine's method
         let portfolio_result = pnl_engine
             .calculate_portfolio_pnl(events_by_token, Some(current_prices))
-            .await
             .map_err(|e| {
                 OrchestratorError::PnL(format!("Portfolio P&L calculation failed: {}", e))
             })?;
@@ -1827,6 +1816,82 @@ impl JobOrchestrator {
             .await
             .map_err(|e| OrchestratorError::Persistence(e.to_string()))
     }
+
+    /// Enrich skipped transactions using BirdEye historical price API
+    /// This method fetches historical prices for transactions that had null price/value in Zerion
+    async fn enrich_with_birdeye_historical_prices(
+        &self,
+        skipped: &[zerion_client::SkippedTransactionInfo],
+    ) -> Result<Vec<pnl_core::NewFinancialEvent>> {
+        use pnl_core::NewFinancialEvent;
+        use rust_decimal::Decimal;
+
+        let birdeye_client = self.birdeye_client.as_ref()
+            .ok_or_else(|| OrchestratorError::Config("BirdEye client not initialized".to_string()))?;
+
+        let mut enriched_events = Vec::new();
+        let mut success_count = 0u32;
+        let mut failure_count = 0u32;
+
+        info!("🔄 Fetching historical prices for {} tokens from BirdEye...", skipped.len());
+
+        for skip_info in skipped {
+            info!("🔍 Looking up historical price: {} at timestamp {}",
+                skip_info.token_symbol, skip_info.unix_timestamp);
+
+            match birdeye_client.get_historical_price_unix(
+                &skip_info.token_mint,
+                skip_info.unix_timestamp,
+                Some("solana"),
+            ).await {
+                Ok(historical_price) => {
+                    info!("✅ Found historical price for {}: ${}",
+                        skip_info.token_symbol, historical_price);
+
+                    // Convert price to Decimal
+                    let usd_price = Decimal::from_f64_retain(historical_price)
+                        .unwrap_or(Decimal::ZERO);
+
+                    // Calculate USD value
+                    let usd_value = skip_info.token_amount * usd_price;
+
+                    // Create financial event with enriched price data
+                    let event = NewFinancialEvent {
+                        wallet_address: skip_info.wallet_address.clone(),
+                        token_address: skip_info.token_mint.clone(),
+                        token_symbol: skip_info.token_symbol.clone(),
+                        chain_id: skip_info.chain_id.clone(),
+                        event_type: skip_info.event_type.clone(),
+                        quantity: skip_info.token_amount,
+                        usd_price_per_token: usd_price,
+                        usd_value: usd_value,
+                        timestamp: skip_info.timestamp,
+                        transaction_hash: skip_info.tx_hash.clone(),
+                    };
+
+                    info!("✨ Enriched event: {} {} @ ${} = ${}",
+                        event.quantity, event.token_symbol, usd_price, usd_value);
+
+                    enriched_events.push(event);
+                    success_count += 1;
+                }
+                Err(e) => {
+                    warn!("❌ Failed to fetch historical price for {}: {}",
+                        skip_info.token_symbol, e);
+                    failure_count += 1;
+                }
+            }
+
+            // Rate limiting: BirdEye free tier = 100 req/min
+            // Sleep 1.2 seconds between requests = ~50 req/min (safe margin)
+            tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+        }
+
+        info!("📊 BirdEye enrichment results: {} successful, {} failed",
+            success_count, failure_count);
+
+        Ok(enriched_events)
+    }
 }
 
 // Clone implementation for JobOrchestrator
@@ -1836,6 +1901,7 @@ impl Clone for JobOrchestrator {
             config: self.config.clone(),
             zerion_client: self.zerion_client.clone(),
             zerion_balance_fetcher: self.zerion_balance_fetcher.clone(),
+            birdeye_client: self.birdeye_client.clone(),
             persistence_client: self.persistence_client.clone(),
             running_jobs: self.running_jobs.clone(),
             running_token_analysis_jobs: self.running_token_analysis_jobs.clone(),
