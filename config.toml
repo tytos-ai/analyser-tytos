@@ -23,6 +23,7 @@ max_retries = 3
 enabled = true
 min_boost_amount = 100.0    # Minimum boost amount to consider
 max_boosted_tokens = 25     # Limit boosted tokens for quality filtering
+scraperapi_key = "88313baee2043c1503199e462e1b3b7f"  # ScraperAPI key for Cloudflare bypass
 
 # BirdEye configuration - used only for current portfolio fetching in hybrid mode
 [birdeye]
@@ -32,7 +33,7 @@ request_timeout_seconds = 30
 
 # Zerion API configuration (alternative to BirdEye)
 [zerion]
-api_key = "zk_dev_69a0a2c7a84b433787f44efe5d1d6082"
+api_key = "zk_prod_b0bbb7857c74422582eb39d50f970006"
 api_base_url = "https://api.zerion.io"
 request_timeout_seconds = 30
 enabled = true

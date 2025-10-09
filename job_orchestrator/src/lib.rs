@@ -1,5 +1,5 @@
 use chrono::Utc;
-use config_manager::{SystemConfig, normalize_chain_for_zerion};
+use config_manager::{SystemConfig, normalize_chain_for_zerion, normalize_chain_for_birdeye};
 use dex_client::{
     GeneralTraderTransaction,
     TokenTransactionSide,
@@ -141,6 +141,13 @@ pub struct BatchJob {
     pub completed_at: Option<chrono::DateTime<Utc>>,
     pub filters: serde_json::Value, // Store max_transactions and other params as JSON
     pub individual_jobs: Vec<Uuid>,
+    // Failure tracking (backward compatible with serde default)
+    #[serde(default)]
+    pub successful_wallets: Vec<String>,
+    #[serde(default)]
+    pub failed_wallets: Vec<String>,
+    #[serde(default)]
+    pub error_summary: Option<String>,
     // Results stored in PostgreSQL, not in memory
 }
 
@@ -167,6 +174,9 @@ impl BatchJob {
             completed_at: None,
             filters,
             individual_jobs: Vec::new(),
+            successful_wallets: Vec::new(),
+            failed_wallets: Vec::new(),
+            error_summary: None,
         }
     }
 
@@ -203,6 +213,9 @@ impl BatchJob {
             completed_at: self.completed_at,
             filters: self.filters.clone(),
             individual_jobs: self.individual_jobs.clone(),
+            successful_wallets: self.successful_wallets.clone(),
+            failed_wallets: self.failed_wallets.clone(),
+            error_summary: self.error_summary.clone(),
         })
     }
 
@@ -224,6 +237,9 @@ impl BatchJob {
             completed_at: persistent_job.completed_at,
             filters: persistent_job.filters,
             individual_jobs: persistent_job.individual_jobs,
+            successful_wallets: persistent_job.successful_wallets,
+            failed_wallets: persistent_job.failed_wallets,
+            error_summary: persistent_job.error_summary,
         })
     }
 }
@@ -788,8 +804,11 @@ impl JobOrchestrator {
 
         // Store individual P&L results in main PostgreSQL table and batch results
         info!("💾 Storing P&L results to database...");
-        let successful_count = {
+        let (successful_count, _successful_wallets, failed_wallets) = {
             let mut success_count = 0;
+            let mut successful_wallets = Vec::new();
+            let mut failed_wallets = Vec::new();
+
             let total_results = results.len();
             let successful_results = results.iter().filter(|(_, r)| r.is_ok()).count();
             info!(
@@ -818,21 +837,23 @@ impl JobOrchestrator {
                                 wallet, job_id
                             );
                             success_count += 1;
+                            successful_wallets.push(wallet.clone());
                         }
                         Err(e) => {
                             warn!(
                                 "❌ Failed to store P&L result for wallet {} from batch job {}: {}",
                                 wallet, job_id, e
                             );
+                            failed_wallets.push(wallet.clone());
                         }
                     }
                 } else if let Err(e) = result {
                     warn!("⚠️ Skipping storage for failed wallet {}: {}", wallet, e);
+                    failed_wallets.push(wallet.clone());
                 }
             }
 
-            // Update batch job status to completed in PostgreSQL
-            info!("🔄 Updating batch job status to Completed...");
+            // Update batch job status in PostgreSQL with failure tracking
             let persistence_client = &self.persistence_client;
             let persistent_job = persistence_client
                 .get_batch_job(&job_id.to_string())
@@ -842,34 +863,53 @@ impl JobOrchestrator {
                 })?;
 
             let mut job = BatchJob::from_persistence_batch_job(persistent_job)?;
-            job.status = JobStatus::Completed;
-            job.completed_at = Some(Utc::now());
-            info!("✅ Job completion time set: {}", job.completed_at.unwrap());
 
-            // Note: Individual P&L results are already stored in pnl_results table above
-            // No need to store results in batch job - they're retrieved from PostgreSQL when needed
+            // Determine final status: Failed if all wallets failed, Completed otherwise
+            if success_count == 0 && total_results > 0 {
+                job.status = JobStatus::Failed;
+                job.error_summary = Some(format!("All {} wallets failed to process", total_results));
+                warn!("❌ Batch job {} marked as Failed: all wallets failed", job_id);
+            } else {
+                job.status = JobStatus::Completed;
+                if !failed_wallets.is_empty() {
+                    job.error_summary = Some(format!(
+                        "{} of {} wallets failed to process",
+                        failed_wallets.len(),
+                        total_results
+                    ));
+                }
+                info!("✅ Batch job {} marked as Completed: {}/{} wallets successful",
+                      job_id, success_count, total_results);
+            }
+
+            job.completed_at = Some(Utc::now());
+            job.successful_wallets = successful_wallets.clone();
+            job.failed_wallets = failed_wallets.clone();
 
             // Update final status
             let updated_persistent_job = job.to_persistence_batch_job()?;
             persistence_client
                 .update_batch_job(&updated_persistent_job)
                 .await?;
-            info!("✅ Batch job status updated to Completed in database");
+            info!("✅ Batch job status updated in database with {} successful, {} failed wallets",
+                  success_count, failed_wallets.len());
 
-            success_count
+            (success_count, successful_wallets, failed_wallets)
         };
 
         let total_elapsed = start_time.elapsed();
-        info!("🎉 Batch job {} completed successfully in {:.2}s: {}/{} wallets successful ({:.1}% success rate)",
-              job_id, total_elapsed.as_secs_f64(), successful_count, wallet_count,
-              (successful_count as f64 / wallet_count as f64) * 100.0);
 
-        if successful_count < wallet_count {
-            let failed_count = wallet_count - successful_count;
-            warn!(
-                "⚠️ {} out of {} wallets failed processing",
-                failed_count, wallet_count
-            );
+        if successful_count == 0 && wallet_count > 0 {
+            warn!("❌ Batch job {} FAILED in {:.2}s: All {} wallets failed processing",
+                  job_id, total_elapsed.as_secs_f64(), wallet_count);
+        } else if failed_wallets.is_empty() {
+            info!("🎉 Batch job {} COMPLETED successfully in {:.2}s: All {}/{} wallets processed successfully",
+                  job_id, total_elapsed.as_secs_f64(), successful_count, wallet_count);
+        } else {
+            warn!("⚠️ Batch job {} COMPLETED with failures in {:.2}s: {}/{} wallets successful ({:.1}% success rate), {} failed: {:?}",
+                  job_id, total_elapsed.as_secs_f64(), successful_count, wallet_count,
+                  (successful_count as f64 / wallet_count as f64) * 100.0,
+                  failed_wallets.len(), failed_wallets);
         }
 
         Ok(())
@@ -1222,6 +1262,7 @@ impl JobOrchestrator {
                 wallet_address,
                 zerion_transactions,
                 current_prices,
+                chain,
             )
             .await?;
         let pnl_elapsed = pnl_start.elapsed();
@@ -1244,6 +1285,7 @@ impl JobOrchestrator {
         wallet_address: &str,
         zerion_transactions: Vec<zerion_client::ZerionTransaction>,
         current_prices: HashMap<String, Decimal>,
+        chain: &str, // Chain identifier for BirdEye historical price enrichment
     ) -> Result<PortfolioPnLResult> {
         info!("🚀 Starting Zerion P&L calculation with {} current prices for wallet: {} with {} transactions",
               current_prices.len(), wallet_address, zerion_transactions.len());
@@ -1264,7 +1306,7 @@ impl JobOrchestrator {
             info!("🔍 Found {} transactions with missing price data - attempting BirdEye historical price enrichment",
                 skipped_txs.len());
 
-            match self.enrich_with_birdeye_historical_prices(&skipped_txs).await {
+            match self.enrich_with_birdeye_historical_prices(&skipped_txs, chain).await {
                 Ok(enriched_events) => {
                     if !enriched_events.is_empty() {
                         info!("✅ Successfully enriched {} transactions via BirdEye historical prices",
@@ -1822,6 +1864,7 @@ impl JobOrchestrator {
     async fn enrich_with_birdeye_historical_prices(
         &self,
         skipped: &[zerion_client::SkippedTransactionInfo],
+        chain: &str, // Chain parameter for BirdEye API
     ) -> Result<Vec<pnl_core::NewFinancialEvent>> {
         use pnl_core::NewFinancialEvent;
         use rust_decimal::Decimal;
@@ -1829,20 +1872,24 @@ impl JobOrchestrator {
         let birdeye_client = self.birdeye_client.as_ref()
             .ok_or_else(|| OrchestratorError::Config("BirdEye client not initialized".to_string()))?;
 
+        // Normalize chain for BirdEye API (binance-smart-chain -> bsc)
+        let birdeye_chain = normalize_chain_for_birdeye(chain)
+            .map_err(|e| OrchestratorError::Config(e))?;
+
         let mut enriched_events = Vec::new();
         let mut success_count = 0u32;
         let mut failure_count = 0u32;
 
-        info!("🔄 Fetching historical prices for {} tokens from BirdEye...", skipped.len());
+        info!("🔄 Fetching historical prices for {} tokens from BirdEye on chain {}...", skipped.len(), birdeye_chain);
 
         for skip_info in skipped {
-            info!("🔍 Looking up historical price: {} at timestamp {}",
-                skip_info.token_symbol, skip_info.unix_timestamp);
+            info!("🔍 Looking up historical price: {} ({}) at timestamp {} on chain {}",
+                skip_info.token_symbol, skip_info.token_mint, skip_info.unix_timestamp, birdeye_chain);
 
             match birdeye_client.get_historical_price_unix(
                 &skip_info.token_mint,
                 skip_info.unix_timestamp,
-                Some("solana"),
+                Some(&birdeye_chain),
             ).await {
                 Ok(historical_price) => {
                     info!("✅ Found historical price for {}: ${}",

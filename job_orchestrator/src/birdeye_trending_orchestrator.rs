@@ -137,6 +137,7 @@ impl BirdEyeTrendingOrchestrator {
                 chrome_executable_path: config.dexscreener.chrome_executable_path.clone(),
                 headless_mode: config.dexscreener.headless_mode,
                 anti_detection_enabled: config.dexscreener.anti_detection_enabled,
+                scraperapi_key: config.dexscreener.scraperapi_key.clone(),
             };
             Some(Arc::new(Mutex::new(DexScreenerClient::new(
                 dexscreener_config,

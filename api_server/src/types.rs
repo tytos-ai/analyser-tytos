@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use config_manager::denormalize_chain_for_frontend;
 use job_orchestrator::{BatchJob, OrchestratorStatus};
 use persistence_layer::JobStatus;
 use pnl_core::PortfolioPnLResult;
@@ -112,6 +113,7 @@ pub struct JobProgress {
 pub struct BatchJobResultsResponse {
     pub job_id: Uuid,
     pub status: JobStatus,
+    pub chain: String,
     pub summary: BatchResultsSummary,
     pub results: HashMap<String, WalletResult>,
 }
@@ -284,6 +286,7 @@ impl From<BatchJob> for BatchJobResultsResponse {
         Self {
             job_id: job.id,
             status: job.status,
+            chain: denormalize_chain_for_frontend(&job.chain),
             summary: BatchResultsSummary {
                 total_wallets,
                 successful_analyses: successful_count,

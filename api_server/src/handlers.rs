@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use chrono::Utc;
-use config_manager::normalize_chain_for_zerion;
+use config_manager::{normalize_chain_for_zerion, denormalize_chain_for_frontend};
 use csv::Writer;
 use persistence_layer::JobStatus;
 use rust_decimal::Decimal;
@@ -264,6 +264,7 @@ pub async fn get_batch_job_results(
     let response = BatchJobResultsResponse {
         job_id: job.id,
         status: job.status,
+        chain: denormalize_chain_for_frontend(&job.chain),
         summary: BatchResultsSummary {
             total_wallets,
             successful_analyses: successful_count,
@@ -306,7 +307,7 @@ pub async fn get_batch_job_history(
         let job_summary = BatchJobSummary {
             id: job.id,
             wallet_count: job.wallet_addresses.len(),
-            chain: job.chain.clone(),
+            chain: denormalize_chain_for_frontend(&job.chain),
             status: job.status,
             created_at: job.created_at,
             started_at: job.started_at,

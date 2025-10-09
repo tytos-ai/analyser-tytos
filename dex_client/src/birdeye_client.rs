@@ -1961,12 +1961,39 @@ impl BirdEyeClient {
     ) -> Result<HashMap<String, f64>, BirdEyeError> {
         let url = format!("{}/defi/multi_price", self.config.api_base_url);
 
-        debug!(
-            "Fetching price batch from BirdEye for {} tokens",
-            token_addresses.len()
-        );
+        // Filter out empty token addresses before making API call
+        let filtered_addresses: Vec<String> = token_addresses
+            .iter()
+            .filter(|addr| !addr.trim().is_empty())
+            .cloned()
+            .collect();
 
-        let address_list = token_addresses.join(",");
+        if filtered_addresses.len() < token_addresses.len() {
+            warn!(
+                "[BIRDEYE BATCH] Filtered out {} empty/whitespace token addresses",
+                token_addresses.len() - filtered_addresses.len()
+            );
+        }
+
+        if filtered_addresses.is_empty() {
+            warn!("[BIRDEYE BATCH] No valid token addresses to fetch after filtering");
+            return Ok(HashMap::new());
+        }
+
+        info!(
+            "[BIRDEYE BATCH] Fetching {} tokens on chain: {}",
+            filtered_addresses.len(),
+            chain
+        );
+        info!("[BIRDEYE BATCH] Token addresses: {:?}", filtered_addresses);
+
+        let address_list = filtered_addresses.join(",");
+
+        info!(
+            "[BIRDEYE BATCH] API URL: {}?list_address={}",
+            url, address_list
+        );
+        info!("[BIRDEYE BATCH] Headers: x-chain={}", chain);
 
         let response = self
             .http_client
@@ -1977,45 +2004,81 @@ impl BirdEyeClient {
             .send()
             .await?;
 
+        let status = response.status();
+        info!("[BIRDEYE BATCH] Response status: {}", status);
+
         if response.status() == 429 {
+            error!("[BIRDEYE BATCH] Rate limit exceeded!");
             return Err(BirdEyeError::RateLimit);
         }
 
         if !response.status().is_success() {
-            return Err(BirdEyeError::Api(format!("HTTP {}", response.status())));
+            let error_body = response.text().await.unwrap_or_default();
+            error!(
+                "[BIRDEYE BATCH] API error - HTTP {}: {}",
+                status, error_body
+            );
+            return Err(BirdEyeError::Api(format!("HTTP {}: {}", status, error_body)));
         }
 
         // BirdEye multi_price returns a different format
         let response_text = response.text().await?;
-        let response_data: serde_json::Value = serde_json::from_str(&response_text)
-            .map_err(|e| BirdEyeError::InvalidResponse(format!("JSON parse error: {}", e)))?;
+        info!("[BIRDEYE BATCH] Response body length: {} bytes", response_text.len());
 
-        if !response_data
+        let response_data: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                error!("[BIRDEYE BATCH] JSON parse error: {}", e);
+                error!("[BIRDEYE BATCH] Response body: {}", response_text);
+                BirdEyeError::InvalidResponse(format!("JSON parse error: {}", e))
+            })?;
+
+        let success = response_data
             .get("success")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+
+        info!("[BIRDEYE BATCH] API success field: {}", success);
+
+        if !success {
+            error!("[BIRDEYE BATCH] API returned success=false");
+            error!("[BIRDEYE BATCH] Full response: {}", response_text);
             return Err(BirdEyeError::Api("API returned success=false".to_string()));
         }
 
         let mut prices = HashMap::new();
 
         if let Some(data) = response_data.get("data") {
-            for token_address in token_addresses {
+            info!("[BIRDEYE BATCH] Processing data object with {} keys",
+                if let Some(obj) = data.as_object() { obj.len() } else { 0 }
+            );
+
+            for token_address in &filtered_addresses {
                 if let Some(price_value) = data
                     .get(token_address)
                     .and_then(|v| v.get("value"))
                     .and_then(|v| v.as_f64())
                 {
+                    info!(
+                        "[BIRDEYE BATCH] ✓ Token {} price: ${:.6}",
+                        token_address, price_value
+                    );
                     prices.insert(token_address.clone(), price_value);
+                } else {
+                    warn!(
+                        "[BIRDEYE BATCH] ✗ Token {} - no price in response",
+                        token_address
+                    );
                 }
             }
+        } else {
+            error!("[BIRDEYE BATCH] No 'data' field in response!");
+            error!("[BIRDEYE BATCH] Full response: {}", response_text);
         }
 
-        debug!(
-            "Retrieved prices from BirdEye batch for {}/{} tokens",
+        info!(
+            "[BIRDEYE BATCH] Summary: Retrieved {}/{} prices",
             prices.len(),
-            token_addresses.len()
+            filtered_addresses.len()
         );
         Ok(prices)
     }
@@ -2539,10 +2602,15 @@ impl BirdEyeClient {
         let url = format!("{}/defi/historical_price_unix", self.config.api_base_url);
         let chain = chain.unwrap_or("solana");
 
-        debug!(
-            "Fetching historical price for token: {} at unix time: {} on chain: {}",
+        info!(
+            "[BIRDEYE HISTORICAL] Fetching historical price for token: {} at unix time: {} on chain: {}",
             token_address, unix_time, chain
         );
+        info!(
+            "[BIRDEYE HISTORICAL] API URL: {}?address={}&unixtime={}&chain={}",
+            url, token_address, unix_time, chain
+        );
+        info!("[BIRDEYE HISTORICAL] Headers: X-API-KEY=***");
 
         let response = self
             .http_client
@@ -2556,30 +2624,56 @@ impl BirdEyeClient {
             .send()
             .await?;
 
+        let status = response.status();
+        info!("[BIRDEYE HISTORICAL] Response status: {}", status);
+
         if response.status() == 429 {
+            error!("[BIRDEYE HISTORICAL] Rate limit exceeded (429)");
             return Err(BirdEyeError::RateLimit);
         }
 
         if !response.status().is_success() {
-            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[BIRDEYE HISTORICAL] API error - HTTP {}: {}",
+                status, error_text
+            );
             return Err(BirdEyeError::Api(format!(
                 "Historical price API HTTP {}: {}",
                 status, error_text
             )));
         }
 
-        let price_response: HistoricalPriceResponse = response.json().await?;
+        let response_text = response.text().await?;
+        info!("[BIRDEYE HISTORICAL] Response body length: {} bytes", response_text.len());
+
+        let price_response: HistoricalPriceResponse = match serde_json::from_str(&response_text) {
+            Ok(pr) => pr,
+            Err(e) => {
+                error!(
+                    "[BIRDEYE HISTORICAL] Failed to parse JSON response: {}",
+                    e
+                );
+                error!("[BIRDEYE HISTORICAL] Response body: {}", response_text);
+                return Err(BirdEyeError::Api(format!(
+                    "Failed to parse historical price response: {}",
+                    e
+                )));
+            }
+        };
+
+        info!("[BIRDEYE HISTORICAL] API success field: {}", price_response.success);
 
         if !price_response.success {
+            error!("[BIRDEYE HISTORICAL] API returned success=false");
             return Err(BirdEyeError::Api(
                 "Historical price API returned success=false".to_string(),
             ));
         }
 
         let price = price_response.data.value;
-        debug!(
-            "Retrieved historical price for token {}: ${} at unix time {}",
+        info!(
+            "[BIRDEYE HISTORICAL] ✓ Retrieved historical price for token {}: ${} at unix time {}",
             token_address, price, unix_time
         );
 
@@ -2593,6 +2687,7 @@ impl BirdEyeClient {
         chain: Option<&str>,
     ) -> Result<HashMap<String, f64>, BirdEyeError> {
         if token_addresses.is_empty() {
+            info!("[BIRDEYE PRICE] No tokens to fetch prices for");
             return Ok(HashMap::new());
         }
 
@@ -2600,10 +2695,14 @@ impl BirdEyeClient {
         let chain = chain.unwrap_or("solana");
         let addresses_param = token_addresses.join(",");
 
-        debug!(
-            "Fetching current prices for {} tokens on chain: {}",
+        info!(
+            "[BIRDEYE PRICE] Fetching prices for {} tokens on chain: {}",
             token_addresses.len(),
             chain
+        );
+        info!("[BIRDEYE PRICE] Token addresses: {:?}", token_addresses);
+        info!("[BIRDEYE PRICE] API URL: {}?list_address={}&chain={}",
+            url, addresses_param, chain
         );
 
         let response = self
@@ -2614,13 +2713,20 @@ impl BirdEyeClient {
             .send()
             .await?;
 
+        let status = response.status();
+        info!("[BIRDEYE PRICE] Response status: {}", status);
+
         if response.status() == 429 {
+            error!("[BIRDEYE PRICE] Rate limit exceeded!");
             return Err(BirdEyeError::RateLimit);
         }
 
         if !response.status().is_success() {
-            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[BIRDEYE PRICE] API error - HTTP {}: {}",
+                status, error_text
+            );
             return Err(BirdEyeError::Api(format!(
                 "Multi-price API HTTP {}: {}",
                 status, error_text
@@ -2630,18 +2736,43 @@ impl BirdEyeClient {
         let multi_price_response: MultiPriceResponse = response.json().await?;
 
         if !multi_price_response.success {
+            error!("[BIRDEYE PRICE] API returned success=false");
             return Err(BirdEyeError::Api(
                 "Multi-price API returned success=false".to_string(),
             ));
         }
 
+        info!(
+            "[BIRDEYE PRICE] Found prices for {} out of {} tokens",
+            multi_price_response.data.len(),
+            token_addresses.len()
+        );
+
         let mut prices = HashMap::new();
         for (address, price_data) in multi_price_response.data {
+            info!(
+                "[BIRDEYE PRICE] Token {} price: ${:.6}",
+                address, price_data.value
+            );
             prices.insert(address, price_data.value);
         }
 
+        // Log tokens that didn't get prices
+        let missing_tokens: Vec<&String> = token_addresses
+            .iter()
+            .filter(|addr| !prices.contains_key(*addr))
+            .collect();
+
+        if !missing_tokens.is_empty() {
+            warn!(
+                "[BIRDEYE PRICE] Missing prices for {} tokens: {:?}",
+                missing_tokens.len(),
+                missing_tokens
+            );
+        }
+
         info!(
-            "Retrieved current prices for {}/{} tokens on chain {}",
+            "[BIRDEYE PRICE] Summary: Retrieved {}/{} prices on chain {}",
             prices.len(),
             token_addresses.len(),
             chain

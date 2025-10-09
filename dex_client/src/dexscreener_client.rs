@@ -82,6 +82,7 @@ pub struct DexScreenerConfig {
     pub chrome_executable_path: Option<String>,
     pub headless_mode: bool,
     pub anti_detection_enabled: bool,
+    pub scraperapi_key: String,
 }
 
 impl Default for DexScreenerConfig {
@@ -95,6 +96,7 @@ impl Default for DexScreenerConfig {
             chrome_executable_path: None,
             headless_mode: false, // Changed to false for GUI debugging
             anti_detection_enabled: true,
+            scraperapi_key: "".to_string(),
         }
     }
 }
@@ -386,6 +388,206 @@ impl DexScreenerClient {
         ]
     }
 
+    /// Fetch HTML via ScraperAPI HTTP proxy (no browser needed)
+    /// Matching ScraperAPI documentation examples:
+    /// - JavaScript: proxy: { host: 'proxy-server.scraperapi.com', port: 8001, auth: { username: 'scraperapi', password: 'KEY' } }
+    /// - curl: curl -x "scraperapi:KEY@proxy-server.scraperapi.com:8001" -k "https://dexscreener.com/..."
+    async fn fetch_html_via_scraperapi(
+        &self,
+        url: &str,
+    ) -> Result<String, DexScreenerError> {
+        // ScraperAPI proxy configuration (matching their documentation)
+        // Host: proxy-server.scraperapi.com
+        // Port: 8001
+        // Auth: username=scraperapi, password=API_KEY
+        let proxy_url = format!(
+            "http://scraperapi:{}@proxy-server.scraperapi.com:8001",
+            self.config.scraperapi_key
+        );
+
+        info!("🔒 Configuring ScraperAPI proxy: proxy-server.scraperapi.com:8001");
+        info!("🌐 Target URL: {}", url);
+
+        // Create proxy for all protocols (HTTP and HTTPS)
+        let proxy = reqwest::Proxy::all(&proxy_url).map_err(|e| {
+            error!("❌ Failed to create proxy: {}", e);
+            DexScreenerError::BrowserError(format!("Failed to create proxy: {}", e))
+        })?;
+
+        // Build HTTP client with proxy and SSL verification disabled (like curl -k)
+        // ScraperAPI handles captchas/retries internally, so use very long timeout
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .danger_accept_invalid_certs(true) // Equivalent to curl -k
+            .timeout(std::time::Duration::from_secs(300)) // 5 minutes for ScraperAPI processing
+            .connect_timeout(std::time::Duration::from_secs(30)) // 30s to establish connection
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .pool_max_idle_per_host(10)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| {
+                error!("❌ Failed to build HTTP client: {}", e);
+                DexScreenerError::BrowserError(format!("Failed to build client: {}", e))
+            })?;
+
+        info!("📡 Sending GET request via ScraperAPI...");
+
+        let response = client.get(url).send().await.map_err(|e| {
+            error!("❌ ScraperAPI request failed: {}", e);
+            DexScreenerError::HttpError(e)
+        })?;
+
+        let status = response.status();
+        info!("📬 ScraperAPI response: HTTP {}", status);
+
+        if !status.is_success() {
+            error!("❌ ScraperAPI error: HTTP {}", status);
+            return Err(DexScreenerError::BrowserError(format!(
+                "HTTP {} for URL: {}",
+                status,
+                url
+            )));
+        }
+
+        let html = response.text().await.map_err(|e| {
+            error!("❌ Failed to read response: {}", e);
+            DexScreenerError::HttpError(e)
+        })?;
+
+        info!("✅ ScraperAPI success: {} bytes", html.len());
+        debug!("HTML preview (first 500 chars): {}", &html[..html.len().min(500)]);
+
+        Ok(html)
+    }
+
+    /// Parse window.__SERVER_DATA from HTML to extract trending tokens
+    fn parse_server_data_from_html(
+        &self,
+        html: &str,
+        chain: &str,
+    ) -> Result<Vec<DexScreenerTrendingToken>, DexScreenerError> {
+        // Extract window.__SERVER_DATA JSON from HTML
+        // Pattern: window.__SERVER_DATA = {large JSON object};
+        // We need to match the entire JSON object, which can be multi-line and contain semicolons
+
+        // Find the start of the assignment
+        let start_marker = "window.__SERVER_DATA = ";
+        let start_pos = html.find(start_marker).ok_or_else(|| {
+            warn!("❌ No window.__SERVER_DATA found in HTML");
+            warn!("HTML preview (first 1000 chars): {}", &html[..html.len().min(1000)]);
+            DexScreenerError::BrowserError("No window.__SERVER_DATA in HTML".to_string())
+        })?;
+
+        let json_start = start_pos + start_marker.len();
+
+        // Find the matching closing brace by counting braces
+        let mut brace_count = 0;
+        let mut json_end = json_start;
+        let chars: Vec<char> = html[json_start..].chars().collect();
+
+        for (i, ch) in chars.iter().enumerate() {
+            match ch {
+                '{' => brace_count += 1,
+                '}' => {
+                    brace_count -= 1;
+                    if brace_count == 0 {
+                        json_end = json_start + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if brace_count != 0 {
+            error!("❌ Unmatched braces in window.__SERVER_DATA JSON");
+            return Err(DexScreenerError::BrowserError(
+                "Malformed JSON in window.__SERVER_DATA".to_string()
+            ));
+        }
+
+        let json_str = &html[json_start..json_end];
+
+        debug!("📋 Extracted window.__SERVER_DATA JSON ({} bytes)", json_str.len());
+
+        // Decode HTML entities (e.g., &quot;, &amp;, &#39;, etc.)
+        let decoded_json = json_str
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&#x2F;", "/");
+
+        // Convert JavaScript syntax to JSON-compatible syntax
+        // window.__SERVER_DATA contains JavaScript code, not pure JSON
+        let json_compatible = decoded_json
+            .replace(":undefined", ":null")      // undefined → null
+            .replace(",undefined", ",null")      // undefined in arrays
+            .replace("[undefined", "[null")      // undefined at array start
+            .replace(":NaN", ":null")            // NaN → null
+            .replace(",NaN", ",null")            // NaN in arrays
+            .replace(":Infinity", ":null")       // Infinity → null
+            .replace(":-Infinity", ":null");     // -Infinity → null
+
+        debug!("📋 Converted to JSON-compatible ({} bytes)", json_compatible.len());
+
+        let data: serde_json::Value = serde_json::from_str(&json_compatible).map_err(|e| {
+            error!("❌ Failed to parse window.__SERVER_DATA JSON: {}", e);
+            error!("JSON preview (first 500 chars): {}", &json_compatible[..json_compatible.len().min(500)]);
+            DexScreenerError::BrowserError(format!("Invalid JSON in window.__SERVER_DATA: {}", e))
+        })?;
+
+        // Extract pairs array
+        let pairs = data["route"]["data"]["pairs"]
+            .as_array()
+            .ok_or_else(|| {
+                warn!("❌ No pairs array found in window.__SERVER_DATA");
+                DexScreenerError::BrowserError("No pairs array in server data".to_string())
+            })?;
+
+        info!("📊 Found {} pairs in window.__SERVER_DATA", pairs.len());
+
+        // Map JSON pairs to DexScreenerTrendingToken structs
+        let tokens: Vec<DexScreenerTrendingToken> = pairs
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, pair)| {
+                let token = DexScreenerTrendingToken {
+                    address: pair["baseToken"]["address"].as_str()?.to_string(),
+                    symbol: pair["baseToken"]["symbol"].as_str()?.to_string(),
+                    name: pair["baseToken"]["name"].as_str()?.to_string(),
+                    decimals: pair["baseToken"]["decimals"].as_i64().map(|d| d as u8),
+                    price: pair["priceUsd"]
+                        .as_str()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0),
+                    price_change_24h: pair["priceChange"]["h24"].as_f64(),
+                    volume_24h: pair["volume"]["h24"].as_f64(),
+                    volume_change_24h: None, // Not provided in window.__SERVER_DATA
+                    liquidity: pair["liquidity"]["usd"].as_f64(),
+                    fdv: pair["fdv"].as_f64(),
+                    marketcap: pair["marketCap"].as_f64(),
+                    rank: Some((idx + 1) as u32),
+                    logo_uri: pair["baseToken"]["logoURI"].as_str().map(|s| s.to_string()),
+                    txns_24h: Some(
+                        (pair["txns"]["h24"]["buys"].as_i64().unwrap_or(0)
+                            + pair["txns"]["h24"]["sells"].as_i64().unwrap_or(0))
+                            as u32,
+                    ),
+                    last_trade_unix_time: pair["pairCreatedAt"].as_i64(),
+                    chain_id: chain.to_string(),
+                    pair_address: pair["pairAddress"].as_str().map(|s| s.to_string()),
+                };
+                Some(token)
+            })
+            .collect();
+
+        info!("✅ Successfully parsed {} tokens from HTML", tokens.len());
+
+        Ok(tokens)
+    }
+
     /// Get comprehensive Chrome stealth arguments without user-data-dir (since that's set via BrowserConfig)
     fn get_stealth_chrome_args_without_user_data_dir(&self) -> Vec<String> {
         vec![
@@ -465,6 +667,52 @@ impl DexScreenerClient {
             return Ok(vec![]);
         }
 
+        // Use chain-specific URL for optimized data retrieval (no client-side filtering needed)
+        let timeframe_param = self.get_timeframe_param(timeframe);
+        let chain_path = self.get_dexscreener_chain_path(chain);
+        let url = format!(
+            "https://dexscreener.com/{}?rankBy={}&order=desc",
+            chain_path, timeframe_param
+        );
+
+        // Try ScraperAPI HTTP Proxy first (fast path)
+        info!(
+            "🚀 Attempting ScraperAPI Proxy Port method for trending tokens ({} {})",
+            chain, timeframe
+        );
+
+        match self.fetch_html_via_scraperapi(&url).await {
+            Ok(html) => {
+                match self.parse_server_data_from_html(&html, chain) {
+                    Ok(tokens) if !tokens.is_empty() => {
+                        info!(
+                            "✅ ScraperAPI Proxy succeeded: {} tokens for {} ({})",
+                            tokens.len(), chain, timeframe
+                        );
+
+                        // Apply rate limiting
+                        if self.config.rate_limit_delay_ms > 0 {
+                            tokio::time::sleep(Duration::from_millis(self.config.rate_limit_delay_ms)).await;
+                        }
+
+                        return Ok(tokens);
+                    }
+                    Ok(_) => {
+                        warn!("⚠️ ScraperAPI returned 0 tokens, falling back to browser");
+                    }
+                    Err(e) => {
+                        warn!("⚠️ HTML parsing failed: {}, falling back to browser", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("⚠️ ScraperAPI Proxy failed: {}, falling back to browser", e);
+            }
+        }
+
+        // Fallback to browser method (without proxy - direct connection)
+        info!("🌐 Using browser method for trending tokens ({} {})", chain, timeframe);
+
         let browser = self.ensure_browser().await?;
         let page = browser
             .new_page("about:blank")
@@ -475,14 +723,6 @@ impl DexScreenerClient {
         if self.config.anti_detection_enabled {
             self.setup_anti_detection(&page).await?;
         }
-
-        // Use chain-specific URL for optimized data retrieval (no client-side filtering needed)
-        let timeframe_param = self.get_timeframe_param(timeframe);
-        let chain_path = self.get_dexscreener_chain_path(chain);
-        let url = format!(
-            "https://dexscreener.com/{}?rankBy={}&order=desc",
-            chain_path, timeframe_param
-        );
 
         debug!(
             "🔍 Navigating to DexScreener trending: {} for {} chain",
@@ -496,58 +736,95 @@ impl DexScreenerClient {
         };
         tokio::time::sleep(Duration::from_millis(pre_nav_delay)).await;
 
-        // Navigate with explicit 60-second timeout (matching working JS scraper)
-        let nav_result = tokio::time::timeout(Duration::from_secs(60), page.goto(&url)).await;
+        // Retry navigation up to 3 times if Cloudflare challenge fails to resolve
+        let mut cloudflare_retry_count = 0;
+        const MAX_CLOUDFLARE_RETRIES: u32 = 3;
 
-        match nav_result {
-            Ok(Ok(_)) => {
-                debug!("✅ Successfully navigated to: {}", url);
+        loop {
+            // Navigate with explicit 60-second timeout (matching working JS scraper)
+            let nav_result =
+                tokio::time::timeout(Duration::from_secs(60), page.goto(&url)).await;
 
-                // Add detailed page debugging
-                if let Ok(title) = page.get_title().await {
-                    info!("📄 Page title: {}", title.unwrap_or("No title".to_string()));
+            match nav_result {
+                Ok(Ok(_)) => {
+                    debug!("✅ Successfully navigated to: {}", url);
+
+                    // Add detailed page debugging
+                    if let Ok(title) = page.get_title().await {
+                        let page_title = title.unwrap_or("No title".to_string());
+                        info!("📄 Page title: {}", page_title);
+                    }
+
+                    // Wait for Cloudflare challenge to resolve if detected
+                    match self.wait_for_cloudflare_challenge(&page, &url).await {
+                        Ok(_) => {
+                            // Cloudflare resolved or not present, proceed
+
+                            // Log page HTML (first 1000 chars for debugging)
+                            if let Ok(html) = page.content().await {
+                                let html_preview = if html.len() > 1000 {
+                                    format!("{}...[TRUNCATED, total length: {}]", &html[..1000], html.len())
+                                } else {
+                                    html.clone()
+                                };
+                                debug!("🔍 Page HTML preview: {}", html_preview);
+
+                                // Check for key indicators
+                                if html.contains("dexscreener") {
+                                    debug!("✅ Page contains 'dexscreener' - likely correct page");
+                                } else {
+                                    warn!("⚠️ Page does not contain 'dexscreener' - possible redirect or error page");
+                                }
+
+                                if html.contains("table") {
+                                    debug!("✅ Page contains table elements");
+                                } else {
+                                    warn!("⚠️ Page does not contain any table elements");
+                                }
+
+                                if html.contains("trending") {
+                                    debug!("✅ Page contains 'trending' - likely on correct page");
+                                } else {
+                                    warn!("⚠️ Page does not contain 'trending' - may not be on trending page");
+                                }
+                            }
+
+                            break;
+                        }
+                        Err(e) => {
+                            cloudflare_retry_count += 1;
+                            if cloudflare_retry_count >= MAX_CLOUDFLARE_RETRIES {
+                                error!(
+                                    "❌ Cloudflare challenge failed to resolve after {} retries",
+                                    MAX_CLOUDFLARE_RETRIES
+                                );
+                                return Err(e);
+                            }
+
+                            warn!(
+                                "⚠️ Cloudflare challenge not resolved, retrying navigation (attempt {}/{})...",
+                                cloudflare_retry_count + 1,
+                                MAX_CLOUDFLARE_RETRIES
+                            );
+
+                            // Wait a bit before retry
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            continue;
+                        }
+                    }
                 }
-
-                // Log page HTML (first 1000 chars for debugging)
-                if let Ok(html) = page.content().await {
-                    let html_preview = if html.len() > 1000 {
-                        format!("{}...[TRUNCATED, total length: {}]", &html[..1000], html.len())
-                    } else {
-                        html.clone()
-                    };
-                    debug!("🔍 Page HTML preview: {}", html_preview);
-
-                    // Check for key indicators
-                    if html.contains("dexscreener") {
-                        debug!("✅ Page contains 'dexscreener' - likely correct page");
-                    } else {
-                        warn!("⚠️ Page does not contain 'dexscreener' - possible redirect or error page");
-                    }
-
-                    if html.contains("table") {
-                        debug!("✅ Page contains table elements");
-                    } else {
-                        warn!("⚠️ Page does not contain any table elements");
-                    }
-
-                    if html.contains("trending") {
-                        debug!("✅ Page contains 'trending' - likely on correct page");
-                    } else {
-                        warn!("⚠️ Page does not contain 'trending' - may not be on trending page");
-                    }
+                Ok(Err(e)) => {
+                    return Err(DexScreenerError::BrowserError(format!(
+                        "Navigation failed: {}",
+                        e
+                    )));
                 }
-            }
-            Ok(Err(e)) => {
-                return Err(DexScreenerError::BrowserError(format!(
-                    "Navigation failed: {}",
-                    e
-                )));
-            }
-            Err(_) => {
-                return Err(DexScreenerError::BrowserError(format!(
-                    "Navigation timed out after 60 seconds: {}",
-                    url
-                )));
+                Err(_) => {
+                    return Err(DexScreenerError::BrowserError(format!(
+                        "Navigation timed out after 60 seconds: {}",
+                        url
+                    )));
+                }
             }
         }
 
@@ -955,6 +1232,15 @@ impl DexScreenerClient {
                 .unwrap_or("Unknown error");
 
             warn!("❌ Server data extraction failed with error: {}", error);
+
+            // Log full HTML when extraction fails (helps debug Cloudflare issues)
+            if let Ok(html) = page.content().await {
+                let html_preview = &html[..html.len().min(3000)];
+                error!(
+                    "🔍 Page HTML when server data extraction failed:\n{}",
+                    html_preview
+                );
+            }
 
             // Additional debugging - log if window.__SERVER_DATA exists
             let check_server_data_script = r#"
@@ -1464,6 +1750,59 @@ impl DexScreenerClient {
             "solana" => "solana",
             _ => "ethereum", // fallback to ethereum for unknown chains
         }
+    }
+
+    /// Wait for Cloudflare challenge to resolve
+    async fn wait_for_cloudflare_challenge(
+        &self,
+        page: &Page,
+        url: &str,
+    ) -> Result<(), DexScreenerError> {
+        // Check if we're on Cloudflare challenge page
+        if let Ok(Some(title)) = page.get_title().await {
+            if title.contains("Just a moment") || title.contains("Cloudflare") {
+                info!(
+                    "🔒 Cloudflare challenge detected (title: '{}'), waiting for resolution...",
+                    title
+                );
+
+                // Poll for up to 30 seconds (15 attempts × 2 seconds)
+                for attempt in 1..=15 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+
+                    if let Ok(Some(new_title)) = page.get_title().await {
+                        if !new_title.contains("Just a moment") && !new_title.contains("Cloudflare")
+                        {
+                            info!(
+                                "✅ Cloudflare challenge resolved after {}s! New title: {}",
+                                attempt * 2,
+                                new_title
+                            );
+                            return Ok(());
+                        }
+                        debug!(
+                            "⏳ Still on Cloudflare challenge page (attempt {}/15): {}",
+                            attempt, new_title
+                        );
+                    }
+                }
+
+                // Still stuck after 30 seconds - log full HTML for debugging
+                if let Ok(html) = page.content().await {
+                    let html_preview = &html[..html.len().min(2000)];
+                    error!(
+                        "❌ Stuck on Cloudflare challenge after 30s for URL: {}\nHTML preview:\n{}",
+                        url, html_preview
+                    );
+                }
+
+                return Err(DexScreenerError::BrowserError(
+                    "Cloudflare challenge not resolved after 30 seconds".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     /// Simulate human behavior (mirrored from working PoC)

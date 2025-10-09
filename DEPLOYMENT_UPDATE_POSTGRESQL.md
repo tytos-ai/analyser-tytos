@@ -36,7 +36,8 @@ pnl_parallel_batch_size = 20
 data_source = \"BirdEye\"
 
 [redis]
-url = \"redis://localhost:6379\"
+# IMPORTANT: For production server, use password-protected Redis URL
+url = \"redis://:dexscreener_732d9e7d7d74573e0040d736e94e3a29@localhost:6379\"
 connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
 

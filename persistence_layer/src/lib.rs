@@ -130,6 +130,13 @@ pub struct BatchJob {
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub filters: serde_json::Value, // Store as JSON for flexibility
     pub individual_jobs: Vec<Uuid>,
+    // Failure tracking (backward compatible with serde default)
+    #[serde(default)]
+    pub successful_wallets: Vec<String>,
+    #[serde(default)]
+    pub failed_wallets: Vec<String>,
+    #[serde(default)]
+    pub error_summary: Option<String>,
     // Results are stored separately and linked by job_id
 }
 

@@ -174,6 +174,9 @@ pub struct DexScreenerConfig {
 
     /// Enable anti-detection features
     pub anti_detection_enabled: bool,
+
+    /// ScraperAPI key for bypassing Cloudflare (always enabled)
+    pub scraperapi_key: String,
 }
 
 // PnLConfig struct removed - all fields were unused in actual P&L processing
@@ -250,6 +253,7 @@ impl Default for SystemConfig {
                 chrome_executable_path: None, // Use system default Chrome
                 headless_mode: true,          // Run in headless mode by default
                 anti_detection_enabled: true, // Enable stealth mode by default
+                scraperapi_key: "".to_string(), // Must be set in config.toml
             },
             api: ApiConfig {
                 host: "0.0.0.0".to_string(),
@@ -461,6 +465,41 @@ pub fn normalize_chain_for_zerion(input: &str) -> std::result::Result<String, St
             Ok("binance-smart-chain".to_string())
         },
         _ => Err(format!("Unsupported chain: '{}'", input))
+    }
+}
+
+/// Normalize chain names to BirdEye API compatible format
+/// BirdEye uses different chain identifiers than Zerion API
+/// - Zerion: "binance-smart-chain" -> BirdEye: "bsc"
+/// - Zerion: "ethereum" -> BirdEye: "ethereum"
+/// - Zerion: "base" -> BirdEye: "base"
+/// - Zerion: "solana" -> BirdEye: "solana"
+pub fn normalize_chain_for_birdeye(input: &str) -> std::result::Result<String, String> {
+    match input.trim().to_lowercase().as_str() {
+        "solana" | "sol" => Ok("solana".to_string()),
+        "ethereum" | "eth" => Ok("ethereum".to_string()),
+        "base" => Ok("base".to_string()),
+        "binance" | "bsc" | "binance-smart-chain" | "bnb" | "binance smart chain" => {
+            Ok("bsc".to_string())
+        },
+        _ => Err(format!("Unsupported chain for BirdEye: '{}'", input))
+    }
+}
+
+/// Denormalize chain names from Zerion format to frontend format
+/// This converts backend internal chain names to frontend-friendly names
+/// - Backend: "binance-smart-chain" -> Frontend: "bsc"
+/// - Backend: "ethereum" -> Frontend: "ethereum"
+/// - Backend: "base" -> Frontend: "base"
+/// - Backend: "solana" -> Frontend: "solana"
+pub fn denormalize_chain_for_frontend(input: &str) -> String {
+    match input.trim().to_lowercase().as_str() {
+        "binance-smart-chain" => "bsc".to_string(),
+        "ethereum" => "ethereum".to_string(),
+        "base" => "base".to_string(),
+        "solana" => "solana".to_string(),
+        // For any other value, return as-is
+        _ => input.to_string(),
     }
 }
 

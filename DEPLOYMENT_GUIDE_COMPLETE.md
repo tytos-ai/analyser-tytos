@@ -105,6 +105,20 @@ ssh root@134.199.211.155 "redis-cli ping"
 PONG
 ```
 
+#### 3.3 Configure Redis Password (Production Security)
+```bash
+# Redis should already be configured with password on production server
+# Verify password authentication works
+ssh root@134.199.211.155 "redis-cli -a dexscreener_732d9e7d7d74573e0040d736e94e3a29 ping"
+```
+
+**Expected Output:**
+```
+PONG
+```
+
+**Note:** If Redis is not yet configured with a password, follow the security hardening steps in Section 9 of this guide before proceeding.
+
 ### Step 4: Project Code Deployment
 
 #### 4.1 Create Project Directory
@@ -139,6 +153,26 @@ drwxr-xr-x  3 1000 1000    4096 Jun 17 23:43 api_server
 drwxr-xr-x  3 1000 1000    4096 Jun 17 23:43 config_manager
 [... other project directories and files ...]
 ```
+
+#### 4.4 Update Config with Redis Password
+```bash
+# Update config.toml to use password-protected Redis URL
+ssh root@134.199.211.155 "sed -i 's|url = \"redis://localhost:6379\"|url = \"redis://:dexscreener_732d9e7d7d74573e0040d736e94e3a29@localhost:6379\"|' /opt/pnl_tracker/config.toml"
+```
+
+**Verify the change:**
+```bash
+ssh root@134.199.211.155 "cat /opt/pnl_tracker/config.toml | grep -A 2 '\[redis\]'"
+```
+
+**Expected Output:**
+```toml
+[redis]
+url = "redis://:dexscreener_732d9e7d7d74573e0040d736e94e3a29@localhost:6379"
+default_lock_ttl_seconds = 600
+```
+
+**Important:** This step is critical for production security. The password ensures Redis cannot be accessed by unauthorized external connections.
 
 ### Step 5: Build the Application
 
@@ -183,7 +217,8 @@ process_loop_ms = 30000
 output_csv_file = \"pnl_results.csv\"
 
 [redis]
-url = \"redis://localhost:6379\"
+# IMPORTANT: For production server, use password-protected Redis URL
+url = \"redis://:dexscreener_732d9e7d7d74573e0040d736e94e3a29@localhost:6379\"
 connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
 

@@ -348,21 +348,29 @@ impl PostgresClient {
         let filters_json =
             serde_json::to_string(&job.filters).map_err(PersistenceError::Serialization)?;
         let status_str = format!("{:?}", job.status);
+        let successful_wallets_json = serde_json::to_string(&job.successful_wallets)
+            .map_err(PersistenceError::Serialization)?;
+        let failed_wallets_json = serde_json::to_string(&job.failed_wallets)
+            .map_err(PersistenceError::Serialization)?;
 
         sqlx::query(
             r#"
-            INSERT INTO batch_jobs 
-            (id, wallet_addresses, chain, status, created_at, started_at, completed_at, filters_json)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (id) 
-            DO UPDATE SET 
+            INSERT INTO batch_jobs
+            (id, wallet_addresses, chain, status, created_at, started_at, completed_at, filters_json,
+             successful_wallets, failed_wallets, error_summary)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (id)
+            DO UPDATE SET
                 wallet_addresses = EXCLUDED.wallet_addresses,
                 chain = EXCLUDED.chain,
                 status = EXCLUDED.status,
                 created_at = EXCLUDED.created_at,
                 started_at = EXCLUDED.started_at,
                 completed_at = EXCLUDED.completed_at,
-                filters_json = EXCLUDED.filters_json
+                filters_json = EXCLUDED.filters_json,
+                successful_wallets = EXCLUDED.successful_wallets,
+                failed_wallets = EXCLUDED.failed_wallets,
+                error_summary = EXCLUDED.error_summary
             "#
         )
         .bind(job.id.to_string())
@@ -373,6 +381,9 @@ impl PostgresClient {
         .bind(job.started_at)
         .bind(job.completed_at)
         .bind(filters_json)
+        .bind(successful_wallets_json)
+        .bind(failed_wallets_json)
+        .bind(&job.error_summary)
         .execute(&self.pool)
         .await
         .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -388,8 +399,9 @@ impl PostgresClient {
     pub async fn get_batch_job(&self, job_id: &str) -> Result<Option<BatchJob>> {
         let row = sqlx::query(
             r#"
-            SELECT id, wallet_addresses, chain, status, created_at, started_at, completed_at, filters_json
-            FROM batch_jobs 
+            SELECT id, wallet_addresses, chain, status, created_at, started_at, completed_at, filters_json,
+                   successful_wallets, failed_wallets, error_summary
+            FROM batch_jobs
             WHERE id = $1
             "#
         )
@@ -411,11 +423,23 @@ impl PostgresClient {
                 let started_at: Option<DateTime<Utc>> = row.get("started_at");
                 let completed_at: Option<DateTime<Utc>> = row.get("completed_at");
                 let filters_json: String = row.get("filters_json");
+                // New fields with backward compatibility - may be NULL in old records
+                let successful_wallets_json: Option<String> = row.try_get("successful_wallets").ok();
+                let failed_wallets_json: Option<String> = row.try_get("failed_wallets").ok();
+                let error_summary: Option<String> = row.try_get("error_summary").ok().flatten();
 
                 let wallet_addresses: Vec<String> = serde_json::from_str(&wallet_addresses_json)
                     .map_err(PersistenceError::Serialization)?;
                 let filters: serde_json::Value =
                     serde_json::from_str(&filters_json).map_err(PersistenceError::Serialization)?;
+
+                // Backward compatibility: default to empty Vec if field is NULL
+                let successful_wallets: Vec<String> = successful_wallets_json
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default();
+                let failed_wallets: Vec<String> = failed_wallets_json
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default();
 
                 let status = match status_str.as_str() {
                     "Pending" => JobStatus::Pending,
@@ -441,6 +465,9 @@ impl PostgresClient {
                     completed_at,
                     filters,
                     individual_jobs: Vec::new(), // Will be populated from batch_results if needed
+                    successful_wallets,
+                    failed_wallets,
+                    error_summary,
                 };
 
                 Ok(Some(job))

@@ -9,6 +9,8 @@ use crate::birdeye_client::{BalanceChange, BirdEyeClient, BirdEyeError, WalletTr
 #[derive(Debug, Clone)]
 pub struct PriceEnricher {
     client: BirdEyeClient,
+    /// Blockchain chain identifier (normalized for BirdEye API)
+    chain: String,
     /// Cache for current prices to avoid redundant API calls
     current_price_cache: HashMap<String, f64>,
     /// Cache for historical prices (keyed by "token_address:unix_time")
@@ -56,9 +58,14 @@ pub enum PriceStrategy {
 
 impl PriceEnricher {
     /// Create a new price enricher
-    pub fn new(client: BirdEyeClient) -> Self {
+    ///
+    /// # Arguments
+    /// * `client` - BirdEye API client
+    /// * `chain` - Chain identifier (normalized for BirdEye API: "solana", "ethereum", "bsc", "base")
+    pub fn new(client: BirdEyeClient, chain: String) -> Self {
         Self {
             client,
+            chain,
             current_price_cache: HashMap::new(),
             historical_price_cache: HashMap::new(),
         }
@@ -101,7 +108,7 @@ impl PriceEnricher {
                     PriceStrategy::Current => {
                         match self
                             .client
-                            .get_current_price("So11111111111111111111111111111112", "solana")
+                            .get_current_price("So11111111111111111111111111111112", &self.chain)
                             .await
                         {
                             Ok(price) => price,
@@ -116,7 +123,7 @@ impl PriceEnricher {
                             .get_historical_price_unix(
                                 "So11111111111111111111111111111112",
                                 unix_time,
-                                Some("solana"),
+                                Some(&self.chain),
                             )
                             .await?
                     }
@@ -126,7 +133,7 @@ impl PriceEnricher {
                             .get_historical_price_unix(
                                 "So11111111111111111111111111111112",
                                 unix_time,
-                                Some("solana"),
+                                Some(&self.chain),
                             )
                             .await
                         {
@@ -136,7 +143,7 @@ impl PriceEnricher {
                                     .client
                                     .get_current_price(
                                         "So11111111111111111111111111111112",
-                                        "solana",
+                                        &self.chain,
                                     )
                                     .await
                                 {
@@ -336,7 +343,7 @@ impl PriceEnricher {
         let addresses = vec![token_address.to_string()];
         let prices = self
             .client
-            .get_multi_price(&addresses, Some("solana"))
+            .get_multi_price(&addresses, Some(&self.chain))
             .await?;
 
         if let Some(&price) = prices.get(token_address) {
@@ -365,7 +372,7 @@ impl PriceEnricher {
 
         let price = self
             .client
-            .get_historical_price_unix(token_address, unix_time, Some("solana"))
+            .get_historical_price_unix(token_address, unix_time, Some(&self.chain))
             .await?;
 
         self.historical_price_cache.insert(cache_key, price);
@@ -422,24 +429,39 @@ impl PriceEnricher {
 
         let addresses: Vec<String> = unique_tokens.into_iter().collect();
         if addresses.is_empty() {
+            info!("[PRICE ENRICHMENT] No tokens need price enrichment");
             return Ok(());
         }
 
-        debug!(
-            "Pre-fetching current prices for {} unique tokens",
-            addresses.len()
+        info!(
+            "[PRICE ENRICHMENT] Starting price enrichment for {} unique tokens on chain {}",
+            addresses.len(),
+            self.chain
         );
+        info!("[PRICE ENRICHMENT] Tokens to enrich: {:?}", addresses);
 
         let prices = self
             .client
-            .get_multi_price(&addresses, Some("solana"))
+            .get_multi_price(&addresses, Some(&self.chain))
             .await?;
+
+        let fetched_count = prices.len();
         self.current_price_cache.extend(prices);
 
         info!(
-            "Pre-fetched {} current prices",
-            self.current_price_cache.len()
+            "[PRICE ENRICHMENT] Successfully pre-fetched {}/{} current prices for chain {}",
+            fetched_count,
+            addresses.len(),
+            self.chain
         );
+
+        if fetched_count < addresses.len() {
+            warn!(
+                "[PRICE ENRICHMENT] Missing {} prices - these tokens won't be enriched",
+                addresses.len() - fetched_count
+            );
+        }
+
         Ok(())
     }
 
