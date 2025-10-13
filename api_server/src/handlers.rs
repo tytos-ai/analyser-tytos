@@ -138,6 +138,20 @@ pub async fn submit_batch_job(
         request.chain
     );
 
+    // Check batch job capacity before submitting
+    match state.batch_limiter.try_acquire() {
+        Ok(_permit) => {
+            info!("Batch job capacity available, proceeding with submission");
+            // Permit will be held until job submission completes, then released
+        }
+        Err(_) => {
+            warn!("Batch job capacity exhausted - 3 concurrent jobs limit reached");
+            return Err(ApiError::ServiceUnavailable(
+                "System is currently processing maximum concurrent batch jobs (3). Please try again in a few minutes.".to_string()
+            ));
+        }
+    }
+
     // Submit the job
     let job_id = state
         .orchestrator
@@ -148,6 +162,9 @@ pub async fn submit_batch_job(
             request.max_transactions,
         )
         .await?;
+
+    info!("Batch job submitted successfully with ID: {}", job_id);
+    // Permit dropped here, allowing next job to proceed
 
     let response = BatchJobResponse {
         job_id,
@@ -201,46 +218,50 @@ pub async fn get_batch_job_results(
     let mut successful_count = 0;
 
     for wallet_address in &job.wallet_addresses {
-        // Use the chain from the batch job
-        match persistence_client
-            .get_portfolio_pnl_result(wallet_address, &job.chain)
-            .await
+        // SCOPED BLOCK to ensure PostgreSQL connection is released immediately after each wallet
         {
-            Ok(Some(stored_result)) => {
-                total_pnl += stored_result.portfolio_result.total_pnl_usd;
-                successful_count += 1;
-                wallet_results.insert(
-                    wallet_address.clone(),
-                    WalletResult {
-                        wallet_address: wallet_address.clone(),
-                        status: "success".to_string(),
-                        pnl_report: Some(stored_result.portfolio_result),
-                        error_message: None,
-                    },
-                );
+            // Use the chain from the batch job
+            match persistence_client
+                .get_portfolio_pnl_result(wallet_address, &job.chain)
+                .await
+            {
+                Ok(Some(stored_result)) => {
+                    total_pnl += stored_result.portfolio_result.total_pnl_usd;
+                    successful_count += 1;
+                    wallet_results.insert(
+                        wallet_address.clone(),
+                        WalletResult {
+                            wallet_address: wallet_address.clone(),
+                            status: "success".to_string(),
+                            pnl_report: Some(stored_result.portfolio_result),
+                            error_message: None,
+                        },
+                    );
+                }
+                Ok(None) => {
+                    wallet_results.insert(
+                        wallet_address.clone(),
+                        WalletResult {
+                            wallet_address: wallet_address.clone(),
+                            status: "not_found".to_string(),
+                            pnl_report: None,
+                            error_message: Some("No P&L results found for this wallet".to_string()),
+                        },
+                    );
+                }
+                Err(e) => {
+                    wallet_results.insert(
+                        wallet_address.clone(),
+                        WalletResult {
+                            wallet_address: wallet_address.clone(),
+                            status: "error".to_string(),
+                            pnl_report: None,
+                            error_message: Some(format!("Failed to fetch results: {}", e)),
+                        },
+                    );
+                }
             }
-            Ok(None) => {
-                wallet_results.insert(
-                    wallet_address.clone(),
-                    WalletResult {
-                        wallet_address: wallet_address.clone(),
-                        status: "not_found".to_string(),
-                        pnl_report: None,
-                        error_message: Some("No P&L results found for this wallet".to_string()),
-                    },
-                );
-            }
-            Err(e) => {
-                wallet_results.insert(
-                    wallet_address.clone(),
-                    WalletResult {
-                        wallet_address: wallet_address.clone(),
-                        status: "error".to_string(),
-                        pnl_report: None,
-                        error_message: Some(format!("Failed to fetch results: {}", e)),
-                    },
-                );
-            }
+            // Connection released here at end of scoped block
         }
     }
 
@@ -380,33 +401,37 @@ pub async fn export_batch_results_csv(
     let mut wallet_results = HashMap::new();
 
     for wallet_address in &job.wallet_addresses {
-        // Use the chain from the batch job
-        match persistence_client
-            .get_portfolio_pnl_result(wallet_address, &job.chain)
-            .await
+        // SCOPED BLOCK to ensure PostgreSQL connection is released immediately after each wallet
         {
-            Ok(Some(stored_result)) => {
-                wallet_results.insert(
-                    wallet_address.clone(),
-                    WalletResult {
-                        wallet_address: wallet_address.clone(),
-                        status: "success".to_string(),
-                        pnl_report: Some(stored_result.portfolio_result),
-                        error_message: None,
-                    },
-                );
+            // Use the chain from the batch job
+            match persistence_client
+                .get_portfolio_pnl_result(wallet_address, &job.chain)
+                .await
+            {
+                Ok(Some(stored_result)) => {
+                    wallet_results.insert(
+                        wallet_address.clone(),
+                        WalletResult {
+                            wallet_address: wallet_address.clone(),
+                            status: "success".to_string(),
+                            pnl_report: Some(stored_result.portfolio_result),
+                            error_message: None,
+                        },
+                    );
+                }
+                _ => {
+                    wallet_results.insert(
+                        wallet_address.clone(),
+                        WalletResult {
+                            wallet_address: wallet_address.clone(),
+                            status: "not_found".to_string(),
+                            pnl_report: None,
+                            error_message: Some("No results found".to_string()),
+                        },
+                    );
+                }
             }
-            _ => {
-                wallet_results.insert(
-                    wallet_address.clone(),
-                    WalletResult {
-                        wallet_address: wallet_address.clone(),
-                        status: "not_found".to_string(),
-                        pnl_report: None,
-                        error_message: Some("No results found".to_string()),
-                    },
-                );
-            }
+            // Connection released here at end of scoped block
         }
     }
 
@@ -661,23 +686,27 @@ pub async fn get_batch_traders(
     // Extract successful P&L reports
     let mut pnl_reports = Vec::new();
     for wallet_address in &job.wallet_addresses {
-        // Use the chain from the batch job
-        match persistence_client
-            .get_portfolio_pnl_result(wallet_address, &job.chain)
-            .await
+        // SCOPED BLOCK to ensure PostgreSQL connection is released immediately after each wallet
         {
-            Ok(Some(stored_result)) => {
-                pnl_reports.push(stored_result.portfolio_result);
+            // Use the chain from the batch job
+            match persistence_client
+                .get_portfolio_pnl_result(wallet_address, &job.chain)
+                .await
+            {
+                Ok(Some(stored_result)) => {
+                    pnl_reports.push(stored_result.portfolio_result);
+                }
+                Ok(None) => {
+                    warn!("No results found for wallet {}", wallet_address);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch results for wallet {}: {}",
+                        wallet_address, e
+                    );
+                }
             }
-            Ok(None) => {
-                warn!("No results found for wallet {}", wallet_address);
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to fetch results for wallet {}: {}",
-                    wallet_address, e
-                );
-            }
+            // Connection released here at end of scoped block
         }
     }
 

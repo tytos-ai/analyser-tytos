@@ -10,7 +10,7 @@ enabled_chains = ["solana", "ethereum", "base", "binance-smart-chain"]
 default_chain = "solana"
 
 [redis]
-url = "redis://localhost:6379"
+url = "redis://134.199.211.155:6379"
 default_lock_ttl_seconds = 600
 
 

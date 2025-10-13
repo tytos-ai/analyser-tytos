@@ -29,6 +29,7 @@ struct ZerionPositionsResponse {
 struct ZerionPosition {
     #[serde(rename = "type")]
     _position_type: Option<String>,
+    #[allow(dead_code)]
     id: Option<String>,
     attributes: ZerionPositionAttributes,
 }

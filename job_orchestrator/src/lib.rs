@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -255,6 +255,7 @@ pub struct JobOrchestrator {
     running_token_analysis_jobs: Arc<Mutex<HashMap<Uuid, TokenAnalysisJob>>>,
     // batch_jobs stored in PostgreSQL via persistence_client
     instance_id: String, // Unique identifier for this orchestrator instance
+    wallet_semaphore: Arc<Semaphore>, // Limit concurrent wallet processing to prevent resource exhaustion
 }
 
 impl JobOrchestrator {
@@ -337,6 +338,7 @@ impl JobOrchestrator {
             running_jobs: Arc::new(Mutex::new(HashMap::new())),
             running_token_analysis_jobs: Arc::new(Mutex::new(HashMap::new())),
             instance_id,
+            wallet_semaphore: Arc::new(Semaphore::new(5)), // Limit to 5 concurrent wallet processing tasks
         })
     }
 
@@ -746,32 +748,61 @@ impl JobOrchestrator {
             chain
         );
 
-        // Process wallets in parallel with timeout
+        // Process wallets in parallel with controlled concurrency (max 5 at a time)
         let wallet_count = wallet_addresses.len();
         info!(
-            "⚡ Starting parallel processing of {} wallets (timeout: 10 minutes per wallet)...",
+            "⚡ Starting controlled parallel processing of {} wallets (max 5 concurrent, timeout: 10 minutes per wallet)...",
             wallet_count
         );
-        let futures = wallet_addresses.iter().enumerate().map(|(index, wallet)| {
+
+        // Create tasks vector to store spawned futures
+        let mut tasks = Vec::new();
+
+        // Process wallets with semaphore control
+        for (index, wallet) in wallet_addresses.iter().enumerate() {
             let wallet_clone = wallet.clone();
             let chain_clone = chain.clone();
             let time_range_clone = time_range.clone();
-            async move {
+            let semaphore = self.wallet_semaphore.clone();
+            let self_clone = self.clone();
+
+            let task = tokio::spawn(async move {
+                // Acquire semaphore permit before processing
+                let _permit = semaphore.acquire_owned().await.expect("Semaphore closed");
+
                 let wallet_start_time = std::time::Instant::now();
-                info!("🔄 Processing wallet {}/{}: {} on {}", index + 1, wallet_count, wallet_clone, chain_clone);
+                info!("🔄 Processing wallet {}/{}: {} on {} (acquired processing slot)", index + 1, wallet_count, wallet_clone, chain_clone);
 
                 // Add timeout for each wallet processing (10 minutes max)
                 let timeout_duration = Duration::from_secs(600);
                 let result = match tokio::time::timeout(
                     timeout_duration,
-                    self.process_single_wallet(&wallet_clone, &chain_clone, time_range_clone.as_deref(), max_transactions)
+                    self_clone.process_single_wallet(&wallet_clone, &chain_clone, time_range_clone.as_deref(), max_transactions)
                 ).await {
                     Ok(Ok(report)) => {
                         let elapsed = wallet_start_time.elapsed();
                         info!("✅ Wallet {}/{} completed successfully in {:.2}s: {} (Realized P&L: ${:.2}, Unrealized P&L: ${:.2})",
                               index + 1, wallet_count, elapsed.as_secs_f64(), wallet_clone,
                               report.total_realized_pnl_usd, report.total_unrealized_pnl_usd);
-                        Ok(report)
+
+                        // Store result immediately to PostgreSQL and drop the large report object
+                        let persistence_client = &self_clone.persistence_client;
+                        match persistence_client
+                            .store_pnl_result_with_source(&wallet_clone, &chain_clone, &report, "batch")
+                            .await
+                        {
+                            Ok(_) => {
+                                info!("✅ Successfully stored P&L result for wallet {} from batch job {}", wallet_clone, job_id);
+                                // Drop report immediately to free memory (~2MB)
+                                drop(report);
+                                Ok(())  // Return unit type instead of full report
+                            }
+                            Err(e) => {
+                                warn!("❌ Failed to store P&L result for wallet {}: {}", wallet_clone, e);
+                                drop(report);  // Drop even on storage failure
+                                Err(OrchestratorError::Persistence(e.to_string()))
+                            }
+                        }
                     },
                     Ok(Err(e)) => {
                         let elapsed = wallet_start_time.elapsed();
@@ -787,23 +818,42 @@ impl JobOrchestrator {
                         ))
                     },
                 };
+                // Permit automatically dropped here, releasing slot
                 (wallet_clone, result)
-            }
-        });
+            });
+
+            tasks.push(task);
+        }
 
         info!(
             "⏳ Waiting for all {} wallet processing tasks to complete...",
             wallet_count
         );
-        let results = join_all(futures).await;
+        let task_results = join_all(tasks).await;
+
+        // Unwrap JoinHandle results - now returns Result<()> instead of Result<PortfolioPnLResult>
+        // Results are already stored to PostgreSQL, we just need success/failure tracking
+        let results: Vec<(String, Result<()>)> = task_results
+            .into_iter()
+            .filter_map(|join_result| {
+                match join_result {
+                    Ok(result) => Some(result),
+                    Err(e) => {
+                        error!("Task join error: {}", e);
+                        None
+                    }
+                }
+            })
+            .collect();
+
         let processing_elapsed = start_time.elapsed();
         info!(
             "🏁 All wallet processing completed in {:.2}s",
             processing_elapsed.as_secs_f64()
         );
 
-        // Store individual P&L results in main PostgreSQL table and batch results
-        info!("💾 Storing P&L results to database...");
+        // Count successes and failures - results already stored to PostgreSQL by tasks
+        info!("📊 Tallying batch job results...");
         let (successful_count, _successful_wallets, failed_wallets) = {
             let mut success_count = 0;
             let mut successful_wallets = Vec::new();
@@ -818,38 +868,17 @@ impl JobOrchestrator {
                 total_results - successful_results
             );
 
-            // Store each successful wallet's rich P&L result in main pnl_results table
+            // Tally successes and failures (actual storage already happened in tasks)
             for (wallet, result) in &results {
-                if let Ok(portfolio_result) = result {
-                    // Store rich portfolio result in main table for individual wallet queries
-                    let persistence_client = &self.persistence_client;
-                    // Use the chain from the batch job
-                    info!("💾 Storing result for wallet: {} (Realized: ${:.2}, Unrealized: ${:.2}, {} tokens)",
-                          wallet, portfolio_result.total_realized_pnl_usd,
-                          portfolio_result.total_unrealized_pnl_usd, portfolio_result.token_results.len());
-                    match persistence_client
-                        .store_pnl_result_with_source(wallet, &chain, portfolio_result, "batch")
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(
-                                "✅ Successfully stored P&L result for wallet {} from batch job {}",
-                                wallet, job_id
-                            );
-                            success_count += 1;
-                            successful_wallets.push(wallet.clone());
-                        }
-                        Err(e) => {
-                            warn!(
-                                "❌ Failed to store P&L result for wallet {} from batch job {}: {}",
-                                wallet, job_id, e
-                            );
-                            failed_wallets.push(wallet.clone());
-                        }
+                match result {
+                    Ok(()) => {
+                        success_count += 1;
+                        successful_wallets.push(wallet.clone());
                     }
-                } else if let Err(e) = result {
-                    warn!("⚠️ Skipping storage for failed wallet {}: {}", wallet, e);
-                    failed_wallets.push(wallet.clone());
+                    Err(e) => {
+                        warn!("⚠️ Wallet {} failed: {}", wallet, e);
+                        failed_wallets.push(wallet.clone());
+                    }
                 }
             }
 
@@ -896,6 +925,9 @@ impl JobOrchestrator {
 
             (success_count, successful_wallets, failed_wallets)
         };
+
+        // EXPLICIT CLEANUP - Free results vector now that we've tallied everything
+        drop(results);  // Free lightweight result metadata
 
         let total_elapsed = start_time.elapsed();
 
@@ -1202,49 +1234,54 @@ impl JobOrchestrator {
         // Step 2: Fetch current prices for unrealized P&L
         info!("💲 Step 2a/3: Fetching current prices from BirdEye for unrealized P&L...");
 
-        // Extract unique token addresses from transactions
-        let mut token_addresses: Vec<String> = Vec::new();
-        for tx in &zerion_transactions {
-            for transfer in &tx.attributes.transfers {
-                if let Some(fungible_info) = &transfer.fungible_info {
-                    // Get the token address for the current chain
-                    for implementation in &fungible_info.implementations {
-                        if implementation.chain_id.to_lowercase() == chain.to_lowercase() {
-                            if let Some(address) = &implementation.address {
-                                if !token_addresses.contains(address) {
-                                    token_addresses.push(address.clone());
+        // Fetch current prices from BirdEye and convert f64 to Decimal
+        // SCOPED BLOCK for early RAII cleanup of token_addresses vector
+        let current_prices = {
+            // Extract unique token addresses from transactions
+            let mut token_addresses: Vec<String> = Vec::new();
+            for tx in &zerion_transactions {
+                for transfer in &tx.attributes.transfers {
+                    if let Some(fungible_info) = &transfer.fungible_info {
+                        // Get the token address for the current chain
+                        for implementation in &fungible_info.implementations {
+                            if implementation.chain_id.to_lowercase() == chain.to_lowercase() {
+                                if let Some(address) = &implementation.address {
+                                    if !token_addresses.contains(address) {
+                                        token_addresses.push(address.clone());
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        info!("📊 Found {} unique tokens to fetch prices for", token_addresses.len());
+            info!("📊 Found {} unique tokens to fetch prices for", token_addresses.len());
 
-        // Fetch current prices from BirdEye and convert f64 to Decimal
-        let current_prices = if let Some(birdeye_client) = &self.birdeye_client {
-            match birdeye_client.get_current_prices(&token_addresses, &chain).await {
-                Ok(prices) => {
-                    // Convert HashMap<String, f64> to HashMap<String, Decimal>
-                    let decimal_prices: HashMap<String, Decimal> = prices
-                        .into_iter()
-                        .filter_map(|(addr, price)| {
-                            Decimal::try_from(price).ok().map(|decimal_price| (addr, decimal_price))
-                        })
-                        .collect();
-                    info!("✅ Successfully fetched {} current prices from BirdEye", decimal_prices.len());
-                    decimal_prices
+            // Fetch prices and let token_addresses drop at end of this scope
+            if let Some(birdeye_client) = &self.birdeye_client {
+                match birdeye_client.get_current_prices(&token_addresses, &chain).await {
+                    Ok(prices) => {
+                        // Convert HashMap<String, f64> to HashMap<String, Decimal>
+                        let decimal_prices: HashMap<String, Decimal> = prices
+                            .into_iter()
+                            .filter_map(|(addr, price)| {
+                                Decimal::try_from(price).ok().map(|decimal_price| (addr, decimal_price))
+                            })
+                            .collect();
+                        info!("✅ Successfully fetched {} current prices from BirdEye", decimal_prices.len());
+                        decimal_prices
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Failed to fetch prices from BirdEye: {}, unrealized P&L will be 0", e);
+                        HashMap::new()
+                    }
                 }
-                Err(e) => {
-                    warn!("⚠️  Failed to fetch prices from BirdEye: {}, unrealized P&L will be 0", e);
-                    HashMap::new()
-                }
+            } else {
+                warn!("⚠️  BirdEye client not available, unrealized P&L will be 0");
+                HashMap::new()
             }
-        } else {
-            warn!("⚠️  BirdEye client not available, unrealized P&L will be 0");
-            HashMap::new()
+            // token_addresses dropped here automatically at end of scope (~KB freed)
         };
 
         // Step 2b: Calculate P&L using Zerion transactions
@@ -1266,6 +1303,9 @@ impl JobOrchestrator {
             )
             .await?;
         let pnl_elapsed = pnl_start.elapsed();
+
+        // Note: token_addresses already dropped at end of scoped block above (~KB freed)
+        // Note: current_prices already moved into calculate_pnl_with_zerion_transactions
 
         let total_elapsed = step_start.elapsed();
         info!(
@@ -1359,6 +1399,12 @@ impl JobOrchestrator {
             .map_err(|e| {
                 OrchestratorError::PnL(format!("Portfolio P&L calculation failed: {}", e))
             })?;
+
+        // EXPLICIT CLEANUP - Free memory immediately after P&L calculation completes
+        drop(zerion_transactions);  // Free original transaction data (~2MB)
+        // Note: financial_events already moved into events_by_token loop (line 1372)
+        // Note: events_by_token already consumed by calculate_portfolio_pnl
+        // Note: current_prices already consumed by calculate_portfolio_pnl
 
         info!(
             "🎯 Portfolio P&L Summary: Realized ${:.2}, Unrealized ${:.2}, Total ${:.2}",
@@ -1953,6 +1999,7 @@ impl Clone for JobOrchestrator {
             running_jobs: self.running_jobs.clone(),
             running_token_analysis_jobs: self.running_token_analysis_jobs.clone(),
             instance_id: self.instance_id.clone(),
+            wallet_semaphore: self.wallet_semaphore.clone(),
         }
     }
 }

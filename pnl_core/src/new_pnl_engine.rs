@@ -246,24 +246,28 @@ impl NewPnLEngine {
         // Also check for known exchange currency addresses across chains
         let is_known_exchange_currency = matches!(
             token_result.token_address.as_str(),
-            // Solana
-            // "So11111111111111111111111111111111111111112" | // SOL - Removed to align with Universal Token Treatment principle
-            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" | // USDT on Solana
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" | // USDC on Solana
+            // Solana - Native & Stablecoins
+            "So11111111111111111111111111111111111111112" |  // SOL (native currency)
+            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" | // USDT
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" | // USDC
 
-            // Ethereum
+            // Ethereum - Wrapped & Stablecoins
             "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" | // WETH
-            "0xdAC17F958D2ee523a2206206994597C13D831ec7" | // USDT on Ethereum
-            "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" | // USDC on Ethereum
+            "0xdAC17F958D2ee523a2206206994597C13D831ec7" | // USDT
+            "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" | // USDC
+            "0x6B175474E89094C44Da98b954EedeAC495271d0F" | // DAI
 
-            // Binance Smart Chain
+            // Binance Smart Chain - Wrapped & Stablecoins
             "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" | // WBNB
-            "0x55d398326f99059fF775485246999027B3197955" | // USDT on BSC
-            "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d" | // USDC on BSC
+            "0x55d398326f99059fF775485246999027B3197955" | // USDT
+            "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d" | // USDC
+            "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3" | // DAI
+            "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56" | // BUSD (deprecated)
 
-            // Base
-            "0x4200000000000000000000000000000000000006" | // WETH on Base
-            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" // USDC on Base
+            // Base - Wrapped ETH & Stablecoins
+            "0x4200000000000000000000000000000000000006" | // WETH
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" | // USDC
+            "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"  // USDT
         );
 
         is_phantom_pattern || is_known_exchange_currency
@@ -440,9 +444,19 @@ impl NewPnLEngine {
             longest_losing_streak,
         ) = self.calculate_portfolio_streaks(&token_results);
 
-        // Calculate profit percentage
+        // Calculate total return percentage (includes original investment)
+        // Formula: ((total_sells + current_holdings_value) / total_invested) × 100
+        // Result interpretation: <100% = loss, 100% = break even, >100% = profit
+        // E.g., 130% means you got 130% of your investment back (30% profit)
+        let current_holdings_value = total_unrealized_pnl + token_results
+            .iter()
+            .filter(|t| !Self::is_exchange_currency_token(t))
+            .filter_map(|t| t.remaining_position.as_ref())
+            .map(|p| p.total_cost_basis_usd)
+            .sum::<Decimal>();
+
         let profit_percentage = if total_invested_usd > Decimal::ZERO {
-            ((total_pnl / total_invested_usd) * Decimal::from(100)).round_dp(2)
+            (((total_returned_usd + current_holdings_value) / total_invested_usd) * Decimal::from(100)).round_dp(2)
         } else {
             Decimal::ZERO
         };

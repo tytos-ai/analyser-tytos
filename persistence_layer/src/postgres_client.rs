@@ -21,8 +21,8 @@ impl PostgresClient {
     pub async fn new(database_url: &str) -> Result<Self> {
         // Configure connection pool with production settings
         let pool = PgPoolOptions::new()
-            .max_connections(20) // Limit per app instance
-            .min_connections(5) // Keep warm connections
+            .max_connections(100) // Increased from 20 for better concurrency
+            .min_connections(20) // Increased from 5 for better warm pool
             .acquire_timeout(Duration::from_secs(30)) // How long to wait for a connection
             .idle_timeout(Duration::from_secs(600)) // Close idle connections after 10 minutes
             .max_lifetime(Duration::from_secs(1800)) // Force refresh connections after 30 minutes
@@ -32,7 +32,7 @@ impl PostgresClient {
                 PersistenceError::PoolCreation(format!("PostgreSQL connection error: {}", e))
             })?;
 
-        info!("PostgreSQL pool initialized: max_connections=20, min_connections=5, acquire_timeout=30s");
+        info!("PostgreSQL pool initialized: max_connections=100, min_connections=20, acquire_timeout=30s");
         Ok(Self { pool })
     }
 
@@ -41,7 +41,7 @@ impl PostgresClient {
         let size = self.pool.size();
         let idle = self.pool.num_idle();
         // For SQLx 0.6, we'll use a hardcoded max (matching our configuration)
-        let max_size = 20u32; // This matches our max_connections setting
+        let max_size = 100u32; // Updated from 20u32 to match new max_connections
         (size, idle as u32, max_size)
     }
 
@@ -962,28 +962,32 @@ impl PostgresClient {
 
     /// Backfill metrics for existing P&L results that have zero values
     pub async fn backfill_advanced_filtering_metrics(&self) -> Result<()> {
+        use sqlx::Row;
+        use futures::stream::StreamExt;
+
         info!("Starting backfill of advanced filtering metrics for existing records");
 
-        // Find records with zero values for the new metrics
-        let rows = sqlx::query(
+        // Use streaming fetch() instead of fetch_all() to avoid holding connection
+        // for the entire result set - releases connection between row fetches
+        let mut row_stream = sqlx::query(
             r#"
-            SELECT wallet_address, chain, portfolio_json 
-            FROM pnl_results 
+            SELECT wallet_address, chain, portfolio_json
+            FROM pnl_results
             WHERE (unique_tokens_count = 0 OR active_days_count = 0) AND portfolio_json IS NOT NULL
             "#,
         )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| {
-            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("PostgreSQL error: {}", e),
-            )))
-        })?;
+        .fetch(&self.pool);
 
         let mut updated_count = 0;
 
-        for row in rows {
+        // Process rows one at a time using streaming fetch
+        while let Some(row_result) = row_stream.next().await {
+            let row = row_result.map_err(|e| {
+                PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("PostgreSQL error fetching row: {}", e),
+                )))
+            })?;
             let wallet_address: String = row.get("wallet_address");
             let chain: String = row.get("chain");
             let portfolio_json_str: String = row.get("portfolio_json");

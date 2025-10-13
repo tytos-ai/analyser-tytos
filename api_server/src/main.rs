@@ -9,6 +9,7 @@ use dex_client::BirdEyeClient;
 use job_orchestrator::{JobOrchestrator, OrchestratorError};
 use pnl_core::PnLError;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::info;
@@ -32,6 +33,8 @@ pub struct AppState {
     pub persistence_client: Arc<persistence_layer::PersistenceClient>,
     // API v2 dependencies
     pub birdeye_client: Arc<BirdEyeClient>,
+    // Concurrency control
+    pub batch_limiter: Arc<Semaphore>, // Limit concurrent batch jobs to prevent system overload
 }
 
 /// Main application error type
@@ -55,6 +58,8 @@ pub enum ApiError {
     InternalServerError(String),
     #[error("Internal server error: {0}")]
     Internal(String),
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 impl IntoResponse for ApiError {
@@ -71,6 +76,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            ApiError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
         };
 
         let body = Json(ErrorResponse {
@@ -125,6 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         service_manager,
         persistence_client,
         birdeye_client,
+        batch_limiter: Arc::new(Semaphore::new(3)), // Limit to 3 concurrent batch jobs
     };
 
     // Build the application router
