@@ -58,6 +58,30 @@ pub struct StoredPortfolioPnLResult {
     pub is_archived: bool,
     pub unique_tokens_count: Option<u32>,
     pub active_days_count: Option<u32>,
+    #[serde(default)]
+    pub incomplete_trades_count: u32,  // Count of trades with only OUT transfers (no IN side)
+}
+
+/// Lightweight summary of portfolio P&L result (without full portfolio_json)
+/// Used for efficient listing and filtering without loading full result data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPortfolioPnLResultSummary {
+    pub wallet_address: String,
+    pub chain: String,
+    pub total_pnl_usd: f64,
+    pub realized_pnl_usd: f64,
+    pub unrealized_pnl_usd: f64,
+    pub roi_percentage: f64,
+    pub total_trades: i32,
+    pub win_rate: f64,
+    pub avg_hold_time_minutes: f64,
+    pub unique_tokens_count: Option<u32>,
+    pub active_days_count: Option<u32>,
+    pub analyzed_at: chrono::DateTime<chrono::Utc>,
+    pub is_favorited: bool,
+    pub is_archived: bool,
+    #[serde(default)]
+    pub incomplete_trades_count: u32,  // Count of trades with only OUT transfers (no IN side)
 }
 
 /// Aggregated P&L summary statistics
@@ -405,9 +429,10 @@ impl PersistenceClient {
         chain: &str,
         portfolio_result: &pnl_core::PortfolioPnLResult,
         analysis_source: &str,
+        incomplete_trades_count: u32,
     ) -> Result<()> {
         self.postgres_client
-            .store_pnl_result_with_source(wallet_address, chain, portfolio_result, analysis_source)
+            .store_pnl_result_with_source(wallet_address, chain, portfolio_result, analysis_source, incomplete_trades_count)
             .await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }
@@ -431,6 +456,18 @@ impl PersistenceClient {
     ) -> Result<(Vec<StoredPortfolioPnLResult>, usize)> {
         self.postgres_client
             .get_all_pnl_results(offset, limit, chain_filter)
+            .await
+            .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
+    }
+
+    pub async fn get_all_pnl_results_summary(
+        &self,
+        offset: usize,
+        limit: usize,
+        chain_filter: Option<&str>,
+    ) -> Result<(Vec<StoredPortfolioPnLResultSummary>, usize)> {
+        self.postgres_client
+            .get_all_pnl_results_summary(offset, limit, chain_filter)
             .await
             .map_err(|e| PersistenceError::PoolCreation(e.to_string()))
     }

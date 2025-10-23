@@ -86,12 +86,12 @@ pub async fn get_wallet_analysis_v2(
 
     debug!(
         "Converted {} financial events for wallet {}",
-        financial_events.len(),
+        financial_events.events.len(),
         wallet_address
     );
 
     // Group events by token
-    let events_by_token = pnl_core::NewTransactionParser::group_events_by_token(financial_events);
+    let events_by_token = pnl_core::NewTransactionParser::group_events_by_token(financial_events.events);
 
     let total_events: usize = events_by_token.values().map(|events| events.len()).sum();
     debug!(

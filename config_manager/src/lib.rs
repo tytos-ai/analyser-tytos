@@ -28,6 +28,9 @@ pub struct SystemConfig {
     /// Redis configuration
     pub redis: RedisConfig,
 
+    /// Retry configuration for external API calls
+    pub retry: RetryConfig,
+
     /// BirdEye API configuration (used for trending tokens and top traders discovery only)
     pub birdeye: BirdEyeConfig,
 
@@ -90,6 +93,21 @@ pub struct RedisConfig {
 
     /// Default lock TTL in seconds
     pub default_lock_ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts
+    pub max_attempts: u32,
+
+    /// Delays in milliseconds for rate limit (429) retries
+    pub rate_limit_delays_ms: Vec<u64>,
+
+    /// Delays in milliseconds for server error (5xx) retries
+    pub server_error_delays_ms: Vec<u64>,
+
+    /// Delays in milliseconds for timeout retries
+    pub timeout_delays_ms: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +240,12 @@ impl Default for SystemConfig {
             redis: RedisConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 default_lock_ttl_seconds: 600,
+            },
+            retry: RetryConfig {
+                max_attempts: 3,
+                rate_limit_delays_ms: vec![500, 1000, 2000],
+                server_error_delays_ms: vec![300, 600, 1200],
+                timeout_delays_ms: vec![500, 1000],
             },
             zerion: ZerionConfig {
                 api_key: "".to_string(), // Must be set in .env or config file

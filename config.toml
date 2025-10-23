@@ -10,7 +10,7 @@ enabled_chains = ["solana", "ethereum", "base", "binance-smart-chain"]
 default_chain = "solana"
 
 [redis]
-url = "redis://134.199.211.155:6379"
+url = "redis://localhost:6379"
 default_lock_ttl_seconds = 600
 
 
@@ -24,6 +24,16 @@ enabled = true
 min_boost_amount = 100.0    # Minimum boost amount to consider
 max_boosted_tokens = 25     # Limit boosted tokens for quality filtering
 scraperapi_key = "88313baee2043c1503199e462e1b3b7f"  # ScraperAPI key for Cloudflare bypass
+
+# Retry configuration for external API calls (BirdEye, Zerion)
+[retry]
+max_attempts = 3
+# Rate limit (429) retry delays in milliseconds
+rate_limit_delays_ms = [500, 1000, 2000]
+# Server error (5xx) retry delays in milliseconds
+server_error_delays_ms = [300, 600, 1200]
+# Timeout retry delays in milliseconds
+timeout_delays_ms = [500, 1000]
 
 # BirdEye configuration - used only for current portfolio fetching in hybrid mode
 [birdeye]

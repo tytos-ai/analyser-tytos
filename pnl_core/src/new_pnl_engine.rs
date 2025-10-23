@@ -235,6 +235,13 @@ impl NewPnLEngine {
     /// Check if a token is an exchange currency (used for trading, not investment)
     /// This prevents double-counting in portfolio totals across all supported chains
     fn is_exchange_currency_token(token_result: &TokenPnLResult) -> bool {
+        // Debug: Log the token being checked
+        debug!(
+            "🔍 Checking if {} ({}) is an exchange currency",
+            token_result.token_symbol,
+            token_result.token_address
+        );
+
         // Check if this is an exchange currency based on trading patterns:
         // 1. All trades have very short hold times (1-2 seconds = phantom trades)
         // 2. All trades have $0 P&L (phantom buy-sell pairs)
@@ -243,11 +250,22 @@ impl NewPnLEngine {
             token_result.total_realized_pnl_usd.abs() < Decimal::new(1, 2) && // 0.01 = ~$0 P&L
             token_result.total_trades > 0;
 
+        debug!(
+            "   Phantom pattern check: avg_hold_time={:.2}min, pnl=${:.4}, trades={} => {}",
+            token_result.avg_hold_time_minutes,
+            token_result.total_realized_pnl_usd,
+            token_result.total_trades,
+            is_phantom_pattern
+        );
+
         // Also check for known exchange currency addresses across chains
+        // NOTE: SOL has multiple address formats in the wild, so we check all variations
         let is_known_exchange_currency = matches!(
             token_result.token_address.as_str(),
             // Solana - Native & Stablecoins
-            "So11111111111111111111111111111111111111112" |  // SOL (native currency)
+            "So11111111111111111111111111111111111111112" |  // SOL (native, full base58)
+            "11111111111111111111111111111111" |             // SOL (32 ones, truncated format)
+            "11111111111111111111111111111112" |             // SOL (base58 decoded variant)
             "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" | // USDT
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" | // USDC
 
@@ -270,7 +288,31 @@ impl NewPnLEngine {
             "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"  // USDT
         );
 
-        is_phantom_pattern || is_known_exchange_currency
+        debug!(
+            "   Known address check: {} => {}",
+            token_result.token_address,
+            is_known_exchange_currency
+        );
+
+        let should_filter = is_phantom_pattern || is_known_exchange_currency;
+
+        if should_filter {
+            info!(
+                "✓ Filtering {} ({}) - phantom_pattern: {}, known_address: {}",
+                token_result.token_symbol,
+                token_result.token_address,
+                is_phantom_pattern,
+                is_known_exchange_currency
+            );
+        } else {
+            debug!(
+                "✗ NOT filtering {} ({}) - will be included in results",
+                token_result.token_symbol,
+                token_result.token_address
+            );
+        }
+
+        should_filter
     }
 
     /// Enable balance fetching by setting the balance fetcher
@@ -330,6 +372,16 @@ impl NewPnLEngine {
 
             match self.calculate_token_pnl(events, current_price) {
                 Ok(token_result) => {
+                    // Skip exchange currencies entirely - don't add to results or aggregates
+                    if Self::is_exchange_currency_token(&token_result) {
+                        debug!(
+                            "Skipping exchange currency {} from portfolio results (used for trading, not investment)",
+                            token_result.token_symbol
+                        );
+                        continue;
+                    }
+
+                    // Only non-exchange-currency tokens reach here
                     total_realized_pnl += token_result.total_realized_pnl_usd;
                     total_unrealized_pnl += token_result.total_unrealized_pnl_usd;
                     total_trades += token_result.total_trades;
@@ -423,16 +475,15 @@ impl NewPnLEngine {
             Decimal::ZERO
         };
 
-        // Calculate portfolio investment metrics (exclude exchange currencies to avoid double counting)
+        // Calculate portfolio investment metrics
+        // (exchange currencies already excluded from token_results)
         let total_invested_usd: Decimal = token_results
             .iter()
-            .filter(|t| !Self::is_exchange_currency_token(t))
             .map(|t| t.total_invested_usd)
             .sum();
 
         let total_returned_usd: Decimal = token_results
             .iter()
-            .filter(|t| !Self::is_exchange_currency_token(t))
             .map(|t| t.total_returned_usd)
             .sum();
 
@@ -448,9 +499,9 @@ impl NewPnLEngine {
         // Formula: ((total_sells + current_holdings_value) / total_invested) × 100
         // Result interpretation: <100% = loss, 100% = break even, >100% = profit
         // E.g., 130% means you got 130% of your investment back (30% profit)
+        // (exchange currencies already excluded from token_results)
         let current_holdings_value = total_unrealized_pnl + token_results
             .iter()
-            .filter(|t| !Self::is_exchange_currency_token(t))
             .filter_map(|t| t.remaining_position.as_ref())
             .map(|p| p.total_cost_basis_usd)
             .sum::<Decimal>();
@@ -760,7 +811,7 @@ impl NewPnLEngine {
             })
             .collect();
 
-        info!("🔄 Starting FIFO matching - Phase 1: Consume received tokens first");
+        info!("🔄 Starting FIFO matching - Phase 1: Match BOUGHT tokens FIRST (priority), Phase 2: Received tokens (fallback only)");
         let total_available_receives: Decimal = remaining_receives.iter().map(|r| r.remaining_quantity).sum();
         info!("   Total received tokens available: {}", total_available_receives);
 
@@ -777,150 +828,169 @@ impl NewPnLEngine {
                 sell_event.usd_price_per_token
             );
 
-            // Phase 1: First consume received tokens (FIFO within receives)
-            let mut total_consumed_from_receives = Decimal::ZERO;
-            for received_token in &mut remaining_receives {
-                if remaining_sell_quantity <= Decimal::ZERO {
+            // ═══════════════════════════════════════════════════════════
+            // NEW PHASE 1: Match BOUGHT tokens FIRST (priority)
+            // ═══════════════════════════════════════════════════════════
+            info!(
+                "🔄 Phase 1: Matching {} {} against BOUGHT tokens (priority)",
+                sell_event.quantity,
+                sell_event.token_symbol
+            );
+
+            // Create a sell event tracker for matching
+            let mut remaining_sell_event = sell_event.clone();
+            remaining_sell_event.quantity = remaining_sell_quantity;
+            remaining_sell_event.usd_value = remaining_sell_quantity * sell_event.usd_price_per_token;
+
+            // Match against bought tokens using traditional FIFO
+            let mut total_matched_from_buys = Decimal::ZERO;
+            for buy_event in buy_events.iter_mut() {
+                if remaining_sell_event.quantity <= Decimal::ZERO {
                     break;
                 }
 
-                // Only consume receives that happened BEFORE or AT the sell timestamp
-                if received_token.remaining_quantity > Decimal::ZERO
-                    && received_token.receive_event.timestamp <= sell_event.timestamp {
-                    let consumed_quantity = remaining_sell_quantity.min(received_token.remaining_quantity);
+                if buy_event.quantity > Decimal::ZERO && buy_event.timestamp <= remaining_sell_event.timestamp {
+                    let matched_quantity = remaining_sell_event.quantity.min(buy_event.quantity);
 
-                    // Record the consumption
-                    receive_consumptions.push(ReceiveConsumption {
-                        receive_event: received_token.receive_event.clone(),
-                        sell_event: sell_event.clone(),
-                        consumed_quantity,
-                        pnl_impact_usd: Decimal::ZERO, // No P&L impact for received tokens
+                    let realized_pnl = (remaining_sell_event.usd_price_per_token - buy_event.usd_price_per_token) * matched_quantity;
+
+                    let hold_time_seconds = (remaining_sell_event.timestamp - buy_event.timestamp)
+                        .num_seconds()
+                        .max(0);
+
+                    // Create a new event representing ONLY the matched portion
+                    let matched_buy_portion = NewFinancialEvent {
+                        wallet_address: buy_event.wallet_address.clone(),
+                        transaction_hash: buy_event.transaction_hash.clone(),
+                        timestamp: buy_event.timestamp,
+                        token_address: buy_event.token_address.clone(),
+                        token_symbol: buy_event.token_symbol.clone(),
+                        chain_id: buy_event.chain_id.clone(),
+                        event_type: buy_event.event_type.clone(),
+
+                        // Only the matched portion, not remaining quantity
+                        quantity: matched_quantity,
+                        usd_price_per_token: buy_event.usd_price_per_token,
+                        usd_value: matched_quantity * buy_event.usd_price_per_token,
+                    };
+
+                    // Create matched sell portion (only the matched quantity)
+                    let matched_sell_portion = NewFinancialEvent {
+                        wallet_address: remaining_sell_event.wallet_address.clone(),
+                        transaction_hash: remaining_sell_event.transaction_hash.clone(),
+                        timestamp: remaining_sell_event.timestamp,
+                        token_address: remaining_sell_event.token_address.clone(),
+                        token_symbol: remaining_sell_event.token_symbol.clone(),
+                        chain_id: remaining_sell_event.chain_id.clone(),
+                        event_type: remaining_sell_event.event_type.clone(),
+
+                        // Only the matched portion, not remaining quantity
+                        quantity: matched_quantity,
+                        usd_price_per_token: remaining_sell_event.usd_price_per_token,
+                        usd_value: matched_quantity * remaining_sell_event.usd_price_per_token,
+                    };
+
+                    matched_trades.push(MatchedTrade {
+                        buy_event: matched_buy_portion,
+                        sell_event: matched_sell_portion,
+                        matched_quantity,
+                        realized_pnl_usd: realized_pnl,
+                        hold_time_seconds,
                     });
 
-                    // Update remaining quantities
-                    received_token.remaining_quantity -= consumed_quantity;
-                    remaining_sell_quantity -= consumed_quantity;
-                    total_consumed_from_receives += consumed_quantity;
+                    // Update remaining quantities and USD values proportionally
+                    buy_event.quantity -= matched_quantity;
+                    buy_event.usd_value = buy_event.quantity * buy_event.usd_price_per_token;
+
+                    remaining_sell_event.quantity -= matched_quantity;
+                    remaining_sell_event.usd_value = remaining_sell_event.quantity * remaining_sell_event.usd_price_per_token;
+
+                    total_matched_from_buys += matched_quantity;
 
                     debug!(
-                        "   ✓ Consumed {} {} from receive event (no P&L impact). Receive remaining: {}",
-                        consumed_quantity,
-                        sell_event.token_symbol,
-                        received_token.remaining_quantity
+                        "   ✓ Matched {} {} with buy @ ${} -> P&L: ${:.2}. Buy remaining: {}",
+                        matched_quantity,
+                        buy_event.token_symbol,
+                        buy_event.usd_price_per_token,
+                        realized_pnl,
+                        buy_event.quantity
                     );
                 }
             }
 
-            if total_consumed_from_receives > Decimal::ZERO {
+            if total_matched_from_buys > Decimal::ZERO {
                 info!(
-                    "   Phase 1 complete: Consumed {} {} from receives. Remaining sell quantity: {}",
-                    total_consumed_from_receives,
-                    sell_event.token_symbol,
-                    remaining_sell_quantity
+                    "   Phase 1 complete: Matched {} {} with bought tokens",
+                    total_matched_from_buys,
+                    sell_event.token_symbol
                 );
             }
 
-            // Phase 2: If there's still sell quantity remaining, match with bought tokens
+            // Update remaining quantity for Phase 2
+            remaining_sell_quantity = remaining_sell_event.quantity;
+
+            // ═══════════════════════════════════════════════════════════
+            // NEW PHASE 2: Match RECEIVED tokens (fallback only)
+            // ═══════════════════════════════════════════════════════════
             if remaining_sell_quantity > Decimal::ZERO {
                 info!(
-                    "🔄 Phase 2: Matching remaining {} {} against bought tokens",
+                    "🔄 Phase 2: Matching remaining {} {} against RECEIVED tokens (fallback)",
                     remaining_sell_quantity,
                     sell_event.token_symbol
                 );
 
-                // Create a partial sell event for the remaining quantity
-                let mut remaining_sell_event = sell_event.clone();
-                remaining_sell_event.quantity = remaining_sell_quantity;
-                remaining_sell_event.usd_value = remaining_sell_quantity * sell_event.usd_price_per_token;
-
-                // Match against bought tokens using traditional FIFO
-                let mut total_matched_from_buys = Decimal::ZERO;
-                for buy_event in buy_events.iter_mut() {
-                    if remaining_sell_event.quantity <= Decimal::ZERO {
+                let mut total_consumed_from_receives = Decimal::ZERO;
+                for received_token in &mut remaining_receives {
+                    if remaining_sell_quantity <= Decimal::ZERO {
                         break;
                     }
 
-                    if buy_event.quantity > Decimal::ZERO && buy_event.timestamp <= remaining_sell_event.timestamp {
-                        let matched_quantity = remaining_sell_event.quantity.min(buy_event.quantity);
+                    // Only consume receives that happened BEFORE or AT the sell timestamp
+                    if received_token.remaining_quantity > Decimal::ZERO
+                        && received_token.receive_event.timestamp <= sell_event.timestamp {
+                        let consumed_quantity = remaining_sell_quantity.min(received_token.remaining_quantity);
 
-                        let realized_pnl = (remaining_sell_event.usd_price_per_token - buy_event.usd_price_per_token) * matched_quantity;
-
-                        let hold_time_seconds = (remaining_sell_event.timestamp - buy_event.timestamp)
-                            .num_seconds()
-                            .max(0);
-
-                        // Create a new event representing ONLY the matched portion
-                        let matched_buy_portion = NewFinancialEvent {
-                            wallet_address: buy_event.wallet_address.clone(),
-                            transaction_hash: buy_event.transaction_hash.clone(),
-                            timestamp: buy_event.timestamp,
-                            token_address: buy_event.token_address.clone(),
-                            token_symbol: buy_event.token_symbol.clone(),
-                            chain_id: buy_event.chain_id.clone(),
-                            event_type: buy_event.event_type.clone(),
-
-                            // Only the matched portion, not remaining quantity
-                            quantity: matched_quantity,
-                            usd_price_per_token: buy_event.usd_price_per_token,
-                            usd_value: matched_quantity * buy_event.usd_price_per_token,
-                        };
-
-                        // Create matched sell portion (only the matched quantity)
-                        let matched_sell_portion = NewFinancialEvent {
-                            wallet_address: remaining_sell_event.wallet_address.clone(),
-                            transaction_hash: remaining_sell_event.transaction_hash.clone(),
-                            timestamp: remaining_sell_event.timestamp,
-                            token_address: remaining_sell_event.token_address.clone(),
-                            token_symbol: remaining_sell_event.token_symbol.clone(),
-                            chain_id: remaining_sell_event.chain_id.clone(),
-                            event_type: remaining_sell_event.event_type.clone(),
-
-                            // Only the matched portion, not remaining quantity
-                            quantity: matched_quantity,
-                            usd_price_per_token: remaining_sell_event.usd_price_per_token,
-                            usd_value: matched_quantity * remaining_sell_event.usd_price_per_token,
-                        };
-
-                        matched_trades.push(MatchedTrade {
-                            buy_event: matched_buy_portion,
-                            sell_event: matched_sell_portion,
-                            matched_quantity,
-                            realized_pnl_usd: realized_pnl,
-                            hold_time_seconds,
+                        // Record the consumption
+                        receive_consumptions.push(ReceiveConsumption {
+                            receive_event: received_token.receive_event.clone(),
+                            sell_event: sell_event.clone(),
+                            consumed_quantity,
+                            pnl_impact_usd: Decimal::ZERO, // No P&L impact for received tokens
                         });
 
-                        // Update remaining quantities and USD values proportionally
-                        buy_event.quantity -= matched_quantity;
-                        buy_event.usd_value = buy_event.quantity * buy_event.usd_price_per_token;
-
-                        remaining_sell_event.quantity -= matched_quantity;
-                        remaining_sell_event.usd_value = remaining_sell_event.quantity * remaining_sell_event.usd_price_per_token;
-
-                        total_matched_from_buys += matched_quantity;
+                        // Update remaining quantities
+                        received_token.remaining_quantity -= consumed_quantity;
+                        remaining_sell_quantity -= consumed_quantity;
+                        total_consumed_from_receives += consumed_quantity;
 
                         debug!(
-                            "   ✓ Matched {} {} with buy @ ${} -> P&L: ${:.2}. Buy remaining: {}",
-                            matched_quantity,
-                            buy_event.token_symbol,
-                            buy_event.usd_price_per_token,
-                            realized_pnl,
-                            buy_event.quantity
+                            "   ✓ Consumed {} {} from receive event (no P&L impact). Receive remaining: {}",
+                            consumed_quantity,
+                            sell_event.token_symbol,
+                            received_token.remaining_quantity
                         );
-
                     }
                 }
 
-                if total_matched_from_buys > Decimal::ZERO {
+                if total_consumed_from_receives > Decimal::ZERO {
                     info!(
-                        "   Phase 2 complete: Matched {} {} with bought tokens",
-                        total_matched_from_buys,
-                        sell_event.token_symbol
+                        "   Phase 2 complete: Consumed {} {} from receives. Remaining sell quantity: {}",
+                        total_consumed_from_receives,
+                        sell_event.token_symbol,
+                        remaining_sell_quantity
                     );
                 }
+            }
 
-                // If there's still unmatched sell quantity, create implicit receive
-                // (tokens held from outside the analysis timeframe)
-                if remaining_sell_event.quantity > Decimal::ZERO {
+            // Sync remaining quantities for Phase 3 check
+            remaining_sell_event.quantity = remaining_sell_quantity;
+
+            // ═══════════════════════════════════════════════════════════
+            // PHASE 3: Implicit receives (UNCHANGED)
+            // ═══════════════════════════════════════════════════════════
+            // If there's still unmatched sell quantity, create implicit receive
+            // (tokens held from outside the analysis timeframe)
+            if remaining_sell_event.quantity > Decimal::ZERO {
                     let implicit_receive = NewFinancialEvent {
                         wallet_address: remaining_sell_event.wallet_address.clone(),
                         transaction_hash: format!("implicit_receive_{}", remaining_sell_event.transaction_hash),
@@ -949,7 +1019,6 @@ impl NewPnLEngine {
                         consumed_quantity, remaining_sell_event.token_symbol
                     );
                 }
-            }
         }
 
         // Log final matching summary

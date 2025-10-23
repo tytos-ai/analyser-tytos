@@ -2,6 +2,7 @@ use anyhow::Result;
 use config_manager::BirdEyeConfig;
 use pnl_core::{GeneralTraderTransaction, TokenTransactionSide};
 use reqwest::Client;
+use retry_utils::{retry_with_backoff, RetryableError, RetryConfig};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::{HashMap, HashSet};
@@ -24,6 +25,29 @@ pub enum BirdEyeError {
 }
 
 // BirdEye API client configuration moved to config_manager crate
+
+/// Helper function to classify BirdEye errors for retry strategy
+fn classify_birdeye_error(error: &BirdEyeError) -> RetryableError {
+    match error {
+        BirdEyeError::RateLimit => RetryableError::RateLimit,
+        BirdEyeError::Api(msg) if msg.contains("5") || msg.starts_with("HTTP 5") => {
+            RetryableError::ServerError
+        }
+        BirdEyeError::Http(_) => RetryableError::Timeout,
+        _ => RetryableError::Other,
+    }
+}
+
+/// Retry configuration for critical BirdEye operations
+/// Max delays: Rate Limit = 2s, Server Error = 1.2s, Timeout = 1s
+fn get_birdeye_retry_config() -> RetryConfig {
+    RetryConfig {
+        max_attempts: 3,
+        rate_limit_delays_ms: vec![500, 1000, 2000],
+        server_error_delays_ms: vec![300, 600, 1200],
+        timeout_delays_ms: vec![500, 1000],
+    }
+}
 
 /// Trending token response from BirdEye
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1953,8 +1977,25 @@ impl BirdEyeClient {
         Ok(all_prices)
     }
 
-    /// Helper method to fetch prices for a single batch of tokens
+    /// Helper method to fetch prices for a single batch of tokens (with retry)
     async fn fetch_price_batch(
+        &self,
+        token_addresses: &[String],
+        chain: &str,
+    ) -> Result<HashMap<String, f64>, BirdEyeError> {
+        let addresses = token_addresses.to_vec();
+        let chain_owned = chain.to_string();
+
+        retry_with_backoff(
+            || self.fetch_price_batch_internal(&addresses, &chain_owned),
+            &get_birdeye_retry_config(),
+            classify_birdeye_error,
+        )
+        .await
+    }
+
+    /// Internal implementation of fetch_price_batch (without retry)
+    async fn fetch_price_batch_internal(
         &self,
         token_addresses: &[String],
         chain: &str,
@@ -2593,7 +2634,26 @@ impl BirdEyeClient {
     }
 
     /// Get historical price for a token at a specific Unix timestamp
+    /// Get historical price for a token at a specific Unix timestamp (with retry)
     pub async fn get_historical_price_unix(
+        &self,
+        token_address: &str,
+        unix_time: i64,
+        chain: Option<&str>,
+    ) -> Result<f64, BirdEyeError> {
+        let token_owned = token_address.to_string();
+        let chain_owned = chain.map(|s| s.to_string());
+
+        retry_with_backoff(
+            || self.get_historical_price_unix_internal(&token_owned, unix_time, chain_owned.as_deref()),
+            &get_birdeye_retry_config(),
+            classify_birdeye_error,
+        )
+        .await
+    }
+
+    /// Internal implementation of get_historical_price_unix (without retry)
+    async fn get_historical_price_unix_internal(
         &self,
         token_address: &str,
         unix_time: i64,

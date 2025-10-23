@@ -127,6 +127,8 @@ pub struct BatchResultsSummary {
     pub total_pnl_usd: Decimal,
     pub average_pnl_usd: Decimal,
     pub profitable_wallets: usize,
+    #[serde(default)]
+    pub total_incomplete_trades: u32,  // Count of trades with only OUT transfers (no IN side) across all analyzed wallets
 }
 
 /// Individual wallet result
@@ -136,6 +138,8 @@ pub struct WalletResult {
     pub status: String,
     pub pnl_report: Option<PortfolioPnLResult>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub incomplete_trades_count: u32,  // Count of trades with missing IN or OUT sides for this wallet
 }
 
 /// Query parameters for discovered wallets endpoint
@@ -144,8 +148,6 @@ pub struct DiscoveredWalletsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     pub chain: Option<String>,
-    pub min_unique_tokens: Option<u32>,
-    pub min_active_days: Option<u32>,
 }
 
 /// Response for discovered wallets endpoint
@@ -170,6 +172,8 @@ pub struct DiscoveredWalletSummary {
     pub unique_tokens_count: Option<u32>,
     pub active_days_count: Option<u32>,
     pub status: String,
+    #[serde(default)]
+    pub incomplete_trades_count: u32,  // Count of trades with missing IN or OUT sides for this wallet
 }
 
 /// Pagination information
@@ -189,6 +193,8 @@ pub struct DiscoveredWalletsSummary {
     pub profitable_count: u64,
     pub average_pnl_usd: Decimal,
     pub total_pnl_usd: Decimal,
+    #[serde(default)]
+    pub total_incomplete_trades: u32,  // Count of trades with only OUT transfers (no IN side) across all discovered wallets
 }
 
 /// Configuration update request
@@ -294,6 +300,7 @@ impl From<BatchJob> for BatchJobResultsResponse {
                 total_pnl_usd: total_pnl,
                 average_pnl_usd: average_pnl,
                 profitable_wallets,
+                total_incomplete_trades: 0,  // Will be populated by handler from database
             },
             results: wallet_results,
         }
@@ -387,18 +394,20 @@ pub struct StoredPnLResultSummary {
     pub chain: String,
     pub token_address: String,
     pub token_symbol: String,
-    pub total_pnl_usd: Decimal,
-    pub realized_pnl_usd: Decimal,
-    pub unrealized_pnl_usd: Decimal,
-    pub roi_percentage: Decimal,
+    pub total_pnl_usd: f64,
+    pub realized_pnl_usd: f64,
+    pub unrealized_pnl_usd: f64,
+    pub roi_percentage: f64,
     pub total_trades: u32,
-    pub win_rate: Decimal,
-    pub avg_hold_time_minutes: Decimal,
+    pub win_rate: f64,
+    pub avg_hold_time_minutes: f64,
     pub unique_tokens_count: Option<u32>,
     pub active_days_count: Option<u32>,
     pub analyzed_at: DateTime<Utc>,
     pub is_favorited: bool,
     pub is_archived: bool,
+    #[serde(default)]
+    pub incomplete_trades_count: u32,  // Count of trades with missing IN or OUT sides for this wallet
 }
 
 /// Summary of all P&L results
@@ -406,8 +415,8 @@ pub struct StoredPnLResultSummary {
 pub struct AllResultsSummary {
     pub total_wallets: u64,
     pub profitable_wallets: u64,
-    pub total_pnl_usd: Decimal,
-    pub average_pnl_usd: Decimal,
+    pub total_pnl_usd: f64,
+    pub average_pnl_usd: f64,
     pub total_trades: u64,
     pub profitability_rate: f64,
     pub last_updated: DateTime<Utc>,

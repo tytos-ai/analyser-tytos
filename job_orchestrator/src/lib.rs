@@ -56,6 +56,10 @@ pub enum OrchestratorError {
     InvalidWallet(String),
     #[error("Anyhow error: {0}")]
     Anyhow(String),
+    #[error("Price fetch failed: {0}")]
+    PriceFetchFailed(String),
+    #[error("Historical enrichment failed: {0}")]
+    EnrichmentFailed(String),
 }
 
 impl From<anyhow::Error> for OrchestratorError {
@@ -488,7 +492,7 @@ impl JobOrchestrator {
                     timeout_duration,
                     self.process_single_wallet_token_pair(&pair_clone, filters)
                 ).await {
-                    Ok(Ok(report)) => {
+                    Ok(Ok((report, incomplete_count))) => {
                         // Store the rich P&L portfolio result for later retrieval
                         let store_result = {
                             let redis = &self.persistence_client;
@@ -497,6 +501,7 @@ impl JobOrchestrator {
                                 &pair_clone.chain,
                                 &report,
                                 "continuous",
+                                incomplete_count,
                             ).await
                         };
 
@@ -779,16 +784,16 @@ impl JobOrchestrator {
                     timeout_duration,
                     self_clone.process_single_wallet(&wallet_clone, &chain_clone, time_range_clone.as_deref(), max_transactions)
                 ).await {
-                    Ok(Ok(report)) => {
+                    Ok(Ok((report, incomplete_count))) => {
                         let elapsed = wallet_start_time.elapsed();
-                        info!("✅ Wallet {}/{} completed successfully in {:.2}s: {} (Realized P&L: ${:.2}, Unrealized P&L: ${:.2})",
+                        info!("✅ Wallet {}/{} completed successfully in {:.2}s: {} (Realized P&L: ${:.2}, Unrealized P&L: ${:.2}, {} incomplete trades)",
                               index + 1, wallet_count, elapsed.as_secs_f64(), wallet_clone,
-                              report.total_realized_pnl_usd, report.total_unrealized_pnl_usd);
+                              report.total_realized_pnl_usd, report.total_unrealized_pnl_usd, incomplete_count);
 
                         // Store result immediately to PostgreSQL and drop the large report object
                         let persistence_client = &self_clone.persistence_client;
                         match persistence_client
-                            .store_pnl_result_with_source(&wallet_clone, &chain_clone, &report, "batch")
+                            .store_pnl_result_with_source(&wallet_clone, &chain_clone, &report, "batch", incomplete_count)
                             .await
                         {
                             Ok(_) => {
@@ -1054,11 +1059,12 @@ impl JobOrchestrator {
     }
 
     /// Process a single wallet-token pair for targeted P&L analysis using BirdEye transactions
+    /// Returns (PortfolioPnLResult, incomplete_trades_count)
     pub async fn process_single_wallet_token_pair(
         &self,
         pair: &DiscoveredWalletToken,
         max_transactions: Option<u32>,
-    ) -> Result<PortfolioPnLResult> {
+    ) -> Result<(PortfolioPnLResult, u32)> {
         debug!(
             "🎯 Starting targeted P&L analysis for wallet: {} on token: {} ({})",
             pair.wallet_address, pair.token_symbol, pair.token_address
@@ -1071,7 +1077,7 @@ impl JobOrchestrator {
         );
 
         // Route based on chain
-        let report = match pair.chain.to_lowercase().as_str() {
+        let (report, incomplete_count) = match pair.chain.to_lowercase().as_str() {
             "solana" => {
                 // Always use Zerion for Solana
                 info!(
@@ -1099,21 +1105,22 @@ impl JobOrchestrator {
         };
 
         debug!(
-            "✅ Targeted P&L analysis completed for wallet: {} on token: {}",
-            pair.wallet_address, pair.token_symbol
+            "✅ Targeted P&L analysis completed for wallet: {} on token: {} ({} incomplete trades)",
+            pair.wallet_address, pair.token_symbol, incomplete_count
         );
 
-        Ok(report)
+        Ok((report, incomplete_count))
     }
 
     /// Process a single wallet for P&L analysis (using rich PortfolioPnLResult format)
+    /// Returns (PortfolioPnLResult, incomplete_trades_count)
     pub async fn process_single_wallet(
         &self,
         wallet_address: &str,
         chain: &str,
         time_range: Option<&str>,
         max_transactions: Option<u32>,
-    ) -> Result<PortfolioPnLResult> {
+    ) -> Result<(PortfolioPnLResult, u32)> {
         info!(
             "🔍 Starting P&L analysis for wallet: {} on chain: {} (max_txs: {:?})",
             wallet_address, chain, max_transactions
@@ -1152,10 +1159,10 @@ impl JobOrchestrator {
         };
 
         match &result {
-            Ok(portfolio) => {
-                info!("✅ P&L analysis completed for wallet: {} - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens",
+            Ok((portfolio, incomplete_count)) => {
+                info!("✅ P&L analysis completed for wallet: {} - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens, {} incomplete trades",
                       wallet_address, portfolio.total_realized_pnl_usd,
-                      portfolio.total_unrealized_pnl_usd, portfolio.token_results.len());
+                      portfolio.total_unrealized_pnl_usd, portfolio.token_results.len(), incomplete_count);
             }
             Err(e) => {
                 warn!(
@@ -1170,13 +1177,14 @@ impl JobOrchestrator {
 
 
     /// Process a single wallet using Zerion transaction data + Zerion current portfolio
+    /// Returns (PortfolioPnLResult, incomplete_trades_count)
     async fn process_single_wallet_with_zerion(
         &self,
         wallet_address: &str,
         chain: &str, // Chain to analyze (solana, ethereum, base, bsc)
         time_range: Option<&str>,
         max_transactions: Option<u32>,
-    ) -> Result<PortfolioPnLResult> {
+    ) -> Result<(PortfolioPnLResult, u32)> {
         let step_start = std::time::Instant::now();
         info!(
             "🦋 Starting Zerion P&L analysis for wallet: {} on chain: {}",
@@ -1273,13 +1281,17 @@ impl JobOrchestrator {
                         decimal_prices
                     }
                     Err(e) => {
-                        warn!("⚠️  Failed to fetch prices from BirdEye: {}, unrealized P&L will be 0", e);
-                        HashMap::new()
+                        error!("❌ CRITICAL: BirdEye price fetch failed after all retries: {}", e);
+                        return Err(OrchestratorError::PriceFetchFailed(
+                            format!("BirdEye current prices unavailable: {}", e)
+                        ));
                     }
                 }
             } else {
-                warn!("⚠️  BirdEye client not available, unrealized P&L will be 0");
-                HashMap::new()
+                error!("❌ CRITICAL: BirdEye client not configured, cannot fetch current prices");
+                return Err(OrchestratorError::Config(
+                    "BirdEye client not available for price fetching".to_string()
+                ));
             }
             // token_addresses dropped here automatically at end of scope (~KB freed)
         };
@@ -1294,7 +1306,7 @@ impl JobOrchestrator {
         );
 
         let pnl_start = std::time::Instant::now();
-        let report = self
+        let (report, incomplete_trades_count) = self
             .calculate_pnl_with_zerion_transactions(
                 wallet_address,
                 zerion_transactions,
@@ -1312,21 +1324,22 @@ impl JobOrchestrator {
             "✅ Step 2b completed in {:.2}s: P&L calculation finished",
             pnl_elapsed.as_secs_f64()
         );
-        info!("🎉 Zerion P&L analysis completed for wallet {} on chain {} in {:.2}s total - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens",
+        info!("🎉 Zerion P&L analysis completed for wallet {} on chain {} in {:.2}s total - Realized: ${:.2}, Unrealized: ${:.2}, {} tokens, {} incomplete trades",
               wallet_address, chain, total_elapsed.as_secs_f64(), report.total_realized_pnl_usd,
-              report.total_unrealized_pnl_usd, report.token_results.len());
+              report.total_unrealized_pnl_usd, report.token_results.len(), incomplete_trades_count);
 
-        Ok(report)
+        Ok((report, incomplete_trades_count))
     }
 
     /// Calculate P&L using Zerion transactions with embedded prices + Zerion current prices
+    /// Returns (PortfolioPnLResult, incomplete_trades_count)
     async fn calculate_pnl_with_zerion_transactions(
         &self,
         wallet_address: &str,
         zerion_transactions: Vec<zerion_client::ZerionTransaction>,
         current_prices: HashMap<String, Decimal>,
         chain: &str, // Chain identifier for BirdEye historical price enrichment
-    ) -> Result<PortfolioPnLResult> {
+    ) -> Result<(PortfolioPnLResult, u32)> {
         info!("🚀 Starting Zerion P&L calculation with {} current prices for wallet: {} with {} transactions",
               current_prices.len(), wallet_address, zerion_transactions.len());
 
@@ -1335,10 +1348,13 @@ impl JobOrchestrator {
         })?;
 
         // Step 1: Convert Zerion transactions to financial events
-        let mut financial_events =
+        let conversion_result =
             zerion_client.convert_to_financial_events(&zerion_transactions, wallet_address);
-        info!("📊 Converted {} Zerion transactions into {} financial events (including send transactions)",
-              zerion_transactions.len(), financial_events.len());
+        let mut financial_events = conversion_result.events;
+        let incomplete_trades_count = conversion_result.incomplete_trades_count;
+
+        info!("📊 Converted {} Zerion transactions into {} financial events (including send transactions), {} incomplete trades detected",
+              zerion_transactions.len(), financial_events.len(), incomplete_trades_count);
 
         // Step 1.5: Extract and enrich skipped transactions using BirdEye historical prices
         let skipped_txs = zerion_client.extract_skipped_transaction_info(&zerion_transactions, wallet_address);
@@ -1407,13 +1423,14 @@ impl JobOrchestrator {
         // Note: current_prices already consumed by calculate_portfolio_pnl
 
         info!(
-            "🎯 Portfolio P&L Summary: Realized ${:.2}, Unrealized ${:.2}, Total ${:.2}",
+            "🎯 Portfolio P&L Summary: Realized ${:.2}, Unrealized ${:.2}, Total ${:.2}, {} incomplete trades",
             portfolio_result.total_realized_pnl_usd,
             portfolio_result.total_unrealized_pnl_usd,
-            portfolio_result.total_pnl_usd
+            portfolio_result.total_pnl_usd,
+            incomplete_trades_count
         );
 
-        Ok(portfolio_result)
+        Ok((portfolio_result, incomplete_trades_count))
     }
 
     // convert_birdeye_transactions_to_events removed - was unused legacy function
@@ -1982,6 +1999,19 @@ impl JobOrchestrator {
 
         info!("📊 BirdEye enrichment results: {} successful, {} failed",
             success_count, failure_count);
+
+        // Fail if more than 50% of enrichment attempts failed
+        let total_attempts = success_count + failure_count;
+        if total_attempts > 0 {
+            let failure_rate = (failure_count as f64) / (total_attempts as f64);
+            if failure_rate > 0.5 {
+                error!("❌ CRITICAL: Historical enrichment failure rate too high: {:.1}% ({}/{})",
+                    failure_rate * 100.0, failure_count, total_attempts);
+                return Err(OrchestratorError::EnrichmentFailed(
+                    format!("More than 50% of historical price fetches failed ({}/{})", failure_count, total_attempts)
+                ));
+            }
+        }
 
         Ok(enriched_events)
     }

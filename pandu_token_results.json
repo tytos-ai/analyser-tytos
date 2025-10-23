@@ -1,0 +1,295 @@
+{
+  "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+  "token_symbol": "PANDU",
+  "matched_trades": [
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "373489.050090",
+        "usd_price_per_token": "0.0001456807029372746056100629",
+        "usd_value": "54.410147356486165302781777466",
+        "timestamp": "2025-10-04T00:00:08Z",
+        "transaction_hash": "656A3gJw1GyR8DXW4qvkFZmgC713ER8RDaYHdDUsfhRqoSKbvBcxdX6QaJTa1F6naE9FtZHoZGahzxHfE6Q1vqbn"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "373489.050090",
+        "usd_price_per_token": "0.0001728079775651504383648938",
+        "usd_value": "64.541887388782068312851278166",
+        "timestamp": "2025-10-04T20:12:35Z",
+        "transaction_hash": "4dg6Xq92edqEAAziQrN8Xa83pZGqxrFeJmuKPioRoRspJmZ7mXPejLiqgLhpDnpQtRJmjcxoSYamYKay7VF7uhhT"
+      },
+      "matched_quantity": "373489.050090",
+      "realized_pnl_usd": "10.131740032295903010069500700",
+      "hold_time_seconds": 72747
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "45398.466966",
+        "usd_price_per_token": "0.0001456807029372746056100629",
+        "usd_value": "6.6136805798815203528591188428",
+        "timestamp": "2025-10-04T00:00:08Z",
+        "transaction_hash": "656A3gJw1GyR8DXW4qvkFZmgC713ER8RDaYHdDUsfhRqoSKbvBcxdX6QaJTa1F6naE9FtZHoZGahzxHfE6Q1vqbn"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "45398.466966",
+        "usd_price_per_token": "0.0002168922606256616734260456",
+        "usd_value": "9.846576129195163972924611216",
+        "timestamp": "2025-10-05T19:04:10Z",
+        "transaction_hash": "2BgfxXsLgFBa7bWQMVTKoVXA6aoU4axwfTusRdTqY3DR3hUFVW4wtRWQgCEbMkpu6Wpz1W3LUTwCqUMqv3zSbF3c"
+      },
+      "matched_quantity": "45398.466966",
+      "realized_pnl_usd": "3.2328955493136436200654923728",
+      "hold_time_seconds": 155042
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "639801.222523",
+        "usd_price_per_token": "0.0001456807029372746056100629",
+        "usd_value": "93.20669183727828965508091765",
+        "timestamp": "2025-10-04T00:00:08Z",
+        "transaction_hash": "656A3gJw1GyR8DXW4qvkFZmgC713ER8RDaYHdDUsfhRqoSKbvBcxdX6QaJTa1F6naE9FtZHoZGahzxHfE6Q1vqbn"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "639801.222523",
+        "usd_price_per_token": "0.0002166250006388303721294175",
+        "usd_value": "138.59694023776932807322434327",
+        "timestamp": "2025-10-05T20:51:04Z",
+        "transaction_hash": "sWiWTrSL3dpUZzR7MG5a8ZN1xu5526B5rQNUVXo5bHcKmtH3U1FusRXNkkpdAmHhxZEsdpAMpwwxuBczamG9VMW"
+      },
+      "matched_quantity": "639801.222523",
+      "realized_pnl_usd": "45.390248400491038418143425621",
+      "hold_time_seconds": 161456
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "133943.354144",
+        "usd_price_per_token": "0.0001456807029372746056100629",
+        "usd_value": "19.512961985474233517406584185",
+        "timestamp": "2025-10-04T00:00:08Z",
+        "transaction_hash": "656A3gJw1GyR8DXW4qvkFZmgC713ER8RDaYHdDUsfhRqoSKbvBcxdX6QaJTa1F6naE9FtZHoZGahzxHfE6Q1vqbn"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "133943.354144",
+        "usd_price_per_token": "0.0002329087806566390366977415",
+        "usd_value": "31.196583290739419357180602019",
+        "timestamp": "2025-10-05T23:05:15Z",
+        "transaction_hash": "2Uz1UuCXPaqqZojqUBKFUZX9c2ETRat5Qtqj3kJhF7uUW3Sy4K3qrsAa6dtVQVyuw576czAxkGSswyazPd2ndcTp"
+      },
+      "matched_quantity": "133943.354144",
+      "realized_pnl_usd": "11.683621305265185839774017835",
+      "hold_time_seconds": 169507
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "340401.490466",
+        "usd_price_per_token": "0.0001456807029372746056100629",
+        "usd_value": "49.589928411982859857597736368",
+        "timestamp": "2025-10-04T00:00:08Z",
+        "transaction_hash": "656A3gJw1GyR8DXW4qvkFZmgC713ER8RDaYHdDUsfhRqoSKbvBcxdX6QaJTa1F6naE9FtZHoZGahzxHfE6Q1vqbn"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "340401.490466",
+        "usd_price_per_token": "0.0002304908967196722820690302",
+        "usd_value": "78.459444782221314999365446379",
+        "timestamp": "2025-10-05T23:36:57Z",
+        "transaction_hash": "41ntv4FK7JVrDuAF6XCUdiXF8YpT9BqXAtepM2j2NjhUqahSs9TtAbzKFqsAHCK36cB557ne4YVGMZ2YQwqKtMYL"
+      },
+      "matched_quantity": "340401.490466",
+      "realized_pnl_usd": "28.869516370238455141767710011",
+      "hold_time_seconds": 171409
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1482974.382375",
+        "usd_price_per_token": "0.0001456807029372746056100629",
+        "usd_value": "216.04075046236065662035473921",
+        "timestamp": "2025-10-04T00:00:08Z",
+        "transaction_hash": "656A3gJw1GyR8DXW4qvkFZmgC713ER8RDaYHdDUsfhRqoSKbvBcxdX6QaJTa1F6naE9FtZHoZGahzxHfE6Q1vqbn"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1482974.382375",
+        "usd_price_per_token": "0.0001889737833971982350171615",
+        "usd_value": "280.24327971852708188001517299",
+        "timestamp": "2025-10-06T15:41:24Z",
+        "transaction_hash": "39Q3NAqMxtgrsXodqsLwT2asQHdtuAanH21FqtnbQ2ZTQFsvqJcwz9YeAaXtfMpEhS4GXp4dZJAAtsTZ593U5ocC"
+      },
+      "matched_quantity": "1482974.382375",
+      "realized_pnl_usd": "64.202529256166425259660433776",
+      "hold_time_seconds": 229276
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "270869.565921",
+        "usd_price_per_token": "0.0001700958695894207520216135",
+        "usd_value": "46.073794360641423593923831955",
+        "timestamp": "2025-10-04T21:24:05Z",
+        "transaction_hash": "47TsGfNLksaKtaC757diZi33yFPe7sYKp1Q8aaouSDP15VnSAvMPJpD3hHK7weGVsGyBu3UBxFxAx1W9egTKHgR4"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "270869.565921",
+        "usd_price_per_token": "0.0001889737833971982350171615",
+        "usd_value": "51.187246679248162646685877491",
+        "timestamp": "2025-10-06T15:41:24Z",
+        "transaction_hash": "39Q3NAqMxtgrsXodqsLwT2asQHdtuAanH21FqtnbQ2ZTQFsvqJcwz9YeAaXtfMpEhS4GXp4dZJAAtsTZ593U5ocC"
+      },
+      "matched_quantity": "270869.565921",
+      "realized_pnl_usd": "5.1134523186067390527620455355",
+      "hold_time_seconds": 152239
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "116164.991492",
+        "usd_price_per_token": "0.0001701188405991563355572349",
+        "usd_value": "19.761853670829899902384089238",
+        "timestamp": "2025-10-04T22:24:07Z",
+        "transaction_hash": "UYEfT2ssWegGbDE5yR47yswqocTWykhyUi46Myz9UpWEG8corxjdjhU5kE9HhA4kHC1RXuGU26HVJjgLpiePnPN"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "116164.991492",
+        "usd_price_per_token": "0.0001889737833971982350171615",
+        "usd_value": "21.952137940546583827405982121",
+        "timestamp": "2025-10-06T15:41:24Z",
+        "transaction_hash": "39Q3NAqMxtgrsXodqsLwT2asQHdtuAanH21FqtnbQ2ZTQFsvqJcwz9YeAaXtfMpEhS4GXp4dZJAAtsTZ593U5ocC"
+      },
+      "matched_quantity": "116164.991492",
+      "realized_pnl_usd": "2.1902842697166839250218928839",
+      "hold_time_seconds": 148637
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1211802.040506",
+        "usd_price_per_token": "0.0002356019118420726019859368",
+        "usd_value": "285.50287751733830430675500216",
+        "timestamp": "2025-10-05T20:26:55Z",
+        "transaction_hash": "3CRRpLX6H1jAA5wgdiEtfdzV1wJzHo88WkH6k3ZLLE7MZLAWo3xfwyTYKFVhYcGrpAdJZ9L2PmHYDRGWDt2hH3V9"
+      },
+      "sell_event": {
+        "wallet_address": "BgsTYVJ78JvnmvNk3Agv8oMmnhWG3DJoDAU56xZ9JweV",
+        "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+        "token_symbol": "PANDU",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1211802.040506",
+        "usd_price_per_token": "0.0001889737833971982350171615",
+        "usd_value": "228.99881632286368587717804763",
+        "timestamp": "2025-10-06T15:41:24Z",
+        "transaction_hash": "39Q3NAqMxtgrsXodqsLwT2asQHdtuAanH21FqtnbQ2ZTQFsvqJcwz9YeAaXtfMpEhS4GXp4dZJAAtsTZ593U5ocC"
+      },
+      "matched_quantity": "1211802.040506",
+      "realized_pnl_usd": "-56.504061194474618429576954528",
+      "hold_time_seconds": 69269
+    }
+  ],
+  "remaining_position": {
+    "token_address": "4NGbC4RRrUjS78ooSN53Up7gSg4dGrj6F6dxpMWHbonk",
+    "token_symbol": "PANDU",
+    "bought_quantity": "6977566.556719",
+    "received_quantity": "2517611.778186",
+    "avg_cost_basis_usd": "0.0001896916339381458075270598",
+    "total_cost_basis_usd": "1323.5860010561890440539521788"
+  },
+  "total_realized_pnl_usd": "114.31022630761945583768756421",
+  "total_unrealized_pnl_usd": "-656.07291100550713776901026720",
+  "total_pnl_usd": "-541.76268469788768193132270299",
+  "total_trades": 9,
+  "winning_trades": 8,
+  "losing_trades": 1,
+  "win_rate_percentage": "88.88888888888888888888888889",
+  "avg_hold_time_minutes": "2462.1888888888888888888888889",
+  "min_hold_time_minutes": "1154.4833333333333333333333333",
+  "max_hold_time_minutes": "3821.2666666666666666666666667",
+  "total_invested_usd": "2114.2986872384623946921772872",
+  "total_returned_usd": "905.0229124898928089468313613",
+  "current_winning_streak": 0,
+  "longest_winning_streak": 8,
+  "current_losing_streak": 1,
+  "longest_losing_streak": 1,
+  "receive_consumptions": [],
+  "total_received_quantity": "2517611.778186",
+  "total_received_sold_quantity": "0",
+  "remaining_received_quantity": "2517611.778186"
+}

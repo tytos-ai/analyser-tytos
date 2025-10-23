@@ -1,0 +1,469 @@
+{
+  "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+  "token_symbol": "KICK",
+  "matched_trades": [
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "303655.921384",
+        "usd_price_per_token": "0.0001460754091839032453060965",
+        "usd_value": "44.356662967282955454930505820",
+        "timestamp": "2025-09-12T07:29:49Z",
+        "transaction_hash": "3Yy5jRECGpVcgviRQPfdMUaRU7HF9tr2vogWamiUi5J4bR3kgx45qvMmNQRtGe59S67H4DsBQUABfBhnmZ5HZBTw"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "303655.921384",
+        "usd_price_per_token": "0.0001776588748894372899247984",
+        "usd_value": "53.947169346596861401402598222",
+        "timestamp": "2025-09-16T00:41:18Z",
+        "transaction_hash": "48z6WVyjTbvDmkPj5ksiphUVrVu6Nd1nTa99Y26Rt2HD44HT7K7qHUMhsn6HmPyJXmSjiM1mTkfwm16wDAeuaofn"
+      },
+      "matched_quantity": "303655.921384",
+      "realized_pnl_usd": "9.590506379313905946472092403",
+      "hold_time_seconds": 321089
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "523376.638987",
+        "usd_price_per_token": "0.0001460754091839032453060965",
+        "usd_value": "76.452456697322033110106570191",
+        "timestamp": "2025-09-12T07:29:49Z",
+        "transaction_hash": "3Yy5jRECGpVcgviRQPfdMUaRU7HF9tr2vogWamiUi5J4bR3kgx45qvMmNQRtGe59S67H4DsBQUABfBhnmZ5HZBTw"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "523376.638987",
+        "usd_price_per_token": "0.0002642517992313401955888075",
+        "usd_value": "138.30321852796634164286527283",
+        "timestamp": "2025-09-19T00:31:44Z",
+        "transaction_hash": "JxoynnP3AnpmGgtynGwXDs8EFUF8NKN8SCMYA5opFoMaEj4ELA7ChWjKKqqsJzXJKnuAsUn1kd4G3Q9EYJLA9GC"
+      },
+      "matched_quantity": "523376.638987",
+      "realized_pnl_usd": "61.850761830644308532758702635",
+      "hold_time_seconds": 579715
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "387591.125168",
+        "usd_price_per_token": "0.0000000040843001363799849310",
+        "usd_value": "0.0015830384853833342098011748",
+        "timestamp": "2025-09-15T20:54:13Z",
+        "transaction_hash": "4MKydHZfU3U5Wj2MeyABgwBWnobk23gaRWD8YcTkP6s5z5AoX8PgDm84xiiUvyrq7hCkGpv2wfJXoX7MqwYPPdQR"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "387591.125168",
+        "usd_price_per_token": "0.0002642517992313401955888075",
+        "usd_value": "102.42165219174358393685108919",
+        "timestamp": "2025-09-19T00:31:44Z",
+        "transaction_hash": "JxoynnP3AnpmGgtynGwXDs8EFUF8NKN8SCMYA5opFoMaEj4ELA7ChWjKKqqsJzXJKnuAsUn1kd4G3Q9EYJLA9GC"
+      },
+      "matched_quantity": "387591.125168",
+      "realized_pnl_usd": "102.42006915325820060264128802",
+      "hold_time_seconds": 272251
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "387591.125168",
+        "usd_price_per_token": "0.0001566162801596475352867988",
+        "usd_value": "60.703080246704502872108330469",
+        "timestamp": "2025-09-15T20:54:13Z",
+        "transaction_hash": "4MKydHZfU3U5Wj2MeyABgwBWnobk23gaRWD8YcTkP6s5z5AoX8PgDm84xiiUvyrq7hCkGpv2wfJXoX7MqwYPPdQR"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "387591.125168",
+        "usd_price_per_token": "0.0002642517992313401955888075",
+        "usd_value": "102.42165219174358393685108919",
+        "timestamp": "2025-09-19T00:31:44Z",
+        "transaction_hash": "JxoynnP3AnpmGgtynGwXDs8EFUF8NKN8SCMYA5opFoMaEj4ELA7ChWjKKqqsJzXJKnuAsUn1kd4G3Q9EYJLA9GC"
+      },
+      "matched_quantity": "387591.125168",
+      "realized_pnl_usd": "41.718571945039081064742758724",
+      "hold_time_seconds": 272251
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "114789.399152",
+        "usd_price_per_token": "0.0000000254244478555587012384",
+        "usd_value": "0.0029184570931109381984214143",
+        "timestamp": "2025-09-17T02:44:09Z",
+        "transaction_hash": "DL2gVLrvx8hiN4MZb5sDnpzw9CvZNuQt2E3B8E49h3zYGTUTbYLDDYX3KNfJvwKabxh5pGWwPV5VTYHihddMpTc"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "114789.399152",
+        "usd_price_per_token": "0.0002642517992313401955888075",
+        "usd_value": "30.333305258600476499345373781",
+        "timestamp": "2025-09-19T00:31:44Z",
+        "transaction_hash": "JxoynnP3AnpmGgtynGwXDs8EFUF8NKN8SCMYA5opFoMaEj4ELA7ChWjKKqqsJzXJKnuAsUn1kd4G3Q9EYJLA9GC"
+      },
+      "matched_quantity": "114789.399152",
+      "realized_pnl_usd": "30.330386801507365561146952367",
+      "hold_time_seconds": 164855
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "387591.125168",
+        "usd_price_per_token": "0.0000000254244478555587012384",
+        "usd_value": "0.0098542903511111417562642110",
+        "timestamp": "2025-09-17T02:44:09Z",
+        "transaction_hash": "DL2gVLrvx8hiN4MZb5sDnpzw9CvZNuQt2E3B8E49h3zYGTUTbYLDDYX3KNfJvwKabxh5pGWwPV5VTYHihddMpTc"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "387591.125168",
+        "usd_price_per_token": "0.0002425658600390840637876094",
+        "usd_value": "94.01637461989220073957741112",
+        "timestamp": "2025-09-19T07:09:47Z",
+        "transaction_hash": "Cs52kzUjNNy7a2aoz2DhHUqAyEJtGJReXde5VsZwA9d6tELB4JUyNH6wc5AdMr2dHMKdnkeXU2WQ1CZyxeEZAvN"
+      },
+      "matched_quantity": "387591.125168",
+      "realized_pnl_usd": "94.00652032954108959782114691",
+      "hold_time_seconds": 188738
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "502380.524320",
+        "usd_price_per_token": "0.0002240762640937736516460327",
+        "usd_value": "112.57155104309679676133493887",
+        "timestamp": "2025-09-17T02:44:09Z",
+        "transaction_hash": "DL2gVLrvx8hiN4MZb5sDnpzw9CvZNuQt2E3B8E49h3zYGTUTbYLDDYX3KNfJvwKabxh5pGWwPV5VTYHihddMpTc"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "502380.524320",
+        "usd_price_per_token": "0.0002425658600390840637876094",
+        "usd_value": "121.86036394856678765817553549",
+        "timestamp": "2025-09-19T07:09:47Z",
+        "transaction_hash": "Cs52kzUjNNy7a2aoz2DhHUqAyEJtGJReXde5VsZwA9d6tELB4JUyNH6wc5AdMr2dHMKdnkeXU2WQ1CZyxeEZAvN"
+      },
+      "matched_quantity": "502380.524320",
+      "realized_pnl_usd": "9.288812905469990896840596617",
+      "hold_time_seconds": 188738
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "899976.837474",
+        "usd_price_per_token": "0.0002088792798389912843803201",
+        "usd_value": "187.98651368334202403084985744",
+        "timestamp": "2025-09-19T04:01:12Z",
+        "transaction_hash": "5ptjcWc7x8rZMxudncKuhzMLhiNt52JY5yeiL99qLekkDFbtw8CoHVxqjRP9BDrvuAamE3Za5LWa9kDjyPKnwDFh"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "899976.837474",
+        "usd_price_per_token": "0.0002425658600390840637876094",
+        "usd_value": "218.30365559713578976320479384",
+        "timestamp": "2025-09-19T07:09:47Z",
+        "transaction_hash": "Cs52kzUjNNy7a2aoz2DhHUqAyEJtGJReXde5VsZwA9d6tELB4JUyNH6wc5AdMr2dHMKdnkeXU2WQ1CZyxeEZAvN"
+      },
+      "matched_quantity": "899976.837474",
+      "realized_pnl_usd": "30.317141913793765732354936397",
+      "hold_time_seconds": 11315
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "889971.649488",
+        "usd_price_per_token": "0.0002088792798389912843803201",
+        "usd_value": "185.89663722217261641800916932",
+        "timestamp": "2025-09-19T04:01:12Z",
+        "transaction_hash": "5ptjcWc7x8rZMxudncKuhzMLhiNt52JY5yeiL99qLekkDFbtw8CoHVxqjRP9BDrvuAamE3Za5LWa9kDjyPKnwDFh"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "889971.649488",
+        "usd_price_per_token": "0.0002629436179478420051135179",
+        "usd_value": "234.01236538738343084089085615",
+        "timestamp": "2025-09-21T07:24:53Z",
+        "transaction_hash": "tqUUuazAD9kmMhpkEyX2tUnPXnQ8B7pea8uNGsREWXhV6nQKFkyJPtMNreAUqBrLRUko8FQDGKdvF9VwfaqGXFp"
+      },
+      "matched_quantity": "889971.649488",
+      "realized_pnl_usd": "48.115728165210814422881686827",
+      "hold_time_seconds": 185021
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1810880.989702",
+        "usd_price_per_token": "0.0002579619750896741713422355",
+        "usd_value": "467.13843675587183360093414799",
+        "timestamp": "2025-09-20T16:56:23Z",
+        "transaction_hash": "4cyA6R59DnSLf9PzCWmnFeu2d2qk16uLXr57syhUfJALHZZBmNjuFiVa3P83tpk73xm9KxivevZbV67DLMzyV4Rk"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1810880.989702",
+        "usd_price_per_token": "0.0002629436179478420051135179",
+        "usd_value": "476.15959910521270043509543961",
+        "timestamp": "2025-09-21T07:24:53Z",
+        "transaction_hash": "tqUUuazAD9kmMhpkEyX2tUnPXnQ8B7pea8uNGsREWXhV6nQKFkyJPtMNreAUqBrLRUko8FQDGKdvF9VwfaqGXFp"
+      },
+      "matched_quantity": "1810880.989702",
+      "realized_pnl_usd": "9.021162349340866834161291618",
+      "hold_time_seconds": 52110
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "401035.955306",
+        "usd_price_per_token": "0.0002714612038765370940866795",
+        "usd_value": "108.86570322514388400619671685",
+        "timestamp": "2025-09-20T16:58:13Z",
+        "transaction_hash": "3zXHxRTo3xwmueJuZ7zf9z51txpfjog94tUcEUr7pjLJ9D8RtmT5KJSbfg4tmFCbaVEtMhanB4BgcHbZEDsnch78"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "401035.955306",
+        "usd_price_per_token": "0.0002629436179478420051135179",
+        "usd_value": "105.44984501532870580185418800",
+        "timestamp": "2025-09-21T07:24:53Z",
+        "transaction_hash": "tqUUuazAD9kmMhpkEyX2tUnPXnQ8B7pea8uNGsREWXhV6nQKFkyJPtMNreAUqBrLRUko8FQDGKdvF9VwfaqGXFp"
+      },
+      "matched_quantity": "401035.955306",
+      "realized_pnl_usd": "-3.4158582098151782043425288511",
+      "hold_time_seconds": 52000
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "889971.649488",
+        "usd_price_per_token": "0.0002714612038765370940866795",
+        "usd_value": "241.59277538599997752574040546",
+        "timestamp": "2025-09-20T16:58:13Z",
+        "transaction_hash": "3zXHxRTo3xwmueJuZ7zf9z51txpfjog94tUcEUr7pjLJ9D8RtmT5KJSbfg4tmFCbaVEtMhanB4BgcHbZEDsnch78"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "889971.649488",
+        "usd_price_per_token": "0.0002388164333230296512613350",
+        "usd_value": "212.53985508933766787058370971",
+        "timestamp": "2025-09-22T15:48:43Z",
+        "transaction_hash": "2BGAyUJyj7WhEJTzWKeSqMau3k3TndAtp2KFkmkM74PSsGhkhHbq4VJs2yz7GSrLPvrWC86gc5wG6KAuPUpYgVDx"
+      },
+      "matched_quantity": "889971.649488",
+      "realized_pnl_usd": "-29.052920296662309655156695757",
+      "hold_time_seconds": 168630
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1541471.309404",
+        "usd_price_per_token": "0.0002072466506953837383619294",
+        "usd_value": "319.46476601700657831101185828",
+        "timestamp": "2025-09-22T00:44:10Z",
+        "transaction_hash": "4uPREsc3kCZWGW74tdxwhZZY69zTJioFQcnF8b5R6h5PRtH4YeRF9ns7aXzkph7STDQ4Yf74f5YdDKN9Rh2FUwjr"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1541471.309404",
+        "usd_price_per_token": "0.0002388164333230296512613350",
+        "usd_value": "368.12868018164357543812754265",
+        "timestamp": "2025-09-22T15:48:43Z",
+        "transaction_hash": "2BGAyUJyj7WhEJTzWKeSqMau3k3TndAtp2KFkmkM74PSsGhkhHbq4VJs2yz7GSrLPvrWC86gc5wG6KAuPUpYgVDx"
+      },
+      "matched_quantity": "1541471.309404",
+      "realized_pnl_usd": "48.663914164636997127115684365",
+      "hold_time_seconds": 54273
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1141326.065563",
+        "usd_price_per_token": "0.0002099291215636851456495526",
+        "usd_value": "239.59757836137750962351047497",
+        "timestamp": "2025-09-22T00:44:19Z",
+        "transaction_hash": "aUUP58KLGQPofAJeGEytRC9CjuiGxBbvwSAuuxdPdViBxt7qJ3msXfmTct211tKL74NnANAUiGUESCtuJmosJKe"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1141326.065563",
+        "usd_price_per_token": "0.0002388164333230296512613350",
+        "usd_value": "272.56742023636195771328745586",
+        "timestamp": "2025-09-22T15:48:43Z",
+        "transaction_hash": "2BGAyUJyj7WhEJTzWKeSqMau3k3TndAtp2KFkmkM74PSsGhkhHbq4VJs2yz7GSrLPvrWC86gc5wG6KAuPUpYgVDx"
+      },
+      "matched_quantity": "1141326.065563",
+      "realized_pnl_usd": "32.969841874984448089776980888",
+      "hold_time_seconds": 54264
+    },
+    {
+      "buy_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "777573.626986",
+        "usd_price_per_token": "0.0002155917537608896994601182",
+        "usd_value": "167.63846192012760980349159483",
+        "timestamp": "2025-09-22T00:44:49Z",
+        "transaction_hash": "2Nj8jYUwLASbTNrcyWve2SrnxGR1DKR7FJjo7QDxyDJhpKymRC9DprCMVAwiuAyA3wtWGHVLUKT8v2ZrinG2Z4GC"
+      },
+      "sell_event": {
+        "wallet_address": "6BxJCNh25HRvpby4TDJb5zV8uYqssiLmB2E6AUPXV25G",
+        "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+        "token_symbol": "KICK",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "777573.626986",
+        "usd_price_per_token": "0.0002388164333230296512613350",
+        "usd_value": "185.69736024284839849329896569",
+        "timestamp": "2025-09-22T15:48:43Z",
+        "transaction_hash": "2BGAyUJyj7WhEJTzWKeSqMau3k3TndAtp2KFkmkM74PSsGhkhHbq4VJs2yz7GSrLPvrWC86gc5wG6KAuPUpYgVDx"
+      },
+      "matched_quantity": "777573.626986",
+      "realized_pnl_usd": "18.058898322720788689807370864",
+      "hold_time_seconds": 54234
+    }
+  ],
+  "remaining_position": {
+    "token_address": "YpxLFM4koHT6EvsB1j7ABAAFdqnQpHiJoWzmEiFKick",
+    "token_symbol": "KICK",
+    "bought_quantity": "889971.649488",
+    "received_quantity": "0",
+    "avg_cost_basis_usd": "0.0002155917537608896994601182",
+    "total_cost_basis_usd": "191.87054871058973337094997753"
+  },
+  "total_realized_pnl_usd": "503.88353762898413523902226403",
+  "total_unrealized_pnl_usd": "-154.84882891420913516329107785",
+  "total_pnl_usd": "349.03470871477500007573118618",
+  "total_trades": 15,
+  "winning_trades": 13,
+  "losing_trades": 2,
+  "win_rate_percentage": "86.66666666666666666666666667",
+  "avg_hold_time_minutes": "2910.5377777777777777777777777",
+  "min_hold_time_minutes": "188.58333333333333333333333333",
+  "max_hold_time_minutes": "9661.916666666666666666666667",
+  "total_invested_usd": "2404.1495280219677151481655344",
+  "total_returned_usd": "2716.1625169403620621714113214",
+  "current_winning_streak": 3,
+  "longest_winning_streak": 10,
+  "current_losing_streak": 0,
+  "longest_losing_streak": 2,
+  "receive_consumptions": [],
+  "total_received_quantity": "0",
+  "total_received_sold_quantity": "0",
+  "remaining_received_quantity": "0"
+}

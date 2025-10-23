@@ -56,7 +56,7 @@ impl PostgresClient {
         chain: &str,
         portfolio_result: &pnl_core::PortfolioPnLResult,
     ) -> Result<()> {
-        self.store_pnl_result_with_source(wallet_address, chain, portfolio_result, "continuous")
+        self.store_pnl_result_with_source(wallet_address, chain, portfolio_result, "continuous", 0)
             .await
     }
 
@@ -67,6 +67,7 @@ impl PostgresClient {
         chain: &str,
         portfolio_result: &pnl_core::PortfolioPnLResult,
         analysis_source: &str,
+        incomplete_trades_count: u32,
     ) -> Result<()> {
         // Store with chain field for multichain support
         let portfolio_json =
@@ -114,6 +115,10 @@ impl PostgresClient {
         }
         let active_days_count = trading_days.len() as i32;
 
+        // Extract profit_percentage (ROI) from the portfolio result
+        // This is already calculated by the PnL engine
+        let roi_percentage = portfolio_result.profit_percentage.to_string().parse::<f64>().unwrap_or(0.0);
+
         // Clear existing data for this wallet and chain
         sqlx::query("DELETE FROM pnl_results WHERE wallet_address = $1 AND chain = $2")
             .bind(wallet_address)
@@ -130,16 +135,16 @@ impl PostgresClient {
         // Insert new rich format data
         sqlx::query(
             r#"
-            INSERT INTO pnl_results 
-            (wallet_address, chain, total_pnl_usd, realized_pnl_usd, unrealized_pnl_usd, total_trades, win_rate, 
-             tokens_analyzed, avg_hold_time_minutes, unique_tokens_count, active_days_count, portfolio_json, analyzed_at, analysis_source)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            INSERT INTO pnl_results
+            (wallet_address, chain, total_pnl_usd, realized_pnl_usd, unrealized_pnl_usd, total_trades, win_rate,
+             tokens_analyzed, avg_hold_time_minutes, unique_tokens_count, active_days_count, roi_percentage, portfolio_json, analyzed_at, analysis_source, incomplete_trades_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             "#
         )
         .bind(wallet_address)
         .bind(chain)
         .bind(total_pnl_usd)
-        .bind(realized_pnl_usd) 
+        .bind(realized_pnl_usd)
         .bind(unrealized_pnl_usd)
         .bind(total_trades)
         .bind(win_rate)
@@ -147,9 +152,11 @@ impl PostgresClient {
         .bind(avg_hold_time)
         .bind(unique_tokens_count)
         .bind(active_days_count)
+        .bind(roi_percentage)
         .bind(portfolio_json)
         .bind(Utc::now())
         .bind(analysis_source)
+        .bind(incomplete_trades_count as i32)
         .execute(&self.pool)
         .await
         .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -173,8 +180,8 @@ impl PostgresClient {
         let row = sqlx::query(
             r#"
             SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                   unique_tokens_count, active_days_count
-            FROM pnl_results 
+                   unique_tokens_count, active_days_count, incomplete_trades_count
+            FROM pnl_results
             WHERE wallet_address = $1 AND chain = $2
             "#,
         )
@@ -199,6 +206,7 @@ impl PostgresClient {
                 let is_archived: bool = row.get("is_archived");
                 let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
                 let active_days_count: Option<i32> = row.get("active_days_count");
+                let incomplete_trades_count: Option<i32> = row.get("incomplete_trades_count");
 
                 let portfolio_result: pnl_core::PortfolioPnLResult =
                     serde_json::from_str(&portfolio_json)
@@ -213,6 +221,7 @@ impl PostgresClient {
                     is_archived,
                     unique_tokens_count: unique_tokens_count.map(|v| v as u32),
                     active_days_count: active_days_count.map(|v| v as u32),
+                    incomplete_trades_count: incomplete_trades_count.map(|v| v as u32).unwrap_or(0),
                 };
 
                 Ok(Some(stored_result))
@@ -264,8 +273,8 @@ impl PostgresClient {
             sqlx::query(
                 r#"
                 SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                       unique_tokens_count, active_days_count
-                FROM pnl_results 
+                       unique_tokens_count, active_days_count, incomplete_trades_count
+                FROM pnl_results
                 WHERE chain = $1
                 ORDER BY analyzed_at DESC
                 LIMIT $2 OFFSET $3
@@ -278,8 +287,8 @@ impl PostgresClient {
             sqlx::query(
                 r#"
                 SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                       unique_tokens_count, active_days_count
-                FROM pnl_results 
+                       unique_tokens_count, active_days_count, incomplete_trades_count
+                FROM pnl_results
                 ORDER BY analyzed_at DESC
                 LIMIT $1 OFFSET $2
                 "#
@@ -304,6 +313,7 @@ impl PostgresClient {
             let is_archived: bool = row.get("is_archived");
             let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
             let active_days_count: Option<i32> = row.get("active_days_count");
+            let incomplete_trades_count: Option<i32> = row.get("incomplete_trades_count");
 
             match serde_json::from_str::<pnl_core::PortfolioPnLResult>(&portfolio_json) {
                 Ok(portfolio_result) => {
@@ -316,6 +326,7 @@ impl PostgresClient {
                         is_archived,
                         unique_tokens_count: unique_tokens_count.map(|v| v as u32),
                         active_days_count: active_days_count.map(|v| v as u32),
+                        incomplete_trades_count: incomplete_trades_count.map(|v| v as u32).unwrap_or(0),
                     };
                     results.push(stored_result);
                 }
@@ -330,6 +341,117 @@ impl PostgresClient {
 
         debug!(
             "Retrieved {} rich P&L portfolio results (offset: {}, limit: {})",
+            results.len(),
+            offset,
+            limit
+        );
+        Ok((results, total_count as usize))
+    }
+
+    /// Get all P&L portfolio results as lightweight summaries (NO portfolio_json deserialization)
+    /// This is a memory-optimized version for listing/filtering operations
+    pub async fn get_all_pnl_results_summary(
+        &self,
+        offset: usize,
+        limit: usize,
+        chain_filter: Option<&str>,
+    ) -> Result<(Vec<crate::StoredPortfolioPnLResultSummary>, usize)> {
+        // Get total count with optional chain filtering
+        let count_query = if let Some(chain) = chain_filter {
+            sqlx::query("SELECT COUNT(*) as count FROM pnl_results WHERE chain = $1").bind(chain)
+        } else {
+            sqlx::query("SELECT COUNT(*) as count FROM pnl_results")
+        };
+        let count_row = count_query.fetch_one(&self.pool).await.map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
+
+        let total_count: i64 = count_row.get("count");
+
+        if total_count == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        // Get paginated results - ONLY summary columns, NO portfolio_json
+        // Cast NUMERIC columns to FLOAT8 to avoid type mismatch with Rust f64
+        let rows = if let Some(chain) = chain_filter {
+            sqlx::query(
+                r#"
+                SELECT wallet_address, chain,
+                       total_pnl_usd::float8 as total_pnl_usd,
+                       realized_pnl_usd::float8 as realized_pnl_usd,
+                       unrealized_pnl_usd::float8 as unrealized_pnl_usd,
+                       roi_percentage::float8 as roi_percentage,
+                       total_trades,
+                       win_rate::float8 as win_rate,
+                       avg_hold_time_minutes::float8 as avg_hold_time_minutes,
+                       unique_tokens_count, active_days_count, analyzed_at, is_favorited, is_archived,
+                       incomplete_trades_count
+                FROM pnl_results
+                WHERE chain = $1
+                ORDER BY analyzed_at DESC
+                LIMIT $2 OFFSET $3
+                "#
+            )
+            .bind(chain)
+            .bind(limit as i64)
+            .bind(offset as i64)
+        } else {
+            sqlx::query(
+                r#"
+                SELECT wallet_address, chain,
+                       total_pnl_usd::float8 as total_pnl_usd,
+                       realized_pnl_usd::float8 as realized_pnl_usd,
+                       unrealized_pnl_usd::float8 as unrealized_pnl_usd,
+                       roi_percentage::float8 as roi_percentage,
+                       total_trades,
+                       win_rate::float8 as win_rate,
+                       avg_hold_time_minutes::float8 as avg_hold_time_minutes,
+                       unique_tokens_count, active_days_count, analyzed_at, is_favorited, is_archived,
+                       incomplete_trades_count
+                FROM pnl_results
+                ORDER BY analyzed_at DESC
+                LIMIT $1 OFFSET $2
+                "#
+            )
+            .bind(limit as i64)
+            .bind(offset as i64)
+        };
+        let rows = rows.fetch_all(&self.pool).await.map_err(|e| {
+            PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PostgreSQL error: {}", e),
+            )))
+        })?;
+
+        // Parse rows directly from database columns - NO JSON deserialization!
+        let mut results = Vec::new();
+        for row in rows {
+            let result = crate::StoredPortfolioPnLResultSummary {
+                wallet_address: row.get("wallet_address"),
+                chain: row.get("chain"),
+                total_pnl_usd: row.get("total_pnl_usd"),
+                realized_pnl_usd: row.get("realized_pnl_usd"),
+                unrealized_pnl_usd: row.get("unrealized_pnl_usd"),
+                roi_percentage: row.get("roi_percentage"),
+                total_trades: row.get("total_trades"),
+                win_rate: row.get("win_rate"),
+                avg_hold_time_minutes: row.get("avg_hold_time_minutes"),
+                unique_tokens_count: row.get::<Option<i32>, _>("unique_tokens_count").map(|v| v as u32),
+                active_days_count: row.get::<Option<i32>, _>("active_days_count").map(|v| v as u32),
+                analyzed_at: row.get("analyzed_at"),
+                is_favorited: row.get("is_favorited"),
+                is_archived: row.get("is_archived"),
+                incomplete_trades_count: row.get::<Option<i32>, _>("incomplete_trades_count").map(|v| v as u32).unwrap_or(0),
+            };
+            results.push(result);
+        }
+
+        info!(
+            "Retrieved {} P&L summary results (offset: {}, limit: {}) - NO portfolio_json loaded",
             results.len(),
             offset,
             limit
@@ -1141,8 +1263,8 @@ impl PostgresClient {
         let results_query = format!(
             r#"
             SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                   unique_tokens_count, active_days_count
-            FROM pnl_results 
+                   unique_tokens_count, active_days_count, incomplete_trades_count
+            FROM pnl_results
             {}
             ORDER BY analyzed_at DESC
             LIMIT ${} OFFSET ${}
@@ -1191,6 +1313,7 @@ impl PostgresClient {
             let is_archived: Option<bool> = row.try_get("is_archived").ok();
             let unique_tokens_count: Option<i32> = row.get("unique_tokens_count");
             let active_days_count: Option<i32> = row.get("active_days_count");
+            let incomplete_trades_count: Option<i32> = row.get("incomplete_trades_count");
 
             // Parse the portfolio JSON to get the rich result (same pattern as working functions)
             match serde_json::from_str::<pnl_core::PortfolioPnLResult>(&portfolio_json_str) {
@@ -1204,6 +1327,7 @@ impl PostgresClient {
                         is_archived: is_archived.unwrap_or(false),
                         unique_tokens_count: unique_tokens_count.map(|v| v as u32),
                         active_days_count: active_days_count.map(|v| v as u32),
+                        incomplete_trades_count: incomplete_trades_count.map(|v| v as u32).unwrap_or(0),
                     };
                     results.push(stored_result);
                 }

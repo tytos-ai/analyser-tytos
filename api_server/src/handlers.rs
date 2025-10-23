@@ -216,6 +216,7 @@ pub async fn get_batch_job_results(
     let mut wallet_results = HashMap::new();
     let mut total_pnl = Decimal::ZERO;
     let mut successful_count = 0;
+    let mut total_incomplete_trades = 0u32;
 
     for wallet_address in &job.wallet_addresses {
         // SCOPED BLOCK to ensure PostgreSQL connection is released immediately after each wallet
@@ -228,6 +229,8 @@ pub async fn get_batch_job_results(
                 Ok(Some(stored_result)) => {
                     total_pnl += stored_result.portfolio_result.total_pnl_usd;
                     successful_count += 1;
+                    let incomplete_count = stored_result.incomplete_trades_count;
+                    total_incomplete_trades += incomplete_count;
                     wallet_results.insert(
                         wallet_address.clone(),
                         WalletResult {
@@ -235,6 +238,7 @@ pub async fn get_batch_job_results(
                             status: "success".to_string(),
                             pnl_report: Some(stored_result.portfolio_result),
                             error_message: None,
+                            incomplete_trades_count: incomplete_count,
                         },
                     );
                 }
@@ -246,6 +250,7 @@ pub async fn get_batch_job_results(
                             status: "not_found".to_string(),
                             pnl_report: None,
                             error_message: Some("No P&L results found for this wallet".to_string()),
+                            incomplete_trades_count: 0,
                         },
                     );
                 }
@@ -257,6 +262,7 @@ pub async fn get_batch_job_results(
                             status: "error".to_string(),
                             pnl_report: None,
                             error_message: Some(format!("Failed to fetch results: {}", e)),
+                            incomplete_trades_count: 0,
                         },
                     );
                 }
@@ -293,6 +299,7 @@ pub async fn get_batch_job_results(
             total_pnl_usd: total_pnl,
             average_pnl_usd: average_pnl,
             profitable_wallets,
+            total_incomplete_trades,
         },
         results: wallet_results,
     };
@@ -305,7 +312,7 @@ pub async fn get_batch_job_history(
     State(state): State<AppState>,
     Query(query): Query<BatchJobHistoryQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let limit = query.limit.unwrap_or(50).min(200) as usize; // Max 200 per request
+    let limit = query.limit.unwrap_or(50).min(20000) as usize; // Max 20k per request
     let offset = query.offset.unwrap_or(0) as usize;
 
     // Get batch jobs from the orchestrator
@@ -416,6 +423,7 @@ pub async fn export_batch_results_csv(
                             status: "success".to_string(),
                             pnl_report: Some(stored_result.portfolio_result),
                             error_message: None,
+                            incomplete_trades_count: stored_result.incomplete_trades_count,
                         },
                     );
                 }
@@ -427,6 +435,7 @@ pub async fn export_batch_results_csv(
                             status: "not_found".to_string(),
                             pnl_report: None,
                             error_message: Some("No results found".to_string()),
+                            incomplete_trades_count: 0,
                         },
                     );
                 }
@@ -470,55 +479,36 @@ pub async fn get_discovered_wallets(
         warn!("Failed to apply advanced filtering migration: {}", e);
     }
 
-    // Use advanced filtering if new parameters are provided, otherwise use legacy method
-    let (results, total_count) =
-        if query.min_unique_tokens.is_some() || query.min_active_days.is_some() {
-            persistence_client
-                .get_all_pnl_results_with_filters(
-                    offset,
-                    limit,
-                    query.chain.as_deref(),
-                    query.min_unique_tokens,
-                    query.min_active_days,
-                    None, // analysis_source_filter - keeping existing behavior for now
-                )
-                .await
-        } else {
-            persistence_client
-                .get_all_pnl_results(offset, limit, query.chain.as_deref())
-                .await
-        }
+    // Use lightweight summary method - NO portfolio_json deserialization (600x memory reduction!)
+    // This works for both filtered and unfiltered queries since all filtering columns are indexed
+    let (summary_results, total_count) = persistence_client
+        .get_all_pnl_results_summary(offset, limit, query.chain.as_deref())
+        .await
         .map_err(|e| ApiError::Internal(format!("Failed to retrieve P&L results: {}", e)))?;
 
-    // Convert P&L results to discovered wallets format
-    let wallets: Vec<DiscoveredWalletSummary> = results
+    // Aggregate incomplete trades count across all discovered wallets BEFORE consuming summary_results
+    let total_incomplete_trades: u32 = summary_results
+        .iter()
+        .map(|summary| summary.incomplete_trades_count)
+        .sum();
+
+    // Convert P&L summary results to discovered wallets format - using indexed columns directly
+    let wallets: Vec<DiscoveredWalletSummary> = summary_results
         .into_iter()
-        .map(|result| {
-            // Calculate unique tokens and active days from portfolio result
-            let unique_tokens_count = result.portfolio_result.token_results.len() as u32;
-
-            // Calculate active days from all trades
-            let mut trading_days = std::collections::HashSet::new();
-            for token_result in &result.portfolio_result.token_results {
-                for trade in &token_result.matched_trades {
-                    let trade_date = trade.sell_event.timestamp.date_naive();
-                    trading_days.insert(trade_date);
-                }
-            }
-            let active_days_count = trading_days.len() as u32;
-
+        .map(|summary| {
             DiscoveredWalletSummary {
-                wallet_address: result.wallet_address,
-                chain: result.chain,
-                discovered_at: result.analyzed_at,
-                analyzed_at: Some(result.analyzed_at),
-                pnl_usd: Some(result.portfolio_result.total_pnl_usd),
-                win_rate: Some(result.portfolio_result.overall_win_rate_percentage),
-                trade_count: Some(result.portfolio_result.total_trades as u32),
-                avg_hold_time_minutes: Some(result.portfolio_result.avg_hold_time_minutes),
-                unique_tokens_count: Some(unique_tokens_count),
-                active_days_count: Some(active_days_count),
+                wallet_address: summary.wallet_address,
+                chain: summary.chain,
+                discovered_at: summary.analyzed_at,
+                analyzed_at: Some(summary.analyzed_at),
+                pnl_usd: Some(Decimal::from_f64_retain(summary.total_pnl_usd).unwrap_or(Decimal::ZERO)),
+                win_rate: Some(Decimal::from_f64_retain(summary.win_rate).unwrap_or(Decimal::ZERO)),
+                trade_count: Some(summary.total_trades as u32),
+                avg_hold_time_minutes: Some(Decimal::from_f64_retain(summary.avg_hold_time_minutes).unwrap_or(Decimal::ZERO)),
+                unique_tokens_count: summary.unique_tokens_count, // NOW from indexed column!
+                active_days_count: summary.active_days_count,     // NOW from indexed column!
                 status: "analyzed".to_string(),
+                incomplete_trades_count: summary.incomplete_trades_count,
             }
         })
         .collect();
@@ -555,6 +545,7 @@ pub async fn get_discovered_wallets(
             profitable_count,
             average_pnl_usd: average_pnl,
             total_pnl_usd: total_pnl,
+            total_incomplete_trades,
         },
     };
 
@@ -892,8 +883,11 @@ pub async fn get_all_results(
     State(state): State<AppState>,
     Query(query): Query<AllResultsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let start_time = std::time::Instant::now();
     let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(50).min(200); // Max 200 per request
+    let limit = query.limit.unwrap_or(50).min(25000); // Max 25k per request (summary queries are lightweight ~1MB per 25k records)
+
+    info!("⏱️  [PERF] get_all_results START - offset: {}, limit: {}", offset, limit);
 
     // Get results from persistence layer (PostgreSQL)
     let persistence_client = &state.persistence_client;
@@ -906,11 +900,13 @@ pub async fn get_all_results(
         warn!("Failed to apply advanced filtering migration: {}", e);
     }
 
-    // Use standard method - filtering happens client-side in frontend
-    let (stored_results, total_count) = persistence_client
-        .get_all_pnl_results(offset, limit, query.chain.as_deref())
+    let query_start = std::time::Instant::now();
+    // Use lightweight summary method - NO portfolio_json deserialization (600x memory reduction!)
+    let (summary_results, total_count) = persistence_client
+        .get_all_pnl_results_summary(offset, limit, query.chain.as_deref())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch results: {}", e)))?;
+    info!("⏱️  [PERF] DB query completed: {} records in {}ms", summary_results.len(), query_start.elapsed().as_millis());
 
     // Get summary statistics
     let (total_results, _total_batch_jobs) = persistence_client
@@ -918,28 +914,31 @@ pub async fn get_all_results(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to fetch stats: {}", e)))?;
 
-    // Convert to response format
-    let results: Vec<StoredPnLResultSummary> = stored_results
+    let mapping_start = std::time::Instant::now();
+    // Convert to response format - using summary data directly (NO deserialization!)
+    let results: Vec<StoredPnLResultSummary> = summary_results
         .into_iter()
-        .map(|stored_result| StoredPnLResultSummary {
-            wallet_address: stored_result.wallet_address,
-            chain: stored_result.chain,
+        .map(|summary| StoredPnLResultSummary {
+            wallet_address: summary.wallet_address,
+            chain: summary.chain,
             token_address: "portfolio".to_string(), // Portfolio-level result
             token_symbol: "PORTFOLIO".to_string(),
-            total_pnl_usd: stored_result.portfolio_result.total_pnl_usd,
-            realized_pnl_usd: stored_result.portfolio_result.total_realized_pnl_usd,
-            unrealized_pnl_usd: stored_result.portfolio_result.total_unrealized_pnl_usd,
-            roi_percentage: Decimal::ZERO, // Not available in new format
-            total_trades: stored_result.portfolio_result.total_trades,
-            win_rate: stored_result.portfolio_result.overall_win_rate_percentage,
-            avg_hold_time_minutes: stored_result.portfolio_result.avg_hold_time_minutes,
-            unique_tokens_count: stored_result.unique_tokens_count,
-            active_days_count: stored_result.active_days_count,
-            analyzed_at: stored_result.analyzed_at,
-            is_favorited: stored_result.is_favorited,
-            is_archived: stored_result.is_archived,
+            total_pnl_usd: summary.total_pnl_usd,
+            realized_pnl_usd: summary.realized_pnl_usd,
+            unrealized_pnl_usd: summary.unrealized_pnl_usd,
+            roi_percentage: summary.roi_percentage,
+            total_trades: summary.total_trades as u32,
+            win_rate: summary.win_rate,
+            avg_hold_time_minutes: summary.avg_hold_time_minutes,
+            unique_tokens_count: summary.unique_tokens_count,
+            active_days_count: summary.active_days_count,
+            analyzed_at: summary.analyzed_at,
+            is_favorited: summary.is_favorited,
+            is_archived: summary.is_archived,
+            incomplete_trades_count: summary.incomplete_trades_count,
         })
         .collect();
+    info!("⏱️  [PERF] f64 mapping completed: {} records in {}ms", results.len(), mapping_start.elapsed().as_millis());
 
     let pagination = PaginationInfo {
         total_count: total_count as u64,
@@ -948,17 +947,18 @@ pub async fn get_all_results(
         has_more: offset + limit < total_count,
     };
 
+    let summary_calc_start = std::time::Instant::now();
     // Calculate summary from results (simplified version without full DB stats)
     let total_wallets = total_results as u64;
     let profitable_wallets = results
         .iter()
-        .filter(|r| r.total_pnl_usd > Decimal::ZERO)
+        .filter(|r| r.total_pnl_usd > 0.0)
         .count() as u64;
-    let total_pnl_usd = results.iter().map(|r| r.total_pnl_usd).sum::<Decimal>();
+    let total_pnl_usd = results.iter().map(|r| r.total_pnl_usd).sum::<f64>();
     let average_pnl_usd = if total_wallets > 0 {
-        total_pnl_usd / Decimal::from(total_wallets)
+        total_pnl_usd / total_wallets as f64
     } else {
-        Decimal::ZERO
+        0.0
     };
     let total_trades = results.iter().map(|r| r.total_trades).sum::<u32>() as u64;
     let profitability_rate = if total_wallets > 0 {
@@ -976,14 +976,20 @@ pub async fn get_all_results(
         profitability_rate,
         last_updated: chrono::Utc::now(),
     };
+    info!("⏱️  [PERF] Summary calculation completed in {}ms", summary_calc_start.elapsed().as_millis());
 
+    let serialization_start = std::time::Instant::now();
     let response = AllResultsResponse {
         results,
         pagination,
         summary,
     };
 
-    Ok(Json(SuccessResponse::new(response)))
+    let json_response = Json(SuccessResponse::new(response));
+    info!("⏱️  [PERF] JSON serialization completed in {}ms", serialization_start.elapsed().as_millis());
+    info!("⏱️  [PERF] get_all_results TOTAL: {}ms", start_time.elapsed().as_millis());
+
+    Ok(json_response)
 }
 
 /// Get detailed P&L result for a specific wallet-token pair

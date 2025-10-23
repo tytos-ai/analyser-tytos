@@ -19,3 +19,4 @@ futures = "0.3"
 pnl_core = { path = "../pnl_core" }
 persistence_layer = { path = "../persistence_layer" }
 config_manager = { path = "../config_manager" }
+retry_utils = { path = "../retry_utils" }

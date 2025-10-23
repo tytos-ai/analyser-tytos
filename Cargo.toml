@@ -10,5 +10,6 @@ members = [
     "config_manager",
     "job_orchestrator",
     "zerion_client",
+    "retry_utils",
 ]
 

@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use config_manager::normalize_chain_for_zerion;
 use pnl_core::{NewEventType, NewFinancialEvent};
 use reqwest::{header::HeaderMap, Client};
+use retry_utils::{retry_with_backoff, RetryableError, RetryConfig};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use std::str::FromStr;
@@ -29,6 +30,8 @@ pub enum ZerionError {
     InvalidTimeRange(String),
     #[error("Invalid chain parameter: {0}")]
     InvalidChain(String),
+    #[error("Rate limit exceeded (429)")]
+    RateLimit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +166,7 @@ pub struct ZerionLinks {
 pub struct ConversionResult {
     pub events: Vec<NewFinancialEvent>,
     pub skipped_transactions: Vec<SkippedTransactionInfo>,
+    pub incomplete_trades_count: u32,  // Count of trades with only OUT transfers (no IN side)
 }
 
 /// Information about a skipped transaction that needs price enrichment
@@ -179,6 +183,85 @@ pub struct SkippedTransactionInfo {
     pub unix_timestamp: i64,
     pub chain_id: String,
     pub skip_reason: String,
+}
+
+/// Paired IN and OUT transfers for a trade (same act_id)
+#[derive(Debug, Clone)]
+struct TradePair<'a> {
+    in_transfers: Vec<&'a ZerionTransfer>,
+    out_transfers: Vec<&'a ZerionTransfer>,
+    act_id: String,
+}
+
+/// Known stable currencies with reliable prices (native currencies, wrapped tokens, stablecoins)
+/// Covers: Solana, Ethereum, Base, Binance Smart Chain
+const STABLE_CURRENCIES: &[&str] = &[
+    // === SOLANA ===
+    // Native & Wrapped SOL
+    "So11111111111111111111111111111111111111112",  // Wrapped SOL
+    "11111111111111111111111111111111",              // Native SOL
+    // Stablecoins
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+    "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", // USDC (native)
+    // Liquid Staking Tokens (behave like native)
+    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",  // mSOL (Marinade)
+    "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj", // stSOL (Lido)
+    "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", // jitoSOL
+
+    // === ETHEREUM ===
+    // Native & Wrapped ETH
+    "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", // WETH
+    "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // ETH (placeholder)
+    // Stablecoins
+    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // USDC
+    "0xdAC17F958D2ee523a2206206994597C13D831ec7", // USDT
+    "0x6B175474E89094C44Da98b954EedeAC495271d0F", // DAI
+    "0x4Fabb145d64652a948d72533023f6E7A623C7C53", // BUSD
+    "0x853d955aCEf822Db058eb8505911ED77F175b99e", // FRAX
+    // Liquid Staking ETH
+    "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84", // stETH (Lido)
+    "0xBe9895146f7AF43049ca1c1AE358B0541Ea49704", // cbETH (Coinbase)
+    "0xac3E018457B222d93114458476f3E3416Abbe38F", // sfrxETH (Frax)
+
+    // === BASE ===
+    // Native & Wrapped ETH on Base
+    "0x4200000000000000000000000000000000000006", // WETH (Base)
+    // Stablecoins on Base
+    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC (Base native)
+    "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA", // USDbC (Bridged USDC)
+
+    // === BINANCE SMART CHAIN ===
+    // Native & Wrapped BNB
+    "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", // WBNB
+    // Stablecoins
+    "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", // USDC (BSC)
+    "0x55d398326f99059fF775485246999027B3197955", // USDT (BSC)
+    "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56", // BUSD (BSC)
+    "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3", // DAI (BSC)
+];
+
+/// Helper function to classify Zerion errors for retry strategy
+fn classify_zerion_error(error: &ZerionError) -> RetryableError {
+    match error {
+        ZerionError::RateLimit => RetryableError::RateLimit,
+        ZerionError::Api { message } if message.contains("HTTP 5") || message.starts_with("HTTP 5") => {
+            RetryableError::ServerError
+        }
+        ZerionError::Http(_) => RetryableError::Timeout,
+        _ => RetryableError::Other,
+    }
+}
+
+/// Retry configuration for critical Zerion operations
+/// Max delays: Rate Limit = 2s, Server Error = 1.2s, Timeout = 1s
+fn get_zerion_retry_config() -> RetryConfig {
+    RetryConfig {
+        max_attempts: 3,
+        rate_limit_delays_ms: vec![500, 1000, 2000],
+        server_error_delays_ms: vec![300, 600, 1200],
+        timeout_delays_ms: vec![500, 1000],
+    }
 }
 
 #[derive(Clone)]
@@ -232,8 +315,27 @@ impl ZerionClient {
         })
     }
 
-    /// Get wallet transactions for a specific chain
+    /// Get wallet transactions for a specific chain (with retry)
     pub async fn get_wallet_transactions_for_chain(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        chain_id: &str,
+    ) -> Result<Vec<ZerionTransaction>, ZerionError> {
+        let wallet_owned = wallet_address.to_string();
+        let currency_owned = currency.to_string();
+        let chain_owned = chain_id.to_string();
+
+        retry_with_backoff(
+            || self.get_wallet_transactions_for_chain_internal(&wallet_owned, &currency_owned, &chain_owned),
+            &get_zerion_retry_config(),
+            classify_zerion_error,
+        )
+        .await
+    }
+
+    /// Internal implementation of get_wallet_transactions_for_chain (without retry)
+    async fn get_wallet_transactions_for_chain_internal(
         &self,
         wallet_address: &str,
         currency: &str,
@@ -279,6 +381,13 @@ impl ZerionClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
+
+                // Check for rate limit (429)
+                if status.as_u16() == 429 {
+                    error!("⏱️  Rate limit hit on page {}", page_num);
+                    return Err(ZerionError::RateLimit);
+                }
+
                 error!(
                     "❌ Zerion API error {} on page {}: {}",
                     status, page_num, text
@@ -363,7 +472,25 @@ impl ZerionClient {
         Ok(all_transactions)
     }
 
+    /// Get wallet transactions across all configured chains (with retry)
     pub async fn get_wallet_transactions(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+    ) -> Result<Vec<ZerionTransaction>, ZerionError> {
+        let wallet_owned = wallet_address.to_string();
+        let currency_owned = currency.to_string();
+
+        retry_with_backoff(
+            || self.get_wallet_transactions_internal(&wallet_owned, &currency_owned),
+            &get_zerion_retry_config(),
+            classify_zerion_error,
+        )
+        .await
+    }
+
+    /// Internal implementation of get_wallet_transactions (without retry)
+    async fn get_wallet_transactions_internal(
         &self,
         wallet_address: &str,
         currency: &str,
@@ -396,6 +523,13 @@ impl ZerionClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
+
+                // Check for rate limit (429)
+                if status.as_u16() == 429 {
+                    error!("⏱️  Rate limit hit on page {}", page_num);
+                    return Err(ZerionError::RateLimit);
+                }
+
                 error!(
                     "❌ Zerion API error {} on page {}: {}",
                     status, page_num, text
@@ -481,7 +615,28 @@ impl ZerionClient {
     }
 
 
+    /// Get wallet transactions with a limit (with retry)
     pub async fn get_wallet_transactions_with_limit(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        limit: usize,
+        chain_id: Option<&str>,
+    ) -> Result<Vec<ZerionTransaction>, ZerionError> {
+        let wallet_owned = wallet_address.to_string();
+        let currency_owned = currency.to_string();
+        let chain_owned = chain_id.map(|s| s.to_string());
+
+        retry_with_backoff(
+            || self.get_wallet_transactions_with_limit_internal(&wallet_owned, &currency_owned, limit, chain_owned.as_deref()),
+            &get_zerion_retry_config(),
+            classify_zerion_error,
+        )
+        .await
+    }
+
+    /// Internal implementation of get_wallet_transactions_with_limit (without retry)
+    async fn get_wallet_transactions_with_limit_internal(
         &self,
         wallet_address: &str,
         currency: &str,
@@ -548,6 +703,13 @@ impl ZerionClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
+
+                // Check for rate limit (429)
+                if status.as_u16() == 429 {
+                    error!("⏱️  Rate limit hit on page {}", page_num);
+                    return Err(ZerionError::RateLimit);
+                }
+
                 error!(
                     "❌ Zerion API error {} on page {}: {}",
                     status, page_num, text
@@ -649,9 +811,38 @@ impl ZerionClient {
     }
 
     /// Get wallet transactions with time-range filtering (ignores transaction limits)
+    /// Get wallet transactions with time range filter (with retry)
     /// When time_range is provided, fetches ALL transactions within that period
     /// When time_range is None, falls back to max_transactions limit behavior
     pub async fn get_wallet_transactions_with_time_range(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        time_range: Option<&str>,
+        max_transactions: Option<usize>,
+        chain_id: Option<&str>,
+    ) -> Result<Vec<ZerionTransaction>, ZerionError> {
+        let wallet_owned = wallet_address.to_string();
+        let currency_owned = currency.to_string();
+        let time_range_owned = time_range.map(|s| s.to_string());
+        let chain_owned = chain_id.map(|s| s.to_string());
+
+        retry_with_backoff(
+            || self.get_wallet_transactions_with_time_range_internal(
+                &wallet_owned,
+                &currency_owned,
+                time_range_owned.as_deref(),
+                max_transactions,
+                chain_owned.as_deref(),
+            ),
+            &get_zerion_retry_config(),
+            classify_zerion_error,
+        )
+        .await
+    }
+
+    /// Internal implementation of get_wallet_transactions_with_time_range (without retry)
+    async fn get_wallet_transactions_with_time_range_internal(
         &self,
         wallet_address: &str,
         currency: &str,
@@ -743,6 +934,13 @@ impl ZerionClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
+
+                // Check for rate limit (429)
+                if status.as_u16() == 429 {
+                    error!("⏱️  Rate limit hit on page {}", page_num);
+                    return Err(ZerionError::RateLimit);
+                }
+
                 error!(
                     "❌ Zerion API error {} on page {}: {}",
                     status, page_num, text
@@ -809,6 +1007,253 @@ impl ZerionClient {
         Ok(all_transactions)
     }
 
+    /// Check if a token address is a known stable currency
+    fn is_stable_currency(token_address: &str) -> bool {
+        STABLE_CURRENCIES.contains(&token_address)
+    }
+
+    /// Group transfers by act_id for trade pairing
+    fn pair_trade_transfers<'a>(transfers: &'a [ZerionTransfer]) -> Vec<TradePair<'a>> {
+        use std::collections::HashMap;
+
+        let mut pairs_map: HashMap<String, TradePair<'a>> = HashMap::new();
+
+        for transfer in transfers {
+            let act_id = transfer.act_id.clone();
+            let pair = pairs_map.entry(act_id.clone()).or_insert(TradePair {
+                in_transfers: Vec::new(),
+                out_transfers: Vec::new(),
+                act_id,
+            });
+
+            match transfer.direction.as_str() {
+                "in" | "self" => pair.in_transfers.push(transfer),
+                "out" => pair.out_transfers.push(transfer),
+                _ => {}
+            }
+        }
+
+        pairs_map.into_values().collect()
+    }
+
+    /// Convert a trade pair using implicit swap pricing
+    /// Returns a vector of financial events (BUY for IN side, SELL for OUT side)
+    fn convert_trade_pair_to_events(
+        &self,
+        tx: &ZerionTransaction,
+        trade_pair: &TradePair,
+        wallet_address: &str,
+        chain_id: &str,
+    ) -> Vec<NewFinancialEvent> {
+        let mut events = Vec::new();
+
+        // === MULTI-HOP SWAP DETECTION ===
+        // Count unique token addresses to detect multi-hop swaps (Token A → SOL → Token B)
+        // When we have 3+ unique assets including a stable currency, it's a multi-hop swap
+        // and we should NOT use implicit pricing (which would use fee amounts incorrectly)
+        use std::collections::HashSet;
+        let unique_assets: HashSet<String> = trade_pair.in_transfers.iter()
+            .chain(trade_pair.out_transfers.iter())
+            .filter_map(|t| {
+                t.fungible_info.as_ref().and_then(|f| {
+                    f.implementations.iter()
+                        .find(|i| i.chain_id == chain_id)
+                        .and_then(|i| i.address.as_ref())
+                })
+            })
+            .cloned()
+            .collect();
+
+        // Check if any asset is a stable currency (SOL, USDC, etc.)
+        let has_stable = unique_assets.iter().any(|addr| Self::is_stable_currency(addr));
+
+        // Detect multi-hop swap: 3+ unique assets including stable currency
+        // Example: Moon (out) + KICK (in) + SOL (out, fees) = 3 assets
+        // In this case, skip implicit pricing and let BirdEye enrich NULL prices
+        if unique_assets.len() >= 3 && has_stable {
+            info!(
+                "🔄 Multi-hop swap detected in tx {}: {} unique assets with stable currency. \
+                 Skipping implicit pricing - will process all transfers for BirdEye enrichment.",
+                tx.id, unique_assets.len()
+            );
+
+            // Process ALL transfers individually (no implicit pricing)
+            // NULL price/value transfers will create zero-price events for BirdEye enrichment
+            for transfer in trade_pair.in_transfers.iter().chain(trade_pair.out_transfers.iter()) {
+                if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                    events.push(event);
+                }
+            }
+
+            return events;
+        }
+        // === END MULTI-HOP SWAP DETECTION ===
+
+        // Skip if missing either side
+        if trade_pair.in_transfers.is_empty() || trade_pair.out_transfers.is_empty() {
+            warn!(
+                "Skipping incomplete trade pair in tx {}: {} IN transfers, {} OUT transfers",
+                tx.id,
+                trade_pair.in_transfers.len(),
+                trade_pair.out_transfers.len()
+            );
+            return events;
+        }
+
+        // Find stable currency side (SOL, USDC, etc.) - this will have the reliable price
+        let mut stable_side_value: Option<f64> = None;
+        let mut stable_transfer: Option<&ZerionTransfer> = None;
+        let mut volatile_transfer: Option<&ZerionTransfer> = None;
+
+        // Check OUT transfers for stable currency
+        for out_transfer in &trade_pair.out_transfers {
+            if let Some(fungible_info) = &out_transfer.fungible_info {
+                if let Some(impl_) = fungible_info.implementations.iter().find(|i| i.chain_id == chain_id) {
+                    if let Some(address) = &impl_.address {
+                        if Self::is_stable_currency(address) && out_transfer.value.is_some() {
+                            stable_side_value = out_transfer.value;
+                            stable_transfer = Some(out_transfer);
+                            // Find corresponding IN transfer (volatile side)
+                            if let Some(in_transfer) = trade_pair.in_transfers.first() {
+                                volatile_transfer = Some(in_transfer);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no stable OUT, check IN transfers for stable currency
+        if stable_transfer.is_none() {
+            for in_transfer in &trade_pair.in_transfers {
+                if let Some(fungible_info) = &in_transfer.fungible_info {
+                    if let Some(impl_) = fungible_info.implementations.iter().find(|i| i.chain_id == chain_id) {
+                        if let Some(address) = &impl_.address {
+                            if Self::is_stable_currency(address) && in_transfer.value.is_some() {
+                                stable_side_value = in_transfer.value;
+                                stable_transfer = Some(in_transfer);
+                                // Find corresponding OUT transfer (volatile side)
+                                if let Some(out_transfer) = trade_pair.out_transfers.first() {
+                                    volatile_transfer = Some(out_transfer);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we found a stable side, use implicit pricing
+        if let (Some(stable_value), Some(stable_xfer), Some(volatile_xfer)) =
+            (stable_side_value, stable_transfer, volatile_transfer) {
+
+            info!(
+                "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side value = ${:.2}",
+                tx.id, trade_pair.act_id, stable_value
+            );
+
+            // Process volatile side with calculated implicit price
+            if let Some(event) = self.convert_transfer_with_implicit_price(
+                tx,
+                volatile_xfer,
+                wallet_address,
+                chain_id,
+                stable_value,
+            ) {
+                events.push(event);
+            }
+
+            // Process stable side with Zerion's price (it's reliable)
+            if let Some(event) = self.convert_transfer_to_event(tx, stable_xfer, wallet_address, chain_id) {
+                events.push(event);
+            }
+        } else {
+            // No stable currency found, fall back to regular conversion
+            warn!(
+                "No stable currency found in trade pair for tx {} (act_id: {}), using standard conversion",
+                tx.id, trade_pair.act_id
+            );
+
+            // Process all transfers normally
+            for transfer in trade_pair.in_transfers.iter().chain(trade_pair.out_transfers.iter()) {
+                if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                    events.push(event);
+                }
+            }
+        }
+
+        events
+    }
+
+    /// Convert a transfer using an implicit price calculated from the swap
+    fn convert_transfer_with_implicit_price(
+        &self,
+        tx: &ZerionTransaction,
+        transfer: &ZerionTransfer,
+        wallet_address: &str,
+        chain_id: &str,
+        stable_side_value_usd: f64,
+    ) -> Option<NewFinancialEvent> {
+        let fungible_info = transfer.fungible_info.as_ref()?;
+
+        let amount = match Self::parse_decimal_with_precision_handling(&transfer.quantity.numeric) {
+            Ok(amt) => amt,
+            Err(e) => {
+                warn!(
+                    "Failed to parse amount '{}' for implicit pricing: {}",
+                    transfer.quantity.numeric, e
+                );
+                return None;
+            }
+        };
+
+        // Calculate implicit price: stable_value / quantity
+        let quantity_f64 = amount.to_f64().unwrap_or(0.0);
+        if quantity_f64 == 0.0 {
+            warn!("Cannot calculate implicit price: zero quantity for {}", fungible_info.symbol);
+            return None;
+        }
+
+        let implicit_price = stable_side_value_usd / quantity_f64;
+
+        info!(
+            "🔄 Calculated implicit price for {}: ${:.10} per token (from swap value ${:.2} / quantity {})",
+            fungible_info.symbol, implicit_price, stable_side_value_usd, amount
+        );
+
+        // Determine event type
+        let event_type = match transfer.direction.as_str() {
+            "in" | "self" => NewEventType::Buy,
+            "out" => NewEventType::Sell,
+            _ => {
+                warn!("Unknown direction in implicit pricing: {}", transfer.direction);
+                return None;
+            }
+        };
+
+        // Extract token address
+        let mint_address = fungible_info
+            .implementations
+            .iter()
+            .find(|impl_| impl_.chain_id == chain_id)
+            .and_then(|impl_| impl_.address.as_ref())?;
+
+        Some(NewFinancialEvent {
+            wallet_address: wallet_address.to_string(),
+            token_address: mint_address.clone(),
+            token_symbol: fungible_info.symbol.clone(),
+            chain_id: chain_id.to_string(),
+            event_type,
+            quantity: amount,
+            usd_price_per_token: Decimal::from_f64_retain(implicit_price).unwrap_or(Decimal::ZERO),
+            usd_value: Decimal::from_f64_retain(stable_side_value_usd).unwrap_or(Decimal::ZERO),
+            timestamp: tx.attributes.mined_at,
+            transaction_hash: tx.attributes.hash.clone(),
+        })
+    }
+
     /// Parse a decimal string with robust precision handling.
     /// Truncates excessive decimal places to fit within Decimal's 28-digit limit.
     fn parse_decimal_with_precision_handling(numeric_str: &str) -> Result<Decimal, String> {
@@ -859,12 +1304,13 @@ impl ZerionClient {
         &self,
         transactions: &[ZerionTransaction],
         wallet_address: &str,
-    ) -> Vec<NewFinancialEvent> {
+    ) -> ConversionResult {
         let start_time = std::time::Instant::now();
         let mut events = Vec::new();
         let mut processed_count = 0u32;
         let mut skipped_count = 0u32;
         let mut error_count = 0u32;
+        let mut incomplete_trades_count = 0u32;  // NEW: Track incomplete trades
 
         info!(
             "🔄 Converting {} transactions to financial events for wallet: {}",
@@ -883,16 +1329,73 @@ impl ZerionClient {
 
             // Only process trade and send operations
             match tx.attributes.operation_type.as_str() {
-                "trade" | "send" => {
+                "trade" => {
                     processed_count += 1;
                     let transfer_count = tx.attributes.transfers.len();
                     debug!(
-                        "💱 Transaction {}: {} transfers to process",
+                        "💱 Transaction {}: {} transfers to process (TRADE)",
+                        tx.id, transfer_count
+                    );
+
+                    // Extract chain_id from transaction relationships
+                    let chain_id = tx
+                        .relationships
+                        .as_ref()
+                        .and_then(|rel| rel.chain.as_ref())
+                        .map(|chain| chain.data.id.as_str())
+                        .unwrap_or("unknown");
+
+                    // NEW: Use implicit swap pricing for trades
+                    let trade_pairs = Self::pair_trade_transfers(&tx.attributes.transfers);
+
+                    debug!(
+                        "📊 Transaction {}: Grouped into {} trade pair(s)",
+                        tx.id, trade_pairs.len()
+                    );
+
+                    let mut tx_events = 0u32;
+                    for trade_pair in trade_pairs {
+                        // Check if trade is complete
+                        if trade_pair.in_transfers.is_empty() || trade_pair.out_transfers.is_empty() {
+                            incomplete_trades_count += 1;
+                            warn!(
+                                "Incomplete trade detected in tx {} (hash: {}): {} IN transfers, {} OUT transfers",
+                                tx.id, tx.attributes.hash,
+                                trade_pair.in_transfers.len(),
+                                trade_pair.out_transfers.len()
+                            );
+                        }
+
+                        let pair_events = self.convert_trade_pair_to_events(tx, &trade_pair, wallet_address, chain_id);
+                        tx_events += pair_events.len() as u32;
+
+                        for event in pair_events {
+                            debug!(
+                                "✅ Created {} event: {} {} @ ${:.10} = ${:.2}",
+                                if event.event_type == NewEventType::Buy { "BUY" } else { "SELL" },
+                                event.quantity,
+                                event.token_symbol,
+                                event.usd_price_per_token,
+                                event.usd_value
+                            );
+                            events.push(event);
+                        }
+                    }
+
+                    debug!(
+                        "📊 Transaction {}: {} transfers → {} events (via trade pairing)",
+                        tx.id, transfer_count, tx_events
+                    );
+                }
+                "send" => {
+                    processed_count += 1;
+                    let transfer_count = tx.attributes.transfers.len();
+                    debug!(
+                        "📤 Transaction {}: {} transfers to process (SEND)",
                         tx.id, transfer_count
                     );
 
                     let mut tx_events = 0u32;
-                    // Extract chain_id from transaction relationships
                     let chain_id = tx
                         .relationships
                         .as_ref()
@@ -930,7 +1433,6 @@ impl ZerionClient {
                                 tx_events += 1;
                             }
                             None => {
-                                // Log more specific reason for skipping the transfer
                                 let skip_reason = if transfer.fungible_info.is_none() {
                                     "missing fungible_info (token metadata)"
                                 } else if transfer.price.is_none() && transfer.value.is_none() {
@@ -992,7 +1494,18 @@ impl ZerionClient {
             );
         }
 
-        events
+        if incomplete_trades_count > 0 {
+            info!(
+                "📊 Detected {} incomplete trade(s) with only OUT transfers",
+                incomplete_trades_count
+            );
+        }
+
+        ConversionResult {
+            events,
+            skipped_transactions: Vec::new(),
+            incomplete_trades_count,
+        }
     }
 
     fn convert_transfer_to_event(
@@ -1030,7 +1543,7 @@ impl ZerionClient {
         // Determine event type based on operation type and direction
         let event_type = match tx.attributes.operation_type.as_str() {
             "trade" => match transfer.direction.as_str() {
-                "in" => NewEventType::Buy,
+                "in" | "self" => NewEventType::Buy,  // "self" means tokens received into same wallet (common in DEX swaps)
                 "out" => NewEventType::Sell,
                 _ => {
                     warn!("Unknown direction in trade: {}", transfer.direction);
@@ -1143,10 +1656,11 @@ impl ZerionClient {
                 }
             }
             (None, None) => {
-                // Both price and value are null - skip this transaction
-                warn!(
-                    "⚠️  Skipping transaction {}: both price and value are null for {} ({}) - tx_hash: {}",
-                    tx.id, fungible_info.symbol, mint_address, tx.attributes.hash
+                // Both price and value are null - skip this transfer
+                // extract_skipped_transactions() will identify it from raw data for BirdEye enrichment
+                info!(
+                    "⚠️  Skipping transfer with NULL price/value: {} ({}) in tx {} - tx_hash: {} (will be enriched by BirdEye)",
+                    fungible_info.symbol, mint_address, tx.id, tx.attributes.hash
                 );
                 return None;
             }
