@@ -25,16 +25,6 @@ min_boost_amount = 100.0    # Minimum boost amount to consider
 max_boosted_tokens = 25     # Limit boosted tokens for quality filtering
 scraperapi_key = "88313baee2043c1503199e462e1b3b7f"  # ScraperAPI key for Cloudflare bypass
 
-# Retry configuration for external API calls (BirdEye, Zerion)
-[retry]
-max_attempts = 3
-# Rate limit (429) retry delays in milliseconds
-rate_limit_delays_ms = [500, 1000, 2000]
-# Server error (5xx) retry delays in milliseconds
-server_error_delays_ms = [300, 600, 1200]
-# Timeout retry delays in milliseconds
-timeout_delays_ms = [500, 1000]
-
 # BirdEye configuration - used only for current portfolio fetching in hybrid mode
 [birdeye]
 api_key = "5ff313b239ac42e297b830b10ea1871d"
@@ -49,7 +39,6 @@ request_timeout_seconds = 30
 enabled = true
 default_currency = "usd"
 default_max_transactions = 1000
-rate_limit_delay_ms = 200
 page_size = 100
 operation_types = "trade,send,receive"
 chain_ids = "solana,ethereum,base,binance-smart-chain"

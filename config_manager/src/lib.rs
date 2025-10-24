@@ -28,9 +28,6 @@ pub struct SystemConfig {
     /// Redis configuration
     pub redis: RedisConfig,
 
-    /// Retry configuration for external API calls
-    pub retry: RetryConfig,
-
     /// BirdEye API configuration (used for trending tokens and top traders discovery only)
     pub birdeye: BirdEyeConfig,
 
@@ -96,21 +93,6 @@ pub struct RedisConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetryConfig {
-    /// Maximum number of retry attempts
-    pub max_attempts: u32,
-
-    /// Delays in milliseconds for rate limit (429) retries
-    pub rate_limit_delays_ms: Vec<u64>,
-
-    /// Delays in milliseconds for server error (5xx) retries
-    pub server_error_delays_ms: Vec<u64>,
-
-    /// Delays in milliseconds for timeout retries
-    pub timeout_delays_ms: Vec<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BirdEyeConfig {
     /// BirdEye API key (used for trending tokens and top traders discovery only)
     pub api_key: String,
@@ -141,9 +123,6 @@ pub struct ZerionConfig {
 
     /// Default maximum transactions per wallet
     pub default_max_transactions: u32,
-
-    /// Rate limit delay between requests in milliseconds
-    pub rate_limit_delay_ms: u64,
 
     /// Page size for transaction requests (default: 100)
     pub page_size: u32,
@@ -241,12 +220,6 @@ impl Default for SystemConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 default_lock_ttl_seconds: 600,
             },
-            retry: RetryConfig {
-                max_attempts: 3,
-                rate_limit_delays_ms: vec![500, 1000, 2000],
-                server_error_delays_ms: vec![300, 600, 1200],
-                timeout_delays_ms: vec![500, 1000],
-            },
             zerion: ZerionConfig {
                 api_key: "".to_string(), // Must be set in .env or config file
                 api_base_url: "https://api.zerion.io/v1".to_string(),
@@ -254,7 +227,6 @@ impl Default for SystemConfig {
                 enabled: false, // Disabled by default until API key is provided
                 default_currency: "usd".to_string(),
                 default_max_transactions: 1000,
-                rate_limit_delay_ms: 200, // Conservative rate limiting
                 page_size: 100,
                 operation_types: "trade,send,receive".to_string(),
                 chain_ids: "solana,ethereum,binance-smart-chain,base".to_string(),

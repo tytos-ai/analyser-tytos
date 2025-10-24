@@ -1924,6 +1924,7 @@ impl JobOrchestrator {
 
     /// Enrich skipped transactions using BirdEye historical price API
     /// This method fetches historical prices for transactions that had null price/value in Zerion
+    /// Optimized for parallel fetching with 15 RPS rate limit, request deduplication, and iterative retry for 429 errors
     async fn enrich_with_birdeye_historical_prices(
         &self,
         skipped: &[zerion_client::SkippedTransactionInfo],
@@ -1931,6 +1932,11 @@ impl JobOrchestrator {
     ) -> Result<Vec<pnl_core::NewFinancialEvent>> {
         use pnl_core::NewFinancialEvent;
         use rust_decimal::Decimal;
+        use dex_client::BirdEyeError;
+
+        if skipped.is_empty() {
+            return Ok(Vec::new());
+        }
 
         let birdeye_client = self.birdeye_client.as_ref()
             .ok_or_else(|| OrchestratorError::Config("BirdEye client not initialized".to_string()))?;
@@ -1939,79 +1945,184 @@ impl JobOrchestrator {
         let birdeye_chain = normalize_chain_for_birdeye(chain)
             .map_err(|e| OrchestratorError::Config(e))?;
 
-        let mut enriched_events = Vec::new();
-        let mut success_count = 0u32;
-        let mut failure_count = 0u32;
+        info!("🚀 Starting optimized BirdEye enrichment for {} requests on chain {}", skipped.len(), birdeye_chain);
 
-        info!("🔄 Fetching historical prices for {} tokens from BirdEye on chain {}...", skipped.len(), birdeye_chain);
+        // Phase 1: Deduplicate requests by (token_mint, unix_timestamp)
+        let mut unique_requests_map: HashMap<(String, i64), Vec<usize>> = HashMap::new();
+        for (idx, skip_info) in skipped.iter().enumerate() {
+            let key = (skip_info.token_mint.clone(), skip_info.unix_timestamp);
+            unique_requests_map.entry(key).or_default().push(idx);
+        }
 
-        for skip_info in skipped {
-            info!("🔍 Looking up historical price: {} ({}) at timestamp {} on chain {}",
-                skip_info.token_symbol, skip_info.token_mint, skip_info.unix_timestamp, birdeye_chain);
+        let initial_unique_count = unique_requests_map.len();
+        let duplicate_savings = skipped.len() - initial_unique_count;
 
-            match birdeye_client.get_historical_price_unix(
-                &skip_info.token_mint,
-                skip_info.unix_timestamp,
-                Some(&birdeye_chain),
-            ).await {
-                Ok(historical_price) => {
-                    info!("✅ Found historical price for {}: ${}",
-                        skip_info.token_symbol, historical_price);
+        info!("📊 Deduplication: {} total requests → {} unique requests (saved {} duplicate API calls)",
+            skipped.len(), initial_unique_count, duplicate_savings);
 
-                    // Convert price to Decimal
-                    let usd_price = Decimal::from_f64_retain(historical_price)
-                        .unwrap_or(Decimal::ZERO);
+        // Phase 2: Iterative parallel fetching with rate limit retry
+        let start_time = std::time::Instant::now();
+        let semaphore = Arc::new(Semaphore::new(15)); // 15 concurrent requests (15 RPS)
+        let min_request_interval = Duration::from_millis(67); // ~15 RPS (1000ms / 15 = 66.67ms)
+        let max_iterations = 5;
 
-                    // Calculate USD value
-                    let usd_value = skip_info.token_amount * usd_price;
+        let mut price_lookup: HashMap<(String, i64), f64> = HashMap::new();
+        let mut remaining_requests: Vec<(String, i64)> = unique_requests_map.keys().cloned().collect();
+        let mut total_success_count = 0u32;
+        let mut total_non_rate_limit_failures = 0u32;
 
-                    // Create financial event with enriched price data
-                    let event = NewFinancialEvent {
-                        wallet_address: skip_info.wallet_address.clone(),
-                        token_address: skip_info.token_mint.clone(),
-                        token_symbol: skip_info.token_symbol.clone(),
-                        chain_id: skip_info.chain_id.clone(),
-                        event_type: skip_info.event_type.clone(),
-                        quantity: skip_info.token_amount,
-                        usd_price_per_token: usd_price,
-                        usd_value: usd_value,
-                        timestamp: skip_info.timestamp,
-                        transaction_hash: skip_info.tx_hash.clone(),
-                    };
+        for iteration in 0..max_iterations {
+            if remaining_requests.is_empty() {
+                info!("✅ All requests completed successfully after {} iteration(s)", iteration);
+                break;
+            }
 
-                    info!("✨ Enriched event: {} {} @ ${} = ${}",
-                        event.quantity, event.token_symbol, usd_price, usd_value);
+            let requests_this_round = remaining_requests.len();
+            info!("🔄 Iteration {}/{}: Processing {} requests in parallel (15 RPS)...",
+                  iteration + 1, max_iterations, requests_this_round);
 
-                    enriched_events.push(event);
-                    success_count += 1;
+            // Create futures for remaining requests
+            let futures: Vec<_> = remaining_requests.iter().map(|(token_mint, unix_timestamp)| {
+                let sem = semaphore.clone();
+                let client = birdeye_client.clone();
+                let token_mint = token_mint.clone();
+                let unix_timestamp = *unix_timestamp;
+                let chain = birdeye_chain.clone();
+
+                async move {
+                    let _permit = sem.acquire().await.unwrap();
+
+                    // Fetch historical price
+                    let result = client.get_historical_price_unix(
+                        &token_mint,
+                        unix_timestamp,
+                        Some(&chain),
+                    ).await;
+
+                    // Rate limiting: sleep to maintain ~15 RPS
+                    tokio::time::sleep(min_request_interval).await;
+
+                    ((token_mint, unix_timestamp), result)
                 }
-                Err(e) => {
-                    warn!("❌ Failed to fetch historical price for {}: {}",
-                        skip_info.token_symbol, e);
-                    failure_count += 1;
+            }).collect();
+
+            // Execute all futures concurrently
+            let results = join_all(futures).await;
+
+            // Process results and collect rate limit failures for retry
+            let mut rate_limit_failures = Vec::new();
+            let mut success_this_round = 0u32;
+            let mut other_failures_this_round = 0u32;
+
+            for ((token_mint, unix_timestamp), result) in results {
+                match result {
+                    Ok(price) => {
+                        price_lookup.insert((token_mint.clone(), unix_timestamp), price);
+                        success_this_round += 1;
+                        total_success_count += 1;
+                    }
+                    Err(BirdEyeError::RateLimit) => {
+                        // Collect for retry in next iteration
+                        rate_limit_failures.push((token_mint, unix_timestamp));
+                    }
+                    Err(e) => {
+                        // Other errors - give up on this token
+                        debug!("❌ Failed to fetch historical price for {} at timestamp {}: {}",
+                            token_mint, unix_timestamp, e);
+                        other_failures_this_round += 1;
+                        total_non_rate_limit_failures += 1;
+                    }
                 }
             }
 
-            // Rate limiting: BirdEye free tier = 100 req/min
-            // Sleep 1.2 seconds between requests = ~50 req/min (safe margin)
-            tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+            info!("📊 Iteration {} results: {} successful, {} rate-limited (will retry), {} other errors",
+                iteration + 1, success_this_round, rate_limit_failures.len(), other_failures_this_round);
+
+            // Prepare next iteration with rate limit failures
+            remaining_requests = rate_limit_failures;
+
+            // Wait between iterations to let rate limit window reset
+            if !remaining_requests.is_empty() && iteration < max_iterations - 1 {
+                info!("⏳ Waiting 1 second before next iteration to allow rate limit window reset...");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
         }
 
-        info!("📊 BirdEye enrichment results: {} successful, {} failed",
-            success_count, failure_count);
+        // Final stats
+        let total_duration = start_time.elapsed();
+        let final_rate_limit_failures = remaining_requests.len();
+
+        if final_rate_limit_failures > 0 {
+            warn!("⚠️  {} requests still failing with rate limit after {} iterations",
+                final_rate_limit_failures, max_iterations);
+        }
+
+        let total_failures = final_rate_limit_failures as u32 + total_non_rate_limit_failures;
+        info!("📊 Final enrichment results: {} successful, {} failed (rate limit: {}, other: {})",
+            total_success_count, total_failures, final_rate_limit_failures, total_non_rate_limit_failures);
+
+        // Phase 3: Create enriched events for ALL original requests (including duplicates)
+        let mut enriched_events = Vec::new();
+        let mut events_created = 0u32;
+        let mut events_skipped = 0u32;
+
+        for skip_info in skipped {
+            let key = (skip_info.token_mint.clone(), skip_info.unix_timestamp);
+
+            if let Some(&historical_price) = price_lookup.get(&key) {
+                // Convert price to Decimal
+                let usd_price = Decimal::from_f64_retain(historical_price)
+                    .unwrap_or(Decimal::ZERO);
+
+                // Calculate USD value
+                let usd_value = skip_info.token_amount * usd_price;
+
+                // Create financial event with enriched price data
+                let event = NewFinancialEvent {
+                    wallet_address: skip_info.wallet_address.clone(),
+                    token_address: skip_info.token_mint.clone(),
+                    token_symbol: skip_info.token_symbol.clone(),
+                    chain_id: skip_info.chain_id.clone(),
+                    event_type: skip_info.event_type.clone(),
+                    quantity: skip_info.token_amount,
+                    usd_price_per_token: usd_price,
+                    usd_value: usd_value,
+                    timestamp: skip_info.timestamp,
+                    transaction_hash: skip_info.tx_hash.clone(),
+                };
+
+                debug!("✨ Enriched event: {} {} @ ${} = ${} (tx: {})",
+                    event.quantity, event.token_symbol, usd_price, usd_value,
+                    &event.transaction_hash[..8]);
+
+                enriched_events.push(event);
+                events_created += 1;
+            } else {
+                debug!("⚠️  Skipping event for {} (price fetch failed)",
+                    skip_info.token_symbol);
+                events_skipped += 1;
+            }
+        }
+
+        info!("📊 Event creation: {} events created, {} skipped due to missing prices",
+            events_created, events_skipped);
 
         // Fail if more than 50% of enrichment attempts failed
-        let total_attempts = success_count + failure_count;
-        if total_attempts > 0 {
-            let failure_rate = (failure_count as f64) / (total_attempts as f64);
+        if initial_unique_count > 0 {
+            let failure_rate = (total_failures as f64) / (initial_unique_count as f64);
             if failure_rate > 0.5 {
                 error!("❌ CRITICAL: Historical enrichment failure rate too high: {:.1}% ({}/{})",
-                    failure_rate * 100.0, failure_count, total_attempts);
+                    failure_rate * 100.0, total_failures, initial_unique_count);
                 return Err(OrchestratorError::EnrichmentFailed(
-                    format!("More than 50% of historical price fetches failed ({}/{})", failure_count, total_attempts)
+                    format!("More than 50% of historical price fetches failed ({}/{})", total_failures, initial_unique_count)
                 ));
             }
         }
+
+        info!("🎉 BirdEye enrichment completed in {:.2}s (speedup: ~{:.0}x vs sequential)",
+            total_duration.as_secs_f64(),
+            (skipped.len() as f64 * 1.2) / total_duration.as_secs_f64()
+        );
 
         Ok(enriched_events)
     }
