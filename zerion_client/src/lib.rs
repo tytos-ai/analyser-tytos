@@ -1212,54 +1212,77 @@ impl ZerionClient {
         }
 
         // Find stable currency side (SOL, USDC, etc.) - this will have the reliable price
-        let mut stable_side_value: Option<f64> = None;
-        let mut stable_transfer: Option<&ZerionTransfer> = None;
+        // IMPORTANT: Sum ALL stable currency transfers, not just the first one!
+        let mut stable_side_total_value: Option<f64> = None;
+        let mut stable_transfers_count = 0usize;
         let mut volatile_transfers: Vec<&ZerionTransfer> = Vec::new();
+        let mut stable_is_out = false;
 
-        // Check OUT transfers for stable currency
-        for out_transfer in &trade_pair.out_transfers {
-            if let Some(fungible_info) = &out_transfer.fungible_info {
-                if let Some(impl_) = fungible_info.implementations.iter().find(|i| i.chain_id == chain_id) {
-                    if let Some(address) = &impl_.address {
-                        if Self::is_stable_currency(address) && out_transfer.value.is_some() {
-                            stable_side_value = out_transfer.value;
-                            stable_transfer = Some(out_transfer);
-                            // ALL IN transfers are volatile side
-                            volatile_transfers = trade_pair.in_transfers.clone();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        // Check OUT transfers for stable currency and SUM all their values
+        let stable_out_total: f64 = trade_pair.out_transfers.iter()
+            .filter_map(|transfer| {
+                transfer.fungible_info.as_ref().and_then(|fungible_info| {
+                    fungible_info.implementations.iter()
+                        .find(|impl_| impl_.chain_id == chain_id)
+                        .and_then(|impl_| impl_.address.as_ref())
+                        .filter(|addr| Self::is_stable_currency(addr))
+                        .and_then(|_| {
+                            stable_transfers_count += 1;
+                            transfer.value
+                        })
+                })
+            })
+            .sum();
 
-        // If no stable OUT, check IN transfers for stable currency
-        if stable_transfer.is_none() {
-            for in_transfer in &trade_pair.in_transfers {
-                if let Some(fungible_info) = &in_transfer.fungible_info {
-                    if let Some(impl_) = fungible_info.implementations.iter().find(|i| i.chain_id == chain_id) {
-                        if let Some(address) = &impl_.address {
-                            if Self::is_stable_currency(address) && in_transfer.value.is_some() {
-                                stable_side_value = in_transfer.value;
-                                stable_transfer = Some(in_transfer);
-                                // ALL OUT transfers are volatile side
-                                volatile_transfers = trade_pair.out_transfers.clone();
-                                break;
-                            }
-                        }
-                    }
-                }
+        if stable_out_total > 0.0 && stable_transfers_count > 0 {
+            stable_side_total_value = Some(stable_out_total);
+            stable_is_out = true;
+            // ALL IN transfers are volatile side
+            volatile_transfers = trade_pair.in_transfers.clone();
+
+            info!(
+                "Found {} stable currency OUT transfers totaling ${:.4} in tx {} (act_id: {})",
+                stable_transfers_count, stable_out_total, tx.id, trade_pair.act_id
+            );
+        } else {
+            // Check IN transfers for stable currency and SUM all their values
+            stable_transfers_count = 0;
+            let stable_in_total: f64 = trade_pair.in_transfers.iter()
+                .filter_map(|transfer| {
+                    transfer.fungible_info.as_ref().and_then(|fungible_info| {
+                        fungible_info.implementations.iter()
+                            .find(|impl_| impl_.chain_id == chain_id)
+                            .and_then(|impl_| impl_.address.as_ref())
+                            .filter(|addr| Self::is_stable_currency(addr))
+                            .and_then(|_| {
+                                stable_transfers_count += 1;
+                                transfer.value
+                            })
+                    })
+                })
+                .sum();
+
+            if stable_in_total > 0.0 && stable_transfers_count > 0 {
+                stable_side_total_value = Some(stable_in_total);
+                stable_is_out = false;
+                // ALL OUT transfers are volatile side
+                volatile_transfers = trade_pair.out_transfers.clone();
+
+                info!(
+                    "Found {} stable currency IN transfers totaling ${:.4} in tx {} (act_id: {})",
+                    stable_transfers_count, stable_in_total, tx.id, trade_pair.act_id
+                );
             }
         }
 
         // If we found a stable side, use implicit pricing for ALL volatile transfers
         // BUT ONLY if there's exactly ONE volatile transfer (otherwise we'd multiply the value)
-        if let (Some(stable_value), Some(stable_xfer)) = (stable_side_value, stable_transfer) {
+        if let Some(stable_total_value) = stable_side_total_value {
             if volatile_transfers.len() == 1 {
                 // Safe to use implicit pricing with single volatile transfer
                 info!(
-                    "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side value = ${:.2}, 1 volatile transfer",
-                    tx.id, trade_pair.act_id, stable_value
+                    "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side TOTAL value = ${:.4} (from {} transfers), 1 volatile transfer",
+                    tx.id, trade_pair.act_id, stable_total_value, stable_transfers_count
                 );
 
                 // Process the single volatile transfer with calculated implicit price
@@ -1269,20 +1292,39 @@ impl ZerionClient {
                         volatile_xfer,
                         wallet_address,
                         chain_id,
-                        stable_value,
+                        stable_total_value,  // Use the TOTAL value, not just first transfer
                     ) {
                         events.push(event);
                     }
                 }
 
-                // Process stable side with Zerion's price (it's reliable)
-                if let Some(event) = self.convert_transfer_to_event(tx, stable_xfer, wallet_address, chain_id) {
-                    events.push(event);
+                // Process ALL stable side transfers with Zerion's prices (they're reliable)
+                let stable_side_transfers = if stable_is_out {
+                    &trade_pair.out_transfers
+                } else {
+                    &trade_pair.in_transfers
+                };
+
+                for transfer in stable_side_transfers.iter() {
+                    // Only process stable currency transfers
+                    let is_stable = transfer.fungible_info.as_ref()
+                        .and_then(|f| f.implementations.iter()
+                            .find(|i| i.chain_id == chain_id)
+                            .and_then(|i| i.address.as_ref()))
+                        .map(|addr| Self::is_stable_currency(addr))
+                        .unwrap_or(false);
+
+                    if is_stable {
+                        if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                            events.push(event);
+                        }
+                    }
                 }
 
                 info!(
-                    "✅ Implicit pricing complete: {} events created (1 volatile + 1 stable)",
-                    events.len()
+                    "✅ Implicit pricing complete: {} events created (1 volatile + {} stable)",
+                    events.len(),
+                    stable_transfers_count
                 );
             } else {
                 // Multiple volatile transfers - DON'T use implicit pricing!
