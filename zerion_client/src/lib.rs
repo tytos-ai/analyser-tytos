@@ -1253,41 +1253,61 @@ impl ZerionClient {
         }
 
         // If we found a stable side, use implicit pricing for ALL volatile transfers
+        // BUT ONLY if there's exactly ONE volatile transfer (otherwise we'd multiply the value)
         if let (Some(stable_value), Some(stable_xfer)) = (stable_side_value, stable_transfer) {
-            info!(
-                "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side value = ${:.2}, {} volatile transfer(s)",
-                tx.id, trade_pair.act_id, stable_value, volatile_transfers.len()
-            );
-
-            // Process ALL volatile transfers with calculated implicit price
-            for (i, volatile_xfer) in volatile_transfers.iter().enumerate() {
-                debug!(
-                    "  Processing volatile transfer {}/{} with implicit pricing",
-                    i + 1,
-                    volatile_transfers.len()
+            if volatile_transfers.len() == 1 {
+                // Safe to use implicit pricing with single volatile transfer
+                info!(
+                    "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side value = ${:.2}, 1 volatile transfer",
+                    tx.id, trade_pair.act_id, stable_value
                 );
 
-                if let Some(event) = self.convert_transfer_with_implicit_price(
-                    tx,
-                    volatile_xfer,
-                    wallet_address,
-                    chain_id,
-                    stable_value,
-                ) {
+                // Process the single volatile transfer with calculated implicit price
+                if let Some(volatile_xfer) = volatile_transfers.first() {
+                    if let Some(event) = self.convert_transfer_with_implicit_price(
+                        tx,
+                        volatile_xfer,
+                        wallet_address,
+                        chain_id,
+                        stable_value,
+                    ) {
+                        events.push(event);
+                    }
+                }
+
+                // Process stable side with Zerion's price (it's reliable)
+                if let Some(event) = self.convert_transfer_to_event(tx, stable_xfer, wallet_address, chain_id) {
                     events.push(event);
                 }
-            }
 
-            // Process stable side with Zerion's price (it's reliable)
-            if let Some(event) = self.convert_transfer_to_event(tx, stable_xfer, wallet_address, chain_id) {
-                events.push(event);
-            }
+                info!(
+                    "✅ Implicit pricing complete: {} events created (1 volatile + 1 stable)",
+                    events.len()
+                );
+            } else {
+                // Multiple volatile transfers - DON'T use implicit pricing!
+                // Using implicit pricing with multiple transfers would give each the FULL stable value,
+                // multiplying the investment (e.g., 3 transfers * $800 = $2,400 instead of $800)
+                warn!(
+                    "⚠️  Found {} volatile transfers in tx {} (act_id: {}) - SKIPPING implicit pricing to avoid value multiplication. Using standard conversion instead.",
+                    volatile_transfers.len(),
+                    tx.id,
+                    trade_pair.act_id
+                );
 
-            info!(
-                "✅ Implicit pricing complete: {} events created ({} volatile + 1 stable)",
-                events.len(),
-                volatile_transfers.len()
-            );
+                // Process all transfers normally (using Zerion's prices)
+                for transfer in trade_pair.in_transfers.iter().chain(trade_pair.out_transfers.iter()) {
+                    if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                        events.push(event);
+                    }
+                }
+
+                info!(
+                    "✅ Standard conversion complete: {} events created from {} total transfers",
+                    events.len(),
+                    trade_pair.in_transfers.len() + trade_pair.out_transfers.len()
+                );
+            }
         } else {
             // No stable currency found, fall back to regular conversion
             warn!(
