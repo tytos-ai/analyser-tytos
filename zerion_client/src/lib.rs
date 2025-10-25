@@ -1016,6 +1016,8 @@ impl ZerionClient {
     fn pair_trade_transfers<'a>(transfers: &'a [ZerionTransfer]) -> Vec<TradePair<'a>> {
         use std::collections::HashMap;
 
+        debug!("📦 Pairing {} transfers", transfers.len());
+
         let mut pairs_map: HashMap<String, TradePair<'a>> = HashMap::new();
 
         for transfer in transfers {
@@ -1033,7 +1035,19 @@ impl ZerionClient {
             }
         }
 
-        pairs_map.into_values().collect()
+        let pairs: Vec<TradePair<'a>> = pairs_map.into_values().collect();
+
+        debug!("📦 Created {} trade pairs", pairs.len());
+        for pair in &pairs {
+            debug!(
+                "  Pair (act_id: {}): {} IN, {} OUT",
+                pair.act_id,
+                pair.in_transfers.len(),
+                pair.out_transfers.len()
+            );
+        }
+
+        pairs
     }
 
     /// Convert a trade pair using implicit swap pricing
@@ -1045,6 +1059,16 @@ impl ZerionClient {
         wallet_address: &str,
         chain_id: &str,
     ) -> Vec<NewFinancialEvent> {
+        debug!(
+            "💱 Converting trade pair (act_id: {}) for tx {}",
+            trade_pair.act_id, tx.attributes.hash
+        );
+        debug!(
+            "  IN transfers: {}, OUT transfers: {}",
+            trade_pair.in_transfers.len(),
+            trade_pair.out_transfers.len()
+        );
+
         let mut events = Vec::new();
 
         // === MULTI-HOP SWAP DETECTION ===
@@ -1365,6 +1389,30 @@ impl ZerionClient {
             }
         }
 
+        // Final debug output before returning
+        debug!(
+            "  ✅ Created {} events from this trade pair (act_id: {})",
+            events.len(),
+            trade_pair.act_id
+        );
+        for (i, event) in events.iter().enumerate() {
+            let event_type = if event.event_type == NewEventType::Buy {
+                "BUY"
+            } else {
+                "SELL"
+            };
+            debug!(
+                "    Event #{}: {} {} {} @ ${:.10} = ${:.2} (tx: {})",
+                i + 1,
+                event_type,
+                event.quantity,
+                event.token_symbol,
+                event.usd_price_per_token,
+                event.usd_value,
+                &event.transaction_hash[..8.min(event.transaction_hash.len())]
+            );
+        }
+
         events
     }
 
@@ -1501,10 +1549,11 @@ impl ZerionClient {
 
         for (tx_index, tx) in transactions.iter().enumerate() {
             debug!(
-                "🔍 Processing transaction {}/{}: {} (type: {})",
+                "🔍 Processing transaction {}/{}: {} (hash: {}, type: {})",
                 tx_index + 1,
                 transactions.len(),
                 tx.id,
+                tx.attributes.hash,
                 tx.attributes.operation_type
             );
 
