@@ -1367,8 +1367,46 @@ impl JobOrchestrator {
                     if !enriched_events.is_empty() {
                         info!("✅ Successfully enriched {} transactions via BirdEye historical prices",
                             enriched_events.len());
-                        financial_events.extend(enriched_events);
-                        info!("📊 Total financial events after enrichment: {}", financial_events.len());
+
+                        // === CRITICAL BUG FIX: Filter duplicate events ===
+                        // Enrichment may create events for transactions that already had events
+                        // created via implicit pricing. We must deduplicate by transaction hash,
+                        // token address, and event type to avoid double-counting.
+                        use std::collections::HashSet;
+
+                        let existing_event_keys: HashSet<(String, String, String)> = financial_events
+                            .iter()
+                            .map(|e| (
+                                e.transaction_hash.clone(),
+                                e.token_address.clone(),
+                                format!("{:?}", e.event_type)
+                            ))
+                            .collect();
+
+                        let enriched_count = enriched_events.len();
+                        let unique_enriched_events: Vec<NewFinancialEvent> = enriched_events
+                            .into_iter()
+                            .filter(|e| {
+                                let key = (
+                                    e.transaction_hash.clone(),
+                                    e.token_address.clone(),
+                                    format!("{:?}", e.event_type)
+                                );
+                                !existing_event_keys.contains(&key)
+                            })
+                            .collect();
+
+                        let duplicates_filtered = enriched_count - unique_enriched_events.len();
+
+                        if !unique_enriched_events.is_empty() {
+                            info!("➕ Adding {} unique enriched events (filtered {} duplicates from implicit pricing)",
+                                unique_enriched_events.len(), duplicates_filtered);
+                            financial_events.extend(unique_enriched_events);
+                            info!("📊 Total financial events after enrichment: {}", financial_events.len());
+                        } else {
+                            info!("ℹ️  All {} enriched events were duplicates of existing events - skipping to avoid double-counting", duplicates_filtered);
+                        }
+                        // === END BUG FIX ===
                     }
                 }
                 Err(e) => {
