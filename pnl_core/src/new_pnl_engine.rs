@@ -659,13 +659,84 @@ impl NewPnLEngine {
             );
         }
 
-        // Calculate investment metrics (exclude phantom buys from total_invested!)
-        let total_invested_usd: Decimal = events
+        // === ENHANCED DEBUG LOGGING for total_invested calculation (Fix #4) ===
+        let buy_events_for_invested: Vec<&NewFinancialEvent> = events
             .iter()
             .filter(|e| e.event_type == NewEventType::Buy)
             .filter(|e| !e.transaction_hash.starts_with("phantom_buy_")) // Exclude phantom buys
+            .collect();
+
+        debug!(
+            "📊 Total Invested Calculation for {}: {} buy events (excluding phantom buys)",
+            token_symbol,
+            buy_events_for_invested.len()
+        );
+
+        for (i, event) in buy_events_for_invested.iter().enumerate() {
+            debug!(
+                "  Buy #{}: {} {} @ ${:.10} = ${:.2} (tx: {}...)",
+                i + 1,
+                event.quantity,
+                event.token_symbol,
+                event.usd_price_per_token,
+                event.usd_value,
+                &event.transaction_hash[..8.min(event.transaction_hash.len())]
+            );
+        }
+
+        let total_invested_usd: Decimal = buy_events_for_invested.iter().map(|e| e.usd_value).sum();
+
+        debug!(
+            "💰 Total invested in {}: ${:.2} (from {} buy events)",
+            token_symbol,
+            total_invested_usd,
+            buy_events_for_invested.len()
+        );
+        // === END ENHANCED DEBUG LOGGING ===
+
+        // === VALIDATION: Check for extreme buy/sell imbalances (Fix #3) ===
+        let total_sell_value: Decimal = events
+            .iter()
+            .filter(|e| e.event_type == NewEventType::Sell)
             .map(|e| e.usd_value)
             .sum();
+
+        if total_invested_usd > Decimal::ZERO && total_sell_value > Decimal::ZERO {
+            let imbalance_ratio = total_invested_usd / total_sell_value;
+
+            // Warn if buy value is >10x sell value (likely parsing error)
+            if imbalance_ratio > Decimal::from(10) {
+                warn!(
+                    "⚠️  EXTREME BUY/SELL IMBALANCE detected for {} ({}): ${:.2} buy vs ${:.2} sell ({}x ratio)",
+                    token_symbol,
+                    &token_address[..8.min(token_address.len())],
+                    total_invested_usd,
+                    total_sell_value,
+                    imbalance_ratio
+                );
+                warn!(
+                    "    → This likely indicates a transaction parsing error (multi-hop swaps, duplicates, etc.)"
+                );
+                warn!(
+                    "    → Review transaction logs for this token to identify erroneous BUY events"
+                );
+            } else if imbalance_ratio > Decimal::from(3) {
+                info!(
+                    "ℹ️  Moderate buy/sell imbalance for {}: ${:.2} buy vs ${:.2} sell ({:.1}x ratio)",
+                    token_symbol,
+                    total_invested_usd,
+                    total_sell_value,
+                    imbalance_ratio
+                );
+            }
+        } else if total_invested_usd > Decimal::ZERO && total_sell_value == Decimal::ZERO {
+            info!(
+                "ℹ️  Token {} has only BUY events (${:.2}), no sells yet - all tokens remain in position",
+                token_symbol,
+                total_invested_usd
+            );
+        }
+        // === END VALIDATION ===
 
         // Perform enhanced FIFO matching that handles received tokens separately
         let (matched_trades, receive_consumptions) = self.perform_enhanced_fifo_matching(&mut buy_events, &sell_events, &receive_events)?;

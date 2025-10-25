@@ -1069,21 +1069,130 @@ impl ZerionClient {
 
         // Detect multi-hop swap: 3+ unique assets including stable currency
         // Example: Moon (out) + KICK (in) + SOL (out, fees) = 3 assets
-        // In this case, skip implicit pricing and let BirdEye enrich NULL prices
+        // In this case, use NET transfer analysis to exclude intermediary tokens
         if unique_assets.len() >= 3 && has_stable {
             info!(
                 "🔄 Multi-hop swap detected in tx {}: {} unique assets with stable currency. \
-                 Skipping implicit pricing - will process all transfers for BirdEye enrichment.",
+                 Using NET transfer analysis to filter intermediaries.",
                 tx.id, unique_assets.len()
             );
 
-            // Process ALL transfers individually (no implicit pricing)
-            // NULL price/value transfers will create zero-price events for BirdEye enrichment
-            for transfer in trade_pair.in_transfers.iter().chain(trade_pair.out_transfers.iter()) {
-                if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
-                    events.push(event);
+            // Calculate NET transfers per token (IN - OUT)
+            use std::collections::HashMap;
+            let mut net_transfers: HashMap<String, (Decimal, Option<f64>, bool)> = HashMap::new();
+            // Map: token_address -> (net_quantity, total_value, is_net_positive)
+
+            // Add IN transfers (positive)
+            for transfer in &trade_pair.in_transfers {
+                if let Some(fungible_info) = &transfer.fungible_info {
+                    if let Some(impl_) = fungible_info.implementations.iter().find(|i| i.chain_id == chain_id) {
+                        if let Some(address) = &impl_.address {
+                            let amount = match Self::parse_decimal_with_precision_handling(&transfer.quantity.numeric) {
+                                Ok(amt) => amt,
+                                Err(_) => continue,
+                            };
+
+                            let entry = net_transfers.entry(address.clone()).or_insert((Decimal::ZERO, None, true));
+                            entry.0 += amount;
+                            if let Some(value) = transfer.value {
+                                entry.1 = Some(entry.1.unwrap_or(0.0) + value);
+                            }
+                        }
+                    }
                 }
             }
+
+            // Subtract OUT transfers (negative)
+            for transfer in &trade_pair.out_transfers {
+                if let Some(fungible_info) = &transfer.fungible_info {
+                    if let Some(impl_) = fungible_info.implementations.iter().find(|i| i.chain_id == chain_id) {
+                        if let Some(address) = &impl_.address {
+                            let amount = match Self::parse_decimal_with_precision_handling(&transfer.quantity.numeric) {
+                                Ok(amt) => amt,
+                                Err(_) => continue,
+                            };
+
+                            let entry = net_transfers.entry(address.clone()).or_insert((Decimal::ZERO, None, false));
+                            entry.0 -= amount;
+                            if let Some(value) = transfer.value {
+                                entry.1 = Some(entry.1.unwrap_or(0.0) - value);
+                            }
+                            entry.2 = entry.0 > Decimal::ZERO;
+                        }
+                    }
+                }
+            }
+
+            // Filter: Only create events for tokens with significant NET transfers
+            // Threshold: abs(net_quantity) > 0.001 OR abs(net_value) > $0.01
+            let net_threshold_quantity = Decimal::new(1, 3); // 0.001
+            let net_threshold_value = 0.01; // $0.01
+
+            info!(
+                "📊 Multi-hop swap analysis: {} unique tokens, filtering by net transfers (threshold: qty > {} or value > ${})",
+                net_transfers.len(), net_threshold_quantity, net_threshold_value
+            );
+
+            for (token_addr, (net_qty, net_value, is_positive)) in &net_transfers {
+                let abs_net_qty = net_qty.abs();
+                let abs_net_value = net_value.unwrap_or(0.0).abs();
+
+                if abs_net_qty > net_threshold_quantity || abs_net_value > net_threshold_value {
+                    // Significant net transfer - this is a real buy or sell
+                    info!(
+                        "  ✅ Including token {}: net_qty = {}, net_value = ${:.4} ({})",
+                        &token_addr[..8.min(token_addr.len())],
+                        net_qty,
+                        net_value.unwrap_or(0.0),
+                        if *is_positive { "BUY" } else { "SELL" }
+                    );
+
+                    // Find the corresponding transfer to create event
+                    let relevant_transfers: Vec<&ZerionTransfer> = if *is_positive {
+                        trade_pair.in_transfers.iter()
+                            .filter(|t| {
+                                t.fungible_info.as_ref().and_then(|f| {
+                                    f.implementations.iter()
+                                        .find(|i| i.chain_id == chain_id)
+                                        .and_then(|i| i.address.as_ref())
+                                }).map(|addr| addr == token_addr).unwrap_or(false)
+                            })
+                            .collect()
+                    } else {
+                        trade_pair.out_transfers.iter()
+                            .filter(|t| {
+                                t.fungible_info.as_ref().and_then(|f| {
+                                    f.implementations.iter()
+                                        .find(|i| i.chain_id == chain_id)
+                                        .and_then(|i| i.address.as_ref())
+                                }).map(|addr| addr == token_addr).unwrap_or(false)
+                            })
+                            .collect()
+                    };
+
+                    // Create event from the first matching transfer
+                    if let Some(transfer) = relevant_transfers.first() {
+                        if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                            events.push(event);
+                        }
+                    }
+                } else {
+                    // Negligible net transfer - likely an intermediary (routing fee, etc.)
+                    info!(
+                        "  ⏭️  Filtering intermediary token {}: net_qty = {}, net_value = ${:.4} (below threshold)",
+                        &token_addr[..8.min(token_addr.len())],
+                        net_qty,
+                        net_value.unwrap_or(0.0)
+                    );
+                }
+            }
+
+            info!(
+                "✅ Multi-hop swap processing complete: {} events created from {} tokens (filtered {} intermediaries)",
+                events.len(),
+                net_transfers.len(),
+                net_transfers.len() - events.len()
+            );
 
             return events;
         }
@@ -1103,7 +1212,7 @@ impl ZerionClient {
         // Find stable currency side (SOL, USDC, etc.) - this will have the reliable price
         let mut stable_side_value: Option<f64> = None;
         let mut stable_transfer: Option<&ZerionTransfer> = None;
-        let mut volatile_transfer: Option<&ZerionTransfer> = None;
+        let mut volatile_transfers: Vec<&ZerionTransfer> = Vec::new();
 
         // Check OUT transfers for stable currency
         for out_transfer in &trade_pair.out_transfers {
@@ -1113,10 +1222,8 @@ impl ZerionClient {
                         if Self::is_stable_currency(address) && out_transfer.value.is_some() {
                             stable_side_value = out_transfer.value;
                             stable_transfer = Some(out_transfer);
-                            // Find corresponding IN transfer (volatile side)
-                            if let Some(in_transfer) = trade_pair.in_transfers.first() {
-                                volatile_transfer = Some(in_transfer);
-                            }
+                            // ALL IN transfers are volatile side
+                            volatile_transfers = trade_pair.in_transfers.iter().collect();
                             break;
                         }
                     }
@@ -1133,10 +1240,8 @@ impl ZerionClient {
                             if Self::is_stable_currency(address) && in_transfer.value.is_some() {
                                 stable_side_value = in_transfer.value;
                                 stable_transfer = Some(in_transfer);
-                                // Find corresponding OUT transfer (volatile side)
-                                if let Some(out_transfer) = trade_pair.out_transfers.first() {
-                                    volatile_transfer = Some(out_transfer);
-                                }
+                                // ALL OUT transfers are volatile side
+                                volatile_transfers = trade_pair.out_transfers.iter().collect();
                                 break;
                             }
                         }
@@ -1145,30 +1250,42 @@ impl ZerionClient {
             }
         }
 
-        // If we found a stable side, use implicit pricing
-        if let (Some(stable_value), Some(stable_xfer), Some(volatile_xfer)) =
-            (stable_side_value, stable_transfer, volatile_transfer) {
-
+        // If we found a stable side, use implicit pricing for ALL volatile transfers
+        if let (Some(stable_value), Some(stable_xfer)) = (stable_side_value, stable_transfer) {
             info!(
-                "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side value = ${:.2}",
-                tx.id, trade_pair.act_id, stable_value
+                "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side value = ${:.2}, {} volatile transfer(s)",
+                tx.id, trade_pair.act_id, stable_value, volatile_transfers.len()
             );
 
-            // Process volatile side with calculated implicit price
-            if let Some(event) = self.convert_transfer_with_implicit_price(
-                tx,
-                volatile_xfer,
-                wallet_address,
-                chain_id,
-                stable_value,
-            ) {
-                events.push(event);
+            // Process ALL volatile transfers with calculated implicit price
+            for (i, volatile_xfer) in volatile_transfers.iter().enumerate() {
+                debug!(
+                    "  Processing volatile transfer {}/{} with implicit pricing",
+                    i + 1,
+                    volatile_transfers.len()
+                );
+
+                if let Some(event) = self.convert_transfer_with_implicit_price(
+                    tx,
+                    volatile_xfer,
+                    wallet_address,
+                    chain_id,
+                    stable_value,
+                ) {
+                    events.push(event);
+                }
             }
 
             // Process stable side with Zerion's price (it's reliable)
             if let Some(event) = self.convert_transfer_to_event(tx, stable_xfer, wallet_address, chain_id) {
                 events.push(event);
             }
+
+            info!(
+                "✅ Implicit pricing complete: {} events created ({} volatile + 1 stable)",
+                events.len(),
+                volatile_transfers.len()
+            );
         } else {
             // No stable currency found, fall back to regular conversion
             warn!(
