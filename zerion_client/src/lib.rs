@@ -1150,6 +1150,7 @@ impl ZerionClient {
                     // Find the corresponding transfer to create event
                     let relevant_transfers: Vec<&ZerionTransfer> = if *is_positive {
                         trade_pair.in_transfers.iter()
+                            .copied()
                             .filter(|t| {
                                 t.fungible_info.as_ref().and_then(|f| {
                                     f.implementations.iter()
@@ -1160,6 +1161,7 @@ impl ZerionClient {
                             .collect()
                     } else {
                         trade_pair.out_transfers.iter()
+                            .copied()
                             .filter(|t| {
                                 t.fungible_info.as_ref().and_then(|f| {
                                     f.implementations.iter()
@@ -1223,7 +1225,7 @@ impl ZerionClient {
                             stable_side_value = out_transfer.value;
                             stable_transfer = Some(out_transfer);
                             // ALL IN transfers are volatile side
-                            volatile_transfers = trade_pair.in_transfers.iter().collect();
+                            volatile_transfers = trade_pair.in_transfers.clone();
                             break;
                         }
                     }
@@ -1241,7 +1243,7 @@ impl ZerionClient {
                                 stable_side_value = in_transfer.value;
                                 stable_transfer = Some(in_transfer);
                                 // ALL OUT transfers are volatile side
-                                volatile_transfers = trade_pair.out_transfers.iter().collect();
+                                volatile_transfers = trade_pair.out_transfers.clone();
                                 break;
                             }
                         }
