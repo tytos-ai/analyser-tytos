@@ -1,0 +1,317 @@
+{
+  "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+  "token_symbol": "Solano",
+  "matched_trades": [
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "12005534.953920",
+        "usd_price_per_token": "0.0000341371347069596730618157",
+        "usd_value": "409.83456395107993123548381521",
+        "timestamp": "2025-10-23T11:42:43Z",
+        "transaction_hash": "AvQb9vkfQzHL8J4hHWzGtGc1VZmWBWfLHHoFnFFA6JD7CqmfENNn48FKwSmxyD5yzq2TGFWQL4TLA3d4s7w85nL"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "12005534.953920",
+        "usd_price_per_token": "0.0000213434636977866486033401",
+        "usd_value": "256.23969946150022514609191981",
+        "timestamp": "2025-10-23T12:16:59Z",
+        "transaction_hash": "36Ws79XfsRAP2cCJVqLGd4cpwDaX8pn7wTRCVDHuN6km3DJbDYC73PxRYJA3wqvrQ8sj8mxpsRfDC6xTbPq4iSZn"
+      },
+      "matched_quantity": "12005534.953920",
+      "realized_pnl_usd": "-153.59486448957970608939189540",
+      "hold_time_seconds": 2056
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "131420.855610",
+        "usd_price_per_token": "0.0000705317364859073817539778",
+        "usd_value": "9.269341156637002817322664997",
+        "timestamp": "2025-10-23T11:51:48Z",
+        "transaction_hash": "3kMvevxmiLahL1SksY69nz9qPzceJisHzye2dgnmikJceBPHWtGnkagDiYYdFtn8kZRmZFqav9R8XQvuBkLt9vxA"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "131420.855610",
+        "usd_price_per_token": "0.0000213434636977866486033401",
+        "usd_value": "2.8049762608440958226853674458",
+        "timestamp": "2025-10-23T12:16:59Z",
+        "transaction_hash": "36Ws79XfsRAP2cCJVqLGd4cpwDaX8pn7wTRCVDHuN6km3DJbDYC73PxRYJA3wqvrQ8sj8mxpsRfDC6xTbPq4iSZn"
+      },
+      "matched_quantity": "131420.855610",
+      "realized_pnl_usd": "-6.4643648957929069946372975511",
+      "hold_time_seconds": 1511
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "131402.067579",
+        "usd_price_per_token": "0.0000704693288776698676875721",
+        "usd_value": "9.259815515430352177934337543",
+        "timestamp": "2025-10-23T11:53:22Z",
+        "transaction_hash": "659ZJNcEZT7ZiKzWndnS9XoPZEZfWcRQVEtYM6MekwHAMj2BwVTDWCRZKEZVa86JD7MwYVWKHzY6jLhYZYeUsCma"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "131402.067579",
+        "usd_price_per_token": "0.0000213434636977866486033401",
+        "usd_value": "2.8045752591864944325000217853",
+        "timestamp": "2025-10-23T12:16:59Z",
+        "transaction_hash": "36Ws79XfsRAP2cCJVqLGd4cpwDaX8pn7wTRCVDHuN6km3DJbDYC73PxRYJA3wqvrQ8sj8mxpsRfDC6xTbPq4iSZn"
+      },
+      "matched_quantity": "131402.067579",
+      "realized_pnl_usd": "-6.4552402562438577454343157573",
+      "hold_time_seconds": 1417
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "299088.111450",
+        "usd_price_per_token": "0.0000653594270820560357916282",
+        "usd_value": "19.548227611426123927991684059",
+        "timestamp": "2025-10-23T12:02:04Z",
+        "transaction_hash": "57knQgNBcrQG8kmU36bFtURAtNaneMdhuib3pbWytAV9XctGn7gbdBmK43oGcZeU8euhjdnc2dKxv3jxjGfFCKQs"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "299088.111450",
+        "usd_price_per_token": "0.0000213434636977866486033401",
+        "usd_value": "6.3835762491726422757977706711",
+        "timestamp": "2025-10-23T12:16:59Z",
+        "transaction_hash": "36Ws79XfsRAP2cCJVqLGd4cpwDaX8pn7wTRCVDHuN6km3DJbDYC73PxRYJA3wqvrQ8sj8mxpsRfDC6xTbPq4iSZn"
+      },
+      "matched_quantity": "299088.111450",
+      "realized_pnl_usd": "-13.164651362253481652193913388",
+      "hold_time_seconds": 895
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "140827.995729",
+        "usd_price_per_token": "0.0000692627006298907217912014",
+        "usd_value": "9.754127308485256178148037989",
+        "timestamp": "2025-10-23T12:03:28Z",
+        "transaction_hash": "pFv56Q2jW6HLnPKtqajtmyQhPaMKMdhfX8ueXffv3BXEwzAiDZRU4EpJPuiZFzpBBQR9A1YAD4iXp3KVXdZ8ek6"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "140827.995729",
+        "usd_price_per_token": "0.0000213434636977866486033401",
+        "usd_value": "3.0057572144739646962644034179",
+        "timestamp": "2025-10-23T12:16:59Z",
+        "transaction_hash": "36Ws79XfsRAP2cCJVqLGd4cpwDaX8pn7wTRCVDHuN6km3DJbDYC73PxRYJA3wqvrQ8sj8mxpsRfDC6xTbPq4iSZn"
+      },
+      "matched_quantity": "140827.995729",
+      "realized_pnl_usd": "-6.7483700940112914818836345710",
+      "hold_time_seconds": 811
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1023973.232972",
+        "usd_price_per_token": "0.0006782194934001059072672946",
+        "usd_value": "694.47860732153846259168688132",
+        "timestamp": "2025-10-23T17:57:58Z",
+        "transaction_hash": "4FtQvwxgBRU99Hp7pQqxPYUbfXtzq8HU2MCBgtr3KhqHVgnAx7rkiHwqXAQmvyCfqPGjnVFp954gKYizcoVHD46T"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1023973.232972",
+        "usd_price_per_token": "0.0001124958314919915244693705",
+        "usd_value": "115.19272026872789163772415767",
+        "timestamp": "2025-10-23T23:24:42Z",
+        "transaction_hash": "261axxdqcY4aduvmjsZnxi9JE9GNHqmqXBWvmG1NcnsnVZheG5QdVE9UdJCgyFTa6zojGEPWpRfEW99Wq1BuLW7S"
+      },
+      "matched_quantity": "1023973.232972",
+      "realized_pnl_usd": "-579.28588705281057095396272365",
+      "hold_time_seconds": 19604
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "2785793.501826",
+        "usd_price_per_token": "0.0006921410731649049741243118",
+        "usd_value": "1928.1621039696663046322924872",
+        "timestamp": "2025-10-23T18:00:16Z",
+        "transaction_hash": "2VDMcCvXVBgmnkCNNBGtnyn5V7JYWNy9ePfUZvJkjQ25jStWWvqv7KdtZGMekTGytMAY3EkKcwrYmDxxaaC8kW64"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "2785793.501826",
+        "usd_price_per_token": "0.0001124958314919915244693705",
+        "usd_value": "313.39015635290267922623981167",
+        "timestamp": "2025-10-23T23:24:42Z",
+        "transaction_hash": "261axxdqcY4aduvmjsZnxi9JE9GNHqmqXBWvmG1NcnsnVZheG5QdVE9UdJCgyFTa6zojGEPWpRfEW99Wq1BuLW7S"
+      },
+      "matched_quantity": "2785793.501826",
+      "realized_pnl_usd": "-1614.7719476167636254060526755",
+      "hold_time_seconds": 19466
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "2643985.268813",
+        "usd_price_per_token": "0.0007292635578972199179165203",
+        "usd_value": "1928.1621041624057936978887203",
+        "timestamp": "2025-10-23T18:00:24Z",
+        "transaction_hash": "4LiHFP8cEwAnHqNMZK1TsxEjK7ftKe8Jua317TJwsjJuT6PaCFDsRhayQFED2mCNUUUKefHJ7gAUqknVaWmBHRZE"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "2643985.268813",
+        "usd_price_per_token": "0.0001124958314919915244693705",
+        "usd_value": "297.43732126769516168086622863",
+        "timestamp": "2025-10-23T23:24:42Z",
+        "transaction_hash": "261axxdqcY4aduvmjsZnxi9JE9GNHqmqXBWvmG1NcnsnVZheG5QdVE9UdJCgyFTa6zojGEPWpRfEW99Wq1BuLW7S"
+      },
+      "matched_quantity": "2643985.268813",
+      "realized_pnl_usd": "-1630.7247828947106320170224917",
+      "hold_time_seconds": 19458
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "2503750.029654",
+        "usd_price_per_token": "0.0007701096680281871789675030",
+        "usd_value": "1928.1621041624057450477482414",
+        "timestamp": "2025-10-23T18:00:35Z",
+        "transaction_hash": "61pzvkYx2yk1W2jNJc5fMryFErLdRqk84fre3oE6FvYkxV31yF3BWWzvkz1YNigmDmYT6zy4tasmobuAcr6L4BEn"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "2503750.029654",
+        "usd_price_per_token": "0.0001124958314919915244693705",
+        "usd_value": "281.66144143402516645370305599",
+        "timestamp": "2025-10-23T23:24:42Z",
+        "transaction_hash": "261axxdqcY4aduvmjsZnxi9JE9GNHqmqXBWvmG1NcnsnVZheG5QdVE9UdJCgyFTa6zojGEPWpRfEW99Wq1BuLW7S"
+      },
+      "matched_quantity": "2503750.029654",
+      "realized_pnl_usd": "-1646.5006627283805785940451854",
+      "hold_time_seconds": 19447
+    },
+    {
+      "buy_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "541359.223090",
+        "usd_price_per_token": "0.0003551091097882047228906366",
+        "usd_value": "192.24159178712402322994376881",
+        "timestamp": "2025-10-23T18:57:57Z",
+        "transaction_hash": "4bFRCbDcfF4mH3BAviSZzpR1oZbVYuvEfXQNamxUReimWis5i7hbUAcKL8iKDh6pb4tzjf5ccq1duJAEGt4Zg3xM"
+      },
+      "sell_event": {
+        "wallet_address": "BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh",
+        "token_address": "6AiuSc3pYM5rpbKPq8JfSQoMoUsfDpzvP5PmMSEKpump",
+        "token_symbol": "Solano",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "541359.223090",
+        "usd_price_per_token": "0.0001124958314919915244693705",
+        "usd_value": "60.900655937368087243603138381",
+        "timestamp": "2025-10-23T23:24:42Z",
+        "transaction_hash": "261axxdqcY4aduvmjsZnxi9JE9GNHqmqXBWvmG1NcnsnVZheG5QdVE9UdJCgyFTa6zojGEPWpRfEW99Wq1BuLW7S"
+      },
+      "matched_quantity": "541359.223090",
+      "realized_pnl_usd": "-131.34093584975593598634063043",
+      "hold_time_seconds": 16005
+    }
+  ],
+  "remaining_position": null,
+  "total_realized_pnl_usd": "-5789.0517072403025869209647633",
+  "total_unrealized_pnl_usd": "0",
+  "total_pnl_usd": "-5789.0517072403025869209647633",
+  "total_trades": 10,
+  "winning_trades": 0,
+  "losing_trades": 10,
+  "win_rate_percentage": "0",
+  "avg_hold_time_minutes": "167.78333333333333333333333334",
+  "min_hold_time_minutes": "13.516666666666666666666666667",
+  "max_hold_time_minutes": "326.73333333333333333333333333",
+  "total_invested_usd": "7128.8725869461988473574365328",
+  "total_returned_usd": "1339.8208797058964086154758755",
+  "current_winning_streak": 0,
+  "longest_winning_streak": 0,
+  "current_losing_streak": 10,
+  "longest_losing_streak": 10,
+  "receive_consumptions": [],
+  "total_received_quantity": "0",
+  "total_received_sold_quantity": "0",
+  "remaining_received_quantity": "0"
+}
