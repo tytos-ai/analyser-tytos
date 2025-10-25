@@ -1299,6 +1299,37 @@ impl ZerionClient {
             }
         }
 
+        // === CRITICAL BUG FIX: Validate trade pair integrity ===
+        // Before using implicit pricing, ensure all volatile transfers have the SAME direction.
+        // Mixed directions (e.g., one "in" and one "out") indicate the trade pair incorrectly
+        // grouped transfers from DIFFERENT blockchain transactions.
+        // This causes events from SELL transactions to be labeled as BUY (and vice versa).
+        if !volatile_transfers.is_empty() {
+            use std::collections::HashSet;
+            let volatile_directions: HashSet<&String> = volatile_transfers.iter()
+                .map(|t| &t.direction)
+                .collect();
+
+            if volatile_directions.len() > 1 {
+                warn!(
+                    "⚠️  MIXED DIRECTIONS in trade pair for tx {} (act_id: {}): {:?}. \
+                     This indicates transfers from DIFFERENT blockchain transactions were grouped together. \
+                     Skipping implicit pricing and using standard conversion to avoid mis-labeling events.",
+                    tx.id, trade_pair.act_id, volatile_directions
+                );
+
+                // Fall back to standard conversion - process each transfer independently
+                for transfer in trade_pair.in_transfers.iter().chain(trade_pair.out_transfers.iter()) {
+                    if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                        events.push(event);
+                    }
+                }
+
+                return events;
+            }
+        }
+        // === END BUG FIX ===
+
         // If we found a stable side, use implicit pricing for ALL volatile transfers
         // BUT ONLY if there's exactly ONE volatile transfer (otherwise we'd multiply the value)
         if let Some(stable_total_value) = stable_side_total_value {
