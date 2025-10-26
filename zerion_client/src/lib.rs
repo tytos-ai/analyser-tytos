@@ -1148,9 +1148,12 @@ impl ZerionClient {
             }
 
             // Filter: Only create events for tokens with significant NET transfers
-            // Threshold: abs(net_quantity) > 0.001 OR abs(net_value) > $0.01
+            // Threshold: abs(net_quantity) > 0.001 OR abs(net_value) > $0.001
+            // Using OR logic catches both:
+            // - High quantity but low value (worthless tokens)
+            // - Low quantity but high value (expensive tokens like ETH)
             let net_threshold_quantity = Decimal::new(1, 3); // 0.001
-            let net_threshold_value = 0.01; // $0.01
+            let net_threshold_value = 0.001; // $0.001 (1/10th of a cent, prevents skipping valuable small-qty transfers)
 
             info!(
                 "📊 Multi-hop swap analysis: {} unique tokens, filtering by net transfers (threshold: qty > {} or value > ${})",
@@ -1333,7 +1336,29 @@ impl ZerionClient {
         // If we found a stable side, use implicit pricing for ALL volatile transfers
         // BUT ONLY if there's exactly ONE volatile transfer (otherwise we'd multiply the value)
         if let Some(stable_total_value) = stable_side_total_value {
-            if volatile_transfers.len() == 1 {
+            if volatile_transfers.is_empty() {
+                // Zero volatile transfers - possibly stable-to-stable swap or failed transaction
+                warn!(
+                    "⚠️  Zero volatile transfers in trade pair for tx {} (act_id: {}). \
+                     This trade has only stable currencies - possibly stable-to-stable swap, \
+                     failed/reverted transaction, or data quality issue. \
+                     Falling back to standard conversion for all transfers.",
+                    tx.id, trade_pair.act_id
+                );
+
+                // Process all transfers normally (using Zerion's prices)
+                for transfer in trade_pair.in_transfers.iter().chain(trade_pair.out_transfers.iter()) {
+                    if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                        events.push(event);
+                    }
+                }
+
+                info!(
+                    "✅ Standard conversion complete (zero volatile): {} events created from {} total transfers",
+                    events.len(),
+                    trade_pair.in_transfers.len() + trade_pair.out_transfers.len()
+                );
+            } else if volatile_transfers.len() == 1 {
                 // Safe to use implicit pricing with single volatile transfer
                 info!(
                     "💱 Using implicit swap pricing for tx {} (act_id: {}): stable side TOTAL value = ${:.4} (from {} transfers), 1 volatile transfer",
@@ -1477,6 +1502,18 @@ impl ZerionClient {
         }
 
         let implicit_price = stable_side_value_usd / quantity_f64;
+
+        // Validate that price is positive
+        if implicit_price <= 0.0 {
+            warn!(
+                "Invalid implicit price calculated: ${} for token {}. Prices must be positive. \
+                 This could indicate negative stable value or data quality issues. \
+                 Marking transfer for enrichment.",
+                implicit_price,
+                fungible_info.symbol
+            );
+            return None; // Will trigger enrichment
+        }
 
         info!(
             "🔄 Calculated implicit price for {}: ${:.10} per token (from swap value ${:.2} / quantity {})",

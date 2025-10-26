@@ -2016,6 +2016,22 @@ impl BirdEyeClient {
             );
         }
 
+        // Map native SOL address to wrapped SOL for price queries
+        // BirdEye doesn't return price for native SOL (11111...111), but wrapped SOL has the same price
+        const NATIVE_SOL: &str = "11111111111111111111111111111111";
+        const WRAPPED_SOL: &str = "So11111111111111111111111111112";
+
+        let mut filtered_addresses = filtered_addresses;
+        let mut native_sol_indices = Vec::new();
+
+        for (i, addr) in filtered_addresses.iter_mut().enumerate() {
+            if addr == NATIVE_SOL {
+                info!("[BIRDEYE BATCH] Mapping native SOL to wrapped SOL for price query");
+                *addr = WRAPPED_SOL.to_string();
+                native_sol_indices.push(i);
+            }
+        }
+
         if filtered_addresses.is_empty() {
             warn!("[BIRDEYE BATCH] No valid token addresses to fetch after filtering");
             return Ok(HashMap::new());
@@ -2093,7 +2109,7 @@ impl BirdEyeClient {
                 if let Some(obj) = data.as_object() { obj.len() } else { 0 }
             );
 
-            for token_address in &filtered_addresses {
+            for (i, token_address) in filtered_addresses.iter().enumerate() {
                 if let Some(price_value) = data
                     .get(token_address)
                     .and_then(|v| v.get("value"))
@@ -2103,7 +2119,15 @@ impl BirdEyeClient {
                         "[BIRDEYE BATCH] ✓ Token {} price: ${:.6}",
                         token_address, price_value
                     );
-                    prices.insert(token_address.clone(), price_value);
+
+                    // If this was originally native SOL, store price under BOTH native and wrapped addresses
+                    if native_sol_indices.contains(&i) {
+                        info!("[BIRDEYE BATCH] Storing price for both native SOL and wrapped SOL");
+                        prices.insert(NATIVE_SOL.to_string(), price_value);
+                        prices.insert(WRAPPED_SOL.to_string(), price_value);
+                    } else {
+                        prices.insert(token_address.clone(), price_value);
+                    }
                 } else {
                     warn!(
                         "[BIRDEYE BATCH] ✗ Token {} - no price in response",

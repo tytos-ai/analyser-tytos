@@ -580,6 +580,19 @@ impl NewPnLEngine {
             events.len()
         );
 
+        // Validate all event prices are positive (data quality check)
+        for event in &events {
+            if event.usd_price_per_token <= Decimal::ZERO {
+                return Err(format!(
+                    "Invalid price for token {} ({}): price={} in tx {}. Prices must be positive.",
+                    event.token_symbol,
+                    event.token_address,
+                    event.usd_price_per_token,
+                    event.transaction_hash
+                ));
+            }
+        }
+
         // Separate buy, sell, and receive events (already sorted chronologically)
         let mut buy_events: Vec<NewFinancialEvent> = events
             .iter()
@@ -923,7 +936,29 @@ impl NewPnLEngine {
                 if buy_event.quantity > Decimal::ZERO && buy_event.timestamp <= remaining_sell_event.timestamp {
                     let matched_quantity = remaining_sell_event.quantity.min(buy_event.quantity);
 
-                    let realized_pnl = (remaining_sell_event.usd_price_per_token - buy_event.usd_price_per_token) * matched_quantity;
+                    // Calculate price difference with overflow protection
+                    let price_diff = remaining_sell_event.usd_price_per_token
+                        .checked_sub(buy_event.usd_price_per_token)
+                        .ok_or_else(|| {
+                            format!(
+                                "Price difference overflow: sell_price={}, buy_price={} for token {}",
+                                remaining_sell_event.usd_price_per_token,
+                                buy_event.usd_price_per_token,
+                                remaining_sell_event.token_symbol
+                            )
+                        })?;
+
+                    // Calculate realized P&L with overflow protection
+                    let realized_pnl = price_diff
+                        .checked_mul(matched_quantity)
+                        .ok_or_else(|| {
+                            format!(
+                                "P&L multiplication overflow: price_diff={}, quantity={} for token {}",
+                                price_diff,
+                                matched_quantity,
+                                remaining_sell_event.token_symbol
+                            )
+                        })?;
 
                     let hold_time_seconds = (remaining_sell_event.timestamp - buy_event.timestamp)
                         .num_seconds()
@@ -972,6 +1007,21 @@ impl NewPnLEngine {
                     // Update remaining quantities and USD values proportionally
                     buy_event.quantity -= matched_quantity;
                     buy_event.usd_value = buy_event.quantity * buy_event.usd_price_per_token;
+
+                    // Clear dust to prevent accumulation
+                    // Dust threshold: 1e-18 (smallest meaningful Decimal precision)
+                    const DUST_THRESHOLD: i128 = 1; // 1e-18 when scale is 18
+                    if buy_event.quantity > Decimal::ZERO &&
+                       buy_event.quantity.mantissa().abs() < DUST_THRESHOLD &&
+                       buy_event.quantity.scale() >= 18 {
+                        debug!(
+                            "   🧹 Clearing dust from buy lot: {} {} (below 1e-18 threshold)",
+                            buy_event.quantity,
+                            buy_event.token_symbol
+                        );
+                        buy_event.quantity = Decimal::ZERO;
+                        buy_event.usd_value = Decimal::ZERO;
+                    }
 
                     remaining_sell_event.quantity -= matched_quantity;
                     remaining_sell_event.usd_value = remaining_sell_event.quantity * remaining_sell_event.usd_price_per_token;
@@ -1281,7 +1331,31 @@ impl NewPnLEngine {
                 position.bought_quantity
             );
 
-            let unrealized_pnl = (price - position.avg_cost_basis_usd) * position.bought_quantity;
+            // Calculate price difference with overflow protection
+            let price_diff = match price.checked_sub(position.avg_cost_basis_usd) {
+                Some(diff) => diff,
+                None => {
+                    warn!(
+                        "   ⚠️  Price difference overflow in unrealized P&L: price={}, avg_cost={}. Setting to 0.",
+                        price,
+                        position.avg_cost_basis_usd
+                    );
+                    return Decimal::ZERO;
+                }
+            };
+
+            // Calculate unrealized P&L with overflow protection
+            let unrealized_pnl = match price_diff.checked_mul(position.bought_quantity) {
+                Some(pnl) => pnl,
+                None => {
+                    warn!(
+                        "   ⚠️  Unrealized P&L multiplication overflow: price_diff={}, quantity={}. Setting to 0.",
+                        price_diff,
+                        position.bought_quantity
+                    );
+                    return Decimal::ZERO;
+                }
+            };
 
             // Sanity check for unrealistic values (> $100M)
             let hundred_million = Decimal::from(100_000_000);
