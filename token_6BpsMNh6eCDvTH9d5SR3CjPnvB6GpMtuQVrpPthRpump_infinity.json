@@ -1,0 +1,440 @@
+{
+  "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+  "token_symbol": "INFINITY",
+  "matched_trades": [
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "10000000.000000",
+        "usd_price_per_token": "0.0000128981944454686926467089",
+        "usd_value": "128.98194445468692646708900000",
+        "timestamp": "2025-10-15T00:05:06Z",
+        "transaction_hash": "5GdCFgUCuG1WdPF3ocecZZ4VuGYNZM3DqDWkLZkAWCg7gRvTBuuKQZRVMPmsVJSw9i4scHHSVcYHtTprovcfqeSe"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "10000000.000000",
+        "usd_price_per_token": "0.0000315333726109225559756585",
+        "usd_value": "315.33372610922555975658500000",
+        "timestamp": "2025-10-15T23:43:50Z",
+        "transaction_hash": "4x8kp6YkPoNvUsZduK2aCMBL5qEFzxYxrsMBAJy8bhPHMgSsQMsd5SzboGHT4ud3HkMmafpyANfeo2fVDwcGGmhe"
+      },
+      "matched_quantity": "10000000.000000",
+      "realized_pnl_usd": "186.35178165453863328949600000",
+      "hold_time_seconds": 85124
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "20000000.000000",
+        "usd_price_per_token": "0.0000128981944454686926467089",
+        "usd_value": "257.96388890937385293417800000",
+        "timestamp": "2025-10-15T00:05:06Z",
+        "transaction_hash": "5GdCFgUCuG1WdPF3ocecZZ4VuGYNZM3DqDWkLZkAWCg7gRvTBuuKQZRVMPmsVJSw9i4scHHSVcYHtTprovcfqeSe"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "20000000.000000",
+        "usd_price_per_token": "0.0000288842112865535707703392",
+        "usd_value": "577.68422573107141540678400000",
+        "timestamp": "2025-10-16T02:48:53Z",
+        "transaction_hash": "4Np4LnXj5F3vCGfan3BwMEGS7N8AbazscvuvFM8RFYbiqaUiRXeDS2DE3XCawKDxWyakoQzctUVSun6DUspmU8HE"
+      },
+      "matched_quantity": "20000000.000000",
+      "realized_pnl_usd": "319.72033682169756247260600000",
+      "hold_time_seconds": 96227
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "17622216.529418",
+        "usd_price_per_token": "0.0000128981944454686926467089",
+        "usd_value": "227.29477535658582998906024856",
+        "timestamp": "2025-10-15T00:05:06Z",
+        "transaction_hash": "5GdCFgUCuG1WdPF3ocecZZ4VuGYNZM3DqDWkLZkAWCg7gRvTBuuKQZRVMPmsVJSw9i4scHHSVcYHtTprovcfqeSe"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "17622216.529418",
+        "usd_price_per_token": "0.0000221001524945650696665159",
+        "usd_value": "389.45367259238301708604120994",
+        "timestamp": "2025-10-18T19:20:50Z",
+        "transaction_hash": "GjwNST6kwjfsEUg6wbk6fRBu2Q8tM34oYJ8i8WG71tXgovTWprSkKMMzCa2Z8NBSk21cyjyBZmEkVVjaJk3r27U"
+      },
+      "matched_quantity": "17622216.529418",
+      "realized_pnl_usd": "162.15889723579718709698096138",
+      "hold_time_seconds": 328544
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "2377783.470582",
+        "usd_price_per_token": "0.0000151384253626837555638165",
+        "usd_value": "35.995897598028752378245349551",
+        "timestamp": "2025-10-15T00:05:26Z",
+        "transaction_hash": "5tR4FaPQKhkPCRp6kksWN4yT2KW3kDc76GCr3wd34VE5SwgdxuyaVZQK4zfMw8z2KYz2JZpD1HB8dy8wQ65JKpi9"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "2377783.470582",
+        "usd_price_per_token": "0.0000221001524945650696665159",
+        "usd_value": "52.549377298918376244276790058",
+        "timestamp": "2025-10-18T19:20:50Z",
+        "transaction_hash": "GjwNST6kwjfsEUg6wbk6fRBu2Q8tM34oYJ8i8WG71tXgovTWprSkKMMzCa2Z8NBSk21cyjyBZmEkVVjaJk3r27U"
+      },
+      "matched_quantity": "2377783.470582",
+      "realized_pnl_usd": "16.553479700889623866031440507",
+      "hold_time_seconds": 328524
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "20000000.000000",
+        "usd_price_per_token": "0.0000151384253626837555638165",
+        "usd_value": "302.76850725367511127633000000",
+        "timestamp": "2025-10-15T00:05:26Z",
+        "transaction_hash": "5tR4FaPQKhkPCRp6kksWN4yT2KW3kDc76GCr3wd34VE5SwgdxuyaVZQK4zfMw8z2KYz2JZpD1HB8dy8wQ65JKpi9"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "20000000.000000",
+        "usd_price_per_token": "0.0000200884119743299907395392",
+        "usd_value": "401.76823948659981479078400000",
+        "timestamp": "2025-10-18T19:21:50Z",
+        "transaction_hash": "4Fypvw88KHQcLKTYatEqKXRhvZyhwaqZZSdFqKtBdzAvDSHghaBCbq9TwpZagQhpEytLpL2LsLdFm7G5L8cv2DMr"
+      },
+      "matched_quantity": "20000000.000000",
+      "realized_pnl_usd": "98.99973223292470351445400000",
+      "hold_time_seconds": 328584
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "18093333.130450",
+        "usd_price_per_token": "0.0000151384253626837555638165",
+        "usd_value": "273.90457315749055166883059869",
+        "timestamp": "2025-10-15T00:05:26Z",
+        "transaction_hash": "5tR4FaPQKhkPCRp6kksWN4yT2KW3kDc76GCr3wd34VE5SwgdxuyaVZQK4zfMw8z2KYz2JZpD1HB8dy8wQ65JKpi9"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "18093333.130450",
+        "usd_price_per_token": "0.0000183494141105381511228176",
+        "usd_value": "332.00206225054664818916454903",
+        "timestamp": "2025-10-18T19:22:18Z",
+        "transaction_hash": "4HFshq2fprYWisoYZmBZPEjnmgt9WsAqAsTD9Dx6UxQxtQdfhQhcX14iJMhR2ymrffogcrjQNCZ1kpoewc4f7WzT"
+      },
+      "matched_quantity": "18093333.130450",
+      "realized_pnl_usd": "58.097489093056096520333950338",
+      "hold_time_seconds": 328612
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1906666.869550",
+        "usd_price_per_token": "0.0000175585527142906975834723",
+        "usd_value": "33.478310737585299910164880060",
+        "timestamp": "2025-10-15T00:06:11Z",
+        "transaction_hash": "38GxCmQtTCDdYU2PPigoS6M5jEuaWpC5L9ncwdxNw7HHE2mSWx2CfqJp8Guc2WZH8Dt788s4PiRKg5VepFezuPcq"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1906666.869550",
+        "usd_price_per_token": "0.0000183494141105381511228176",
+        "usd_value": "34.986219960216374267187450968",
+        "timestamp": "2025-10-18T19:22:18Z",
+        "transaction_hash": "4HFshq2fprYWisoYZmBZPEjnmgt9WsAqAsTD9Dx6UxQxtQdfhQhcX14iJMhR2ymrffogcrjQNCZ1kpoewc4f7WzT"
+      },
+      "matched_quantity": "1906666.869550",
+      "realized_pnl_usd": "1.5079092226310743570225709075",
+      "hold_time_seconds": 328567
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "20000000.000000",
+        "usd_price_per_token": "0.0000175585527142906975834723",
+        "usd_value": "351.17105428581395166944600000",
+        "timestamp": "2025-10-15T00:06:11Z",
+        "transaction_hash": "38GxCmQtTCDdYU2PPigoS6M5jEuaWpC5L9ncwdxNw7HHE2mSWx2CfqJp8Guc2WZH8Dt788s4PiRKg5VepFezuPcq"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "20000000.000000",
+        "usd_price_per_token": "0.0000168251422594806498468385",
+        "usd_value": "336.50284518961299693677000000",
+        "timestamp": "2025-10-18T19:23:06Z",
+        "transaction_hash": "4Am6PMbX5jy89CaipwN2R9SmyvzF6QPLGD3D93u1KQiaoHHVMcmTS9EHEJop8CBJkfxBGL7wcPQw9vFtVS6X2b97"
+      },
+      "matched_quantity": "20000000.000000",
+      "realized_pnl_usd": "-14.668209096200954732676000000",
+      "hold_time_seconds": 328615
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "12913989.130576",
+        "usd_price_per_token": "0.0000175585527142906975834723",
+        "usd_value": "226.75095890099579061650999166",
+        "timestamp": "2025-10-15T00:06:11Z",
+        "transaction_hash": "38GxCmQtTCDdYU2PPigoS6M5jEuaWpC5L9ncwdxNw7HHE2mSWx2CfqJp8Guc2WZH8Dt788s4PiRKg5VepFezuPcq"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "12913989.130576",
+        "usd_price_per_token": "0.0000153790875515888625011101",
+        "usd_value": "198.60536947939523899811562913",
+        "timestamp": "2025-10-19T02:44:07Z",
+        "transaction_hash": "4pBLEAUy5R4wsVmooKZPovRyeMN2BdNEMxH3ATbgtJ4YqVcSWvz72DPeZiFWSxGhPq3YbBQG11duCd5qtHuLYk5E"
+      },
+      "matched_quantity": "12913989.130576",
+      "realized_pnl_usd": "-28.145589421600551618394362530",
+      "hold_time_seconds": 355076
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "7086010.869424",
+        "usd_price_per_token": "0.0000201960555228747748381536",
+        "usd_value": "143.10946895458126017078303002",
+        "timestamp": "2025-10-15T00:06:47Z",
+        "transaction_hash": "3HpsKeoha6KEsVWuJXQMvHpgzG1JRbWTP5bmocAV5vJrKfvuBubMHmigtQycxgy3R2ge5tR6yvL3c4iDLYTaJn7W"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "7086010.869424",
+        "usd_price_per_token": "0.0000153790875515888625011101",
+        "usd_value": "108.97638155238201102408637087",
+        "timestamp": "2025-10-19T02:44:07Z",
+        "transaction_hash": "4pBLEAUy5R4wsVmooKZPovRyeMN2BdNEMxH3ATbgtJ4YqVcSWvz72DPeZiFWSxGhPq3YbBQG11duCd5qtHuLYk5E"
+      },
+      "matched_quantity": "7086010.869424",
+      "realized_pnl_usd": "-34.133087402199249146696659157",
+      "hold_time_seconds": 355040
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "5309263.158041",
+        "usd_price_per_token": "0.0000201960555228747748381536",
+        "usd_value": "107.22617352534950657219218699",
+        "timestamp": "2025-10-15T00:06:47Z",
+        "transaction_hash": "3HpsKeoha6KEsVWuJXQMvHpgzG1JRbWTP5bmocAV5vJrKfvuBubMHmigtQycxgy3R2ge5tR6yvL3c4iDLYTaJn7W"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "5309263.158041",
+        "usd_price_per_token": "0.0000138107032761858036578554",
+        "usd_value": "73.324658090889424957596930461",
+        "timestamp": "2025-10-20T22:59:15Z",
+        "transaction_hash": "3HHiqF6uf5JS4cv1cB4QuH9MM9txX6C7WrjN4nnbZHg54zZk3uZ1XHg1NzRFPDYeGNvqPNMXxFQv5ZRxLcEQaxUy"
+      },
+      "matched_quantity": "5309263.158041",
+      "realized_pnl_usd": "-33.901515434460081614595256532",
+      "hold_time_seconds": 514348
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "17823979.455734",
+        "usd_price_per_token": "0.0000201960555228747748381536",
+        "usd_value": "359.97407872658317400679080127",
+        "timestamp": "2025-10-15T00:06:47Z",
+        "transaction_hash": "3HpsKeoha6KEsVWuJXQMvHpgzG1JRbWTP5bmocAV5vJrKfvuBubMHmigtQycxgy3R2ge5tR6yvL3c4iDLYTaJn7W"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "17823979.455734",
+        "usd_price_per_token": "0.0000125191675905999736479954",
+        "usd_value": "223.14138593774485043691179219",
+        "timestamp": "2025-10-26T08:25:18Z",
+        "transaction_hash": "4coaxuRRzfeMotrGSW5CN2WkJ3SCeQHDXqRTz1HgkzRo5VBEg2EJGivHMh6ymbfziA3sZfGEVxeG9xhDgBzHhiZY"
+      },
+      "matched_quantity": "17823979.455734",
+      "realized_pnl_usd": "-136.83269278883832356987900907",
+      "hold_time_seconds": 980311
+    },
+    {
+      "buy_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "2176020.544266",
+        "usd_price_per_token": "0.0000286493238480756277398748",
+        "usd_value": "62.341517272742420971251969767",
+        "timestamp": "2025-10-15T00:31:59Z",
+        "transaction_hash": "5SWw24YjVJvEUgU1K2S3VtSzcERiT2nEna7waoW7HySCcPcDxxDkafPMeLQkYpWES6QDN4fphq3mvZmov3B2uYvt"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "2176020.544266",
+        "usd_price_per_token": "0.0000125191675905999736479954",
+        "usd_value": "27.241965874254622522996207808",
+        "timestamp": "2025-10-26T08:25:18Z",
+        "transaction_hash": "4coaxuRRzfeMotrGSW5CN2WkJ3SCeQHDXqRTz1HgkzRo5VBEg2EJGivHMh6ymbfziA3sZfGEVxeG9xhDgBzHhiZY"
+      },
+      "matched_quantity": "2176020.544266",
+      "realized_pnl_usd": "-35.099551398487798448255761959",
+      "hold_time_seconds": 978799
+    }
+  ],
+  "remaining_position": {
+    "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+    "token_symbol": "INFINITY",
+    "bought_quantity": "63433367.633937",
+    "received_quantity": "877697.777999",
+    "avg_cost_basis_usd": "0.0000344350435884466328187253",
+    "total_cost_basis_usd": "2184.3307794365804468335395561"
+  },
+  "total_realized_pnl_usd": "560.60898041974792198642787388",
+  "total_unrealized_pnl_usd": "-1397.6366019015823960979658862",
+  "total_pnl_usd": "-837.0276214818344741115380123",
+  "total_trades": 13,
+  "winning_trades": 7,
+  "losing_trades": 6,
+  "win_rate_percentage": "53.846153846153846153846153846",
+  "avg_hold_time_minutes": "6841.5012820512820512820512823",
+  "min_hold_time_minutes": "1418.7333333333333333333333333",
+  "max_hold_time_minutes": "16338.516666666666666666666667",
+  "total_invested_usd": "4695.2919285700728754644116127",
+  "total_returned_usd": "3071.5701295532403506172999305",
+  "current_winning_streak": 0,
+  "longest_winning_streak": 7,
+  "current_losing_streak": 6,
+  "longest_losing_streak": 6,
+  "receive_consumptions": [
+    {
+      "receive_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Receive",
+        "quantity": "30877697.777999",
+        "usd_price_per_token": "0.0006134060763460970214580592",
+        "usd_value": "18940.567440602964952371586783",
+        "timestamp": "2025-10-02T16:36:47Z",
+        "transaction_hash": "3kEoLqWaRFZK7p2p25iZtrtYGpZ3RufBokmbRJYwcQwPZD5pMC3duYtuL2WFtNCu6yxy4aoriPSSbkLica1XGYjj"
+      },
+      "sell_event": {
+        "wallet_address": "Cxe3YGyRiiX7QirSMAADv6Fq6KZJwicLnGPhQPaAPMnS",
+        "token_address": "6BpsMNh6eCDvTH9d5SR3CjPnvB6GpMtuQVrpPthRpump",
+        "token_symbol": "INFINITY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "30000000.000000",
+        "usd_price_per_token": "0.0005621801674838345416057583",
+        "usd_value": "16865.405024515036248172749000",
+        "timestamp": "2025-10-02T16:44:15Z",
+        "transaction_hash": "3TiK87qMsNcHMujaJRBJSR5pvqxEAnDPpnS4crkXdRF6zyW5uoTvJ2Yfh9qQyXuVKEATULGUmtRfAUeA8NwvRxb5"
+      },
+      "consumed_quantity": "30000000.000000",
+      "pnl_impact_usd": "0"
+    }
+  ],
+  "total_received_quantity": "30877697.777999",
+  "total_received_sold_quantity": "30000000.000000",
+  "remaining_received_quantity": "877697.777999"
+}

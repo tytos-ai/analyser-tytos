@@ -1,4 +1,4 @@
-use redis::{AsyncCommands, Client};
+use redis::{aio::MultiplexedConnection, AsyncCommands, Client};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -604,15 +604,15 @@ impl RedisClient {
         let client = Client::open(redis_url)?;
 
         // Test the connection
-        let mut conn = client.get_async_connection().await?;
+        let mut conn = client.get_multiplexed_async_connection().await?;
         let _: String = redis::cmd("PING").query_async(&mut conn).await?;
 
         Ok(Self { client })
     }
 
-    async fn get_connection(&self) -> Result<redis::aio::Connection> {
+    async fn get_connection(&self) -> Result<MultiplexedConnection> {
         self.client
-            .get_async_connection()
+            .get_multiplexed_async_connection()
             .await
             .map_err(PersistenceError::from)
     }

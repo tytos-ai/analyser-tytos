@@ -387,6 +387,8 @@ pub struct AnalysisFilters {
 }
 
 /// Batch analysis v2 response
+/// TODO: Used when batch v2 processing is fully implemented
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchAnalysisV2Response {
     /// Job identifier
@@ -403,6 +405,8 @@ pub struct BatchAnalysisV2Response {
 }
 
 /// Batch analysis statistics
+/// TODO: Used when batch v2 processing is fully implemented
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchStatistics {
     /// Total wallets analyzed
@@ -425,6 +429,8 @@ pub struct BatchStatistics {
 }
 
 /// Wallet ranking for copy trading potential
+/// TODO: Used when batch v2 processing is fully implemented
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletRanking {
     /// Wallet address

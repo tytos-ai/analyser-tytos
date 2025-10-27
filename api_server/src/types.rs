@@ -225,16 +225,6 @@ pub struct LogEntry {
     pub message: String,
     pub fields: HashMap<String, serde_json::Value>,
 }
-
-/// CSV export metadata
-#[derive(Debug, Serialize)]
-pub struct CsvExportInfo {
-    pub filename: String,
-    pub row_count: usize,
-    pub generated_at: DateTime<Utc>,
-    pub job_id: Uuid,
-}
-
 // Utility functions for type conversions
 
 impl From<BatchJob> for BatchJobStatusResponse {
