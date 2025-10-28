@@ -9,7 +9,7 @@ use futures::future::join_all;
 use persistence_layer::{
     DiscoveredWalletToken, JobStatus, PersistenceClient, PersistenceError, TokenAnalysisJob,
 };
-use zerion_client::{ZerionClient, ZerionError};
+use zerion_client::{ZerionClient, ZerionError, SkippedTransactionInfo};
 // New algorithm imports (primary P&L system)
 use pnl_core::{
     NewFinancialEvent, NewPnLEngine, PortfolioPnLResult,
@@ -1352,12 +1352,18 @@ impl JobOrchestrator {
             zerion_client.convert_to_financial_events(&zerion_transactions, wallet_address);
         let mut financial_events = conversion_result.events;
         let incomplete_trades_count = conversion_result.incomplete_trades_count;
+        let multi_hop_contexts = conversion_result.multi_hop_contexts;
 
         info!("📊 Converted {} Zerion transactions into {} financial events (including send transactions), {} incomplete trades detected",
               zerion_transactions.len(), financial_events.len(), incomplete_trades_count);
 
+        if !multi_hop_contexts.is_empty() {
+            info!("🔄 Detected {} multi-hop swap transactions requiring enrichment",
+                multi_hop_contexts.len());
+        }
+
         // Step 1.5: Extract and enrich skipped transactions using BirdEye historical prices
-        let skipped_txs = zerion_client.extract_skipped_transaction_info(&zerion_transactions, wallet_address);
+        let skipped_txs = zerion_client.extract_skipped_transaction_info(&zerion_transactions, wallet_address, &multi_hop_contexts);
         if !skipped_txs.is_empty() {
             info!("🔍 Found {} transactions with missing price data - attempting BirdEye historical price enrichment",
                 skipped_txs.len());
@@ -2100,50 +2106,166 @@ impl JobOrchestrator {
             total_success_count, total_failures, final_rate_limit_failures, total_non_rate_limit_failures);
 
         // Phase 3: Create enriched events for ALL original requests (including duplicates)
+        // === ENHANCED: Group by transaction to calculate multi-hop swap_input fields ===
+        use std::collections::HashMap;
+
+        // Step 3.1: Group skip_info by transaction hash
+        let mut by_tx: HashMap<String, Vec<&SkippedTransactionInfo>> = HashMap::new();
+        for skip_info in skipped {
+            by_tx.entry(skip_info.tx_hash.clone())
+                .or_insert_with(Vec::new)
+                .push(skip_info);
+        }
+
+        info!("📊 Phase 3: Enriching {} transactions ({} total transfers)",
+            by_tx.len(), skipped.len());
+
         let mut enriched_events = Vec::new();
         let mut events_created = 0u32;
         let mut events_skipped = 0u32;
+        let mut multi_hop_swaps_enriched = 0u32;
 
-        for skip_info in skipped {
-            let key = (skip_info.token_mint.clone(), skip_info.unix_timestamp);
+        // Step 3.2: Process each transaction
+        for (_tx_hash, tx_skip_infos) in by_tx {
+            // Step 3.2a: Create all events for this transaction with enriched prices
+            let mut tx_events: Vec<NewFinancialEvent> = Vec::new();
 
-            if let Some(&historical_price) = price_lookup.get(&key) {
-                // Convert price to Decimal
-                let usd_price = Decimal::from_f64_retain(historical_price)
-                    .unwrap_or(Decimal::ZERO);
+            for skip_info in &tx_skip_infos {
+                let key = (skip_info.token_mint.clone(), skip_info.unix_timestamp);
 
-                // Calculate USD value
-                let usd_value = skip_info.token_amount * usd_price;
+                if let Some(&historical_price) = price_lookup.get(&key) {
+                    // Convert price to Decimal
+                    let usd_price = Decimal::from_f64_retain(historical_price)
+                        .unwrap_or(Decimal::ZERO);
 
-                // Create financial event with enriched price data
-                let event = NewFinancialEvent {
-                    wallet_address: skip_info.wallet_address.clone(),
-                    token_address: skip_info.token_mint.clone(),
-                    token_symbol: skip_info.token_symbol.clone(),
-                    chain_id: skip_info.chain_id.clone(),
-                    event_type: skip_info.event_type.clone(),
-                    quantity: skip_info.token_amount,
-                    usd_price_per_token: usd_price,
-                    usd_value: usd_value,
-                    timestamp: skip_info.timestamp,
-                    transaction_hash: skip_info.tx_hash.clone(),
-                };
+                    // Calculate USD value
+                    let usd_value = skip_info.token_amount * usd_price;
 
-                debug!("✨ Enriched event: {} {} @ ${} = ${} (tx: {})",
-                    event.quantity, event.token_symbol, usd_price, usd_value,
-                    &event.transaction_hash[..8]);
+                    // Create financial event with enriched price data
+                    let event = NewFinancialEvent {
+                        wallet_address: skip_info.wallet_address.clone(),
+                        token_address: skip_info.token_mint.clone(),
+                        token_symbol: skip_info.token_symbol.clone(),
+                        chain_id: skip_info.chain_id.clone(),
+                        event_type: skip_info.event_type.clone(),
+                        quantity: skip_info.token_amount,
+                        usd_price_per_token: usd_price,
+                        usd_value: usd_value,
+                        // Initially None, will be populated below for multi-hop
+                        swap_input_token: None,
+                        swap_input_quantity: None,
+                        swap_input_usd_value: None,
+                        timestamp: skip_info.timestamp,
+                        transaction_hash: skip_info.tx_hash.clone(),
+                    };
 
-                enriched_events.push(event);
-                events_created += 1;
-            } else {
-                debug!("⚠️  Skipping event for {} (price fetch failed)",
-                    skip_info.token_symbol);
-                events_skipped += 1;
+                    debug!("✨ Enriched event: {} {} @ ${} = ${} (tx: {})",
+                        event.quantity, event.token_symbol, usd_price, usd_value,
+                        &event.transaction_hash[..8]);
+
+                    tx_events.push(event);
+                    events_created += 1;
+                } else {
+                    debug!("⚠️  Skipping event for {} (price fetch failed)",
+                        skip_info.token_symbol);
+                    events_skipped += 1;
+                }
             }
+
+            // Step 3.2b: === MULTI-HOP SWAP_INPUT CALCULATION ===
+            // For BUY events in multi-hop swaps, calculate swap_input from OUT-side transfers
+            let multi_hop_buy_events: Vec<usize> = tx_events.iter()
+                .enumerate()
+                .filter_map(|(idx, event)| {
+                    // Find corresponding skip_info
+                    let skip_info = tx_skip_infos.iter()
+                        .find(|si| si.token_mint == event.token_address)?;
+
+                    if skip_info.is_multi_hop_swap && event.event_type == pnl_core::NewEventType::Buy {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !multi_hop_buy_events.is_empty() {
+                multi_hop_swaps_enriched += multi_hop_buy_events.len() as u32;
+
+                // For each multi-hop BUY event, calculate swap_input from other_transfers_in_tx
+                for buy_idx in multi_hop_buy_events {
+                    let skip_info = tx_skip_infos.iter()
+                        .find(|si| si.token_mint == tx_events[buy_idx].token_address)
+                        .expect("skip_info must exist");
+
+                    // Calculate total OUT-side USD value from enriched transfers
+                    let mut total_out_usd_value = Decimal::ZERO;
+                    let mut out_token_symbols = Vec::new();
+                    let mut out_token_qty: Option<Decimal> = None;
+
+                    for transfer in &skip_info.other_transfers_in_tx {
+                        if transfer.direction == "out" {
+                            // Find enriched event for this transfer
+                            let enriched_value = tx_events.iter()
+                                .find(|e| e.token_address == transfer.token_address)
+                                .map(|e| e.usd_value);
+
+                            if let Some(value) = enriched_value {
+                                total_out_usd_value += value;
+                                out_token_symbols.push(transfer.token_symbol.clone());
+
+                                if out_token_qty.is_none() {
+                                    out_token_qty = Some(transfer.quantity);
+                                }
+                            } else if let Some(zerion_value) = transfer.usd_value {
+                                // Use Zerion value if available
+                                total_out_usd_value += Decimal::from_f64_retain(zerion_value)
+                                    .unwrap_or(Decimal::ZERO);
+                                out_token_symbols.push(transfer.token_symbol.clone());
+
+                                if out_token_qty.is_none() {
+                                    out_token_qty = Some(transfer.quantity);
+                                }
+                            }
+                        }
+                    }
+
+                    if total_out_usd_value > Decimal::ZERO {
+                        // Populate swap_input fields
+                        tx_events[buy_idx].swap_input_token = if out_token_symbols.len() == 1 {
+                            Some(out_token_symbols[0].clone())
+                        } else if !out_token_symbols.is_empty() {
+                            Some(format!("Multi-token ({})", out_token_symbols.join("+")))
+                        } else {
+                            None
+                        };
+
+                        tx_events[buy_idx].swap_input_quantity = out_token_qty;
+                        tx_events[buy_idx].swap_input_usd_value = Some(total_out_usd_value);
+
+                        info!(
+                            "💱 Multi-hop enrichment: {} BUY swap_input = {} (${:.4}) vs market value ${:.4}",
+                            tx_events[buy_idx].token_symbol,
+                            tx_events[buy_idx].swap_input_token.as_ref().unwrap_or(&"unknown".to_string()),
+                            total_out_usd_value,
+                            tx_events[buy_idx].usd_value
+                        );
+                    }
+                }
+            }
+            // === END MULTI-HOP SWAP_INPUT CALCULATION ===
+
+            // Step 3.2c: Add all events for this transaction to the final list
+            enriched_events.extend(tx_events);
         }
 
         info!("📊 Event creation: {} events created, {} skipped due to missing prices",
             events_created, events_skipped);
+
+        if multi_hop_swaps_enriched > 0 {
+            info!("💱 Multi-hop enrichment: {} BUY events enriched with swap_input data",
+                multi_hop_swaps_enriched);
+        }
 
         // Fail if more than 50% of enrichment attempts failed
         if initial_unique_count > 0 {

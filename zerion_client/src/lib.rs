@@ -7,6 +7,7 @@ use reqwest::{header::HeaderMap, Client};
 use retry_utils::{retry_with_backoff, RetryableError, RetryConfig};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -161,12 +162,33 @@ pub struct ZerionLinks {
     pub prev: Option<String>,
 }
 
+/// Multi-hop swap context for transactions needing enrichment
+#[derive(Debug, Clone)]
+pub struct MultiHopSwapContext {
+    pub tx_hash: String,
+    pub tx_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub chain_id: String,
+    pub all_transfers: Vec<TransferSummary>,  // All transfers in the transaction
+}
+
 /// Result of conversion with enrichment tracking
 #[derive(Debug, Clone)]
 pub struct ConversionResult {
     pub events: Vec<NewFinancialEvent>,
     pub skipped_transactions: Vec<SkippedTransactionInfo>,
     pub incomplete_trades_count: u32,  // Count of trades with only OUT transfers (no IN side)
+    pub multi_hop_contexts: HashMap<String, MultiHopSwapContext>,  // tx_hash → context
+}
+
+/// Summary of a transfer for multi-hop context tracking
+#[derive(Debug, Clone)]
+pub struct TransferSummary {
+    pub token_address: String,
+    pub token_symbol: String,
+    pub direction: String,  // "in" or "out"
+    pub quantity: Decimal,
+    pub usd_value: Option<f64>,
 }
 
 /// Information about a skipped transaction that needs price enrichment
@@ -183,6 +205,14 @@ pub struct SkippedTransactionInfo {
     pub unix_timestamp: i64,
     pub chain_id: String,
     pub skip_reason: String,
+
+    // === MULTI-HOP SWAP CONTEXT ===
+    // For transactions where both sides need enrichment (e.g., USDUC → SOL → INFINITY)
+    pub is_multi_hop_swap: bool,
+    pub swap_input_token: Option<String>,
+    pub swap_input_quantity: Option<Decimal>,
+    // Store all other transfers in same transaction to calculate OUT-side value after enrichment
+    pub other_transfers_in_tx: Vec<TransferSummary>,
 }
 
 /// Paired IN and OUT transfers for a trade (same act_id)
@@ -1052,12 +1082,14 @@ impl ZerionClient {
 
     /// Convert a trade pair using implicit swap pricing
     /// Returns a vector of financial events (BUY for IN side, SELL for OUT side)
+    /// Also populates multi_hop_contexts for transactions needing enrichment
     fn convert_trade_pair_to_events(
         &self,
         tx: &ZerionTransaction,
         trade_pair: &TradePair,
         wallet_address: &str,
         chain_id: &str,
+        multi_hop_contexts: &mut HashMap<String, MultiHopSwapContext>,
     ) -> Vec<NewFinancialEvent> {
         debug!(
             "💱 Converting trade pair (act_id: {}) for tx {}",
@@ -1157,6 +1189,53 @@ impl ZerionClient {
                 net_transfers.len(), net_threshold_quantity, net_threshold_value
             );
 
+            // === FIX FOR MULTI-HOP SWAP INVESTED CALCULATION ===
+            // For BUY events (net positive transfers), we need to track what was actually SPENT (OUT-side)
+            // to correctly calculate total_invested_usd (not the market value of what was received)
+            //
+            // Collect all OUT-side (negative net) tokens - these are what the user spent
+            let out_side_tokens: Vec<(String, Decimal, Option<f64>)> = net_transfers.iter()
+                .filter_map(|(addr, (qty, value, _))| {
+                    if *qty < Decimal::ZERO {
+                        // Negative net = spent/sold
+                        Some((addr.clone(), qty.abs(), *value))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Calculate total OUT-side USD value (sum of all tokens spent)
+            let total_out_usd_value: f64 = out_side_tokens.iter()
+                .filter_map(|(_, _, value)| *value)
+                .sum();
+
+            // Collect token symbols for OUT-side (for logging)
+            let out_token_symbols: Vec<String> = out_side_tokens.iter()
+                .filter_map(|(addr, _, _)| {
+                    trade_pair.out_transfers.iter()
+                        .find_map(|t| {
+                            t.fungible_info.as_ref().and_then(|f| {
+                                f.implementations.iter()
+                                    .find(|i| i.chain_id == chain_id)
+                                    .and_then(|i| i.address.as_ref())
+                                    .filter(|a| *a == addr)
+                                    .map(|_| f.symbol.clone())
+                            })
+                        })
+                })
+                .collect();
+
+            if !out_side_tokens.is_empty() && total_out_usd_value > 0.0 {
+                info!(
+                    "💸 Multi-hop OUT-side: {} tokens spent, total value ${:.4} (tokens: {:?})",
+                    out_side_tokens.len(),
+                    total_out_usd_value,
+                    out_token_symbols
+                );
+            }
+            // === END FIX ===
+
             for (token_addr, (net_qty, net_value, is_positive)) in &net_transfers {
                 let abs_net_qty = net_qty.abs();
                 let abs_net_value = net_value.unwrap_or(0.0).abs();
@@ -1198,8 +1277,88 @@ impl ZerionClient {
 
                     // Create event from the first matching transfer
                     if let Some(transfer) = relevant_transfers.first() {
-                        if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
-                            events.push(event);
+                        // === FIX: For BUY events, pass swap_input info (what was spent) ===
+                        if *is_positive && !out_side_tokens.is_empty() && total_out_usd_value > 0.0 {
+                            // This is a BUY - use OUT-side as swap input (what user spent)
+                            // For simplicity, we'll use a summary format for multi-token spends
+                            let swap_input_token = if out_token_symbols.len() == 1 {
+                                Some(out_token_symbols[0].clone())
+                            } else {
+                                Some(format!("Multi-token ({})", out_token_symbols.join("+")))
+                            };
+
+                            let swap_input_quantity = if out_side_tokens.len() == 1 {
+                                Some(out_side_tokens[0].1)
+                            } else {
+                                None // Multiple tokens, can't meaningfully represent as single quantity
+                            };
+
+                            let swap_input_usd_value = Some(Decimal::from_f64_retain(total_out_usd_value).unwrap_or(Decimal::ZERO));
+
+                            info!(
+                                "  💰 BUY event swap_input: {} (${:.4})",
+                                swap_input_token.as_ref().unwrap_or(&"unknown".to_string()),
+                                total_out_usd_value
+                            );
+
+                            if let Some(event) = self.convert_transfer_to_event_with_swap_info(
+                                tx, transfer, wallet_address, chain_id,
+                                swap_input_token, swap_input_quantity, swap_input_usd_value
+                            ) {
+                                events.push(event);
+                            }
+                        } else {
+                            // SELL event or BUY without OUT-side value - use standard conversion
+                            //
+                            // === MULTI-HOP CONTEXT TRACKING ===
+                            // If this is a BUY event in a multi-hop swap, but we couldn't populate swap_input
+                            // (because total_out_usd_value == 0), we need to store context for enrichment.
+                            // This happens when BOTH the bought token AND the spent tokens need BirdEye enrichment.
+                            if *is_positive && !out_side_tokens.is_empty() {
+                                // This is a BUY without OUT-side USD value - store multi-hop context
+                                // Create transfer summaries for ALL transfers in this trade pair
+                                let all_transfer_summaries: Vec<TransferSummary> = trade_pair.in_transfers.iter()
+                                    .chain(trade_pair.out_transfers.iter())
+                                    .filter_map(|t| {
+                                        let fungible_info = t.fungible_info.as_ref()?;
+                                        let impl_ = fungible_info.implementations.iter()
+                                            .find(|i| i.chain_id == chain_id)?;
+                                        let token_address = impl_.address.as_ref()?.clone();
+                                        let quantity = Self::parse_decimal_with_precision_handling(&t.quantity.numeric).ok()?;
+
+                                        Some(TransferSummary {
+                                            token_address,
+                                            token_symbol: fungible_info.symbol.clone(),
+                                            direction: t.direction.clone(),
+                                            quantity,
+                                            usd_value: t.value,
+                                        })
+                                    })
+                                    .collect();
+
+                                if !all_transfer_summaries.is_empty() {
+                                    let context = MultiHopSwapContext {
+                                        tx_hash: tx.attributes.hash.clone(),
+                                        tx_id: tx.id.clone(),
+                                        timestamp: tx.attributes.mined_at,
+                                        chain_id: chain_id.to_string(),
+                                        all_transfers: all_transfer_summaries,
+                                    };
+
+                                    multi_hop_contexts.insert(tx.attributes.hash.clone(), context);
+
+                                    info!(
+                                        "🔄 Stored multi-hop context for tx {} ({} transfers, BUY event needs enrichment)",
+                                        tx.attributes.hash,
+                                        trade_pair.in_transfers.len() + trade_pair.out_transfers.len()
+                                    );
+                                }
+                            }
+                            // === END MULTI-HOP CONTEXT TRACKING ===
+
+                            if let Some(event) = self.convert_transfer_to_event(tx, transfer, wallet_address, chain_id) {
+                                events.push(event);
+                            }
                         }
                     }
                 } else {
@@ -1509,6 +1668,9 @@ impl ZerionClient {
             quantity: amount,
             usd_price_per_token: Decimal::from_f64_retain(implicit_price).unwrap_or(Decimal::ZERO),
             usd_value: Decimal::from_f64_retain(stable_side_value_usd).unwrap_or(Decimal::ZERO),
+            swap_input_token: None,
+            swap_input_quantity: None,
+            swap_input_usd_value: None,
             timestamp: tx.attributes.mined_at,
             transaction_hash: tx.attributes.hash.clone(),
         })
@@ -1571,6 +1733,7 @@ impl ZerionClient {
         let mut skipped_count = 0u32;
         let mut error_count = 0u32;
         let mut incomplete_trades_count = 0u32;  // NEW: Track incomplete trades
+        let mut multi_hop_contexts: HashMap<String, MultiHopSwapContext> = HashMap::new();  // NEW: Track multi-hop contexts
 
         info!(
             "🔄 Converting {} transactions to financial events for wallet: {}",
@@ -1627,7 +1790,7 @@ impl ZerionClient {
                             );
                         }
 
-                        let pair_events = self.convert_trade_pair_to_events(tx, &trade_pair, wallet_address, chain_id);
+                        let pair_events = self.convert_trade_pair_to_events(tx, &trade_pair, wallet_address, chain_id, &mut multi_hop_contexts);
                         tx_events += pair_events.len() as u32;
 
                         for event in pair_events {
@@ -1762,10 +1925,16 @@ impl ZerionClient {
             );
         }
 
+        info!(
+            "📊 Multi-hop contexts tracked: {} transactions",
+            multi_hop_contexts.len()
+        );
+
         ConversionResult {
             events,
             skipped_transactions: Vec::new(),
             incomplete_trades_count,
+            multi_hop_contexts,
         }
     }
 
@@ -1775,6 +1944,19 @@ impl ZerionClient {
         transfer: &ZerionTransfer,
         wallet_address: &str,
         chain_id: &str,
+    ) -> Option<NewFinancialEvent> {
+        self.convert_transfer_to_event_with_swap_info(tx, transfer, wallet_address, chain_id, None, None, None)
+    }
+
+    fn convert_transfer_to_event_with_swap_info(
+        &self,
+        tx: &ZerionTransaction,
+        transfer: &ZerionTransfer,
+        wallet_address: &str,
+        chain_id: &str,
+        swap_input_token: Option<String>,
+        swap_input_quantity: Option<Decimal>,
+        swap_input_usd_value: Option<Decimal>,
     ) -> Option<NewFinancialEvent> {
         // Check if fungible_info is available, if not skip this transfer
         let fungible_info = match &transfer.fungible_info {
@@ -1936,6 +2118,9 @@ impl ZerionClient {
             quantity: amount,
             usd_price_per_token,
             usd_value,
+            swap_input_token,
+            swap_input_quantity,
+            swap_input_usd_value,
             timestamp: tx.attributes.mined_at,
             transaction_hash: tx.attributes.hash.clone(),
         })
@@ -1943,10 +2128,12 @@ impl ZerionClient {
 
     /// Extract information about transactions that would be skipped (missing price/value data)
     /// This is used for enrichment via BirdEye historical price API
+    /// multi_hop_contexts: Contains context for multi-hop swaps needing enrichment
     pub fn extract_skipped_transaction_info(
         &self,
         transactions: &[ZerionTransaction],
         wallet_address: &str,
+        multi_hop_contexts: &HashMap<String, MultiHopSwapContext>,
     ) -> Vec<SkippedTransactionInfo> {
         let mut skipped_info = Vec::new();
 
@@ -2012,6 +2199,46 @@ impl ZerionClient {
                         None => continue, // Skip if no implementation for this chain
                     };
 
+                    // === MULTI-HOP CONTEXT POPULATION ===
+                    // Check if this transaction is in the multi-hop contexts
+                    let multi_hop_context = multi_hop_contexts.get(&tx.attributes.hash);
+                    let (is_multi_hop, swap_input_token, swap_input_qty, other_transfers) = if let Some(context) = multi_hop_context {
+                        // This is a multi-hop swap transaction
+                        // For BUY events, collect OUT-side transfers as swap inputs
+                        let out_transfers: Vec<TransferSummary> = context.all_transfers.iter()
+                            .filter(|t| t.direction == "out")
+                            .cloned()
+                            .collect();
+
+                        let swap_token = if out_transfers.len() == 1 {
+                            Some(out_transfers[0].token_symbol.clone())
+                        } else if !out_transfers.is_empty() {
+                            let symbols: Vec<String> = out_transfers.iter().map(|t| t.token_symbol.clone()).collect();
+                            Some(format!("Multi-token ({})", symbols.join("+")))
+                        } else {
+                            None
+                        };
+
+                        let swap_qty = if out_transfers.len() == 1 {
+                            Some(out_transfers[0].quantity)
+                        } else {
+                            None
+                        };
+
+                        info!(
+                            "🔄 Multi-hop swap detected for {}: swap_input = {:?}, {} other transfers",
+                            fungible_info.symbol,
+                            swap_token,
+                            context.all_transfers.len()
+                        );
+
+                        (true, swap_token, swap_qty, context.all_transfers.clone())
+                    } else {
+                        // Not a multi-hop swap
+                        (false, None, None, Vec::new())
+                    };
+                    // === END MULTI-HOP CONTEXT POPULATION ===
+
                     // Create skip info
                     let skip_info = SkippedTransactionInfo {
                         zerion_tx_id: tx.id.clone(),
@@ -2025,11 +2252,17 @@ impl ZerionClient {
                         unix_timestamp: tx.attributes.mined_at.timestamp(),
                         chain_id: chain_id.clone(),
                         skip_reason: "missing_price_and_value".to_string(),
+                        // Multi-hop context
+                        is_multi_hop_swap: is_multi_hop,
+                        swap_input_token,
+                        swap_input_quantity: swap_input_qty,
+                        other_transfers_in_tx: other_transfers,
                     };
 
                     info!(
-                        "📋 Identified skipped transaction for enrichment: {} {} ({})",
-                        skip_info.token_symbol, skip_info.token_mint, skip_info.tx_hash
+                        "📋 Identified skipped transaction for enrichment: {} {} ({}) {}",
+                        skip_info.token_symbol, skip_info.token_mint, skip_info.tx_hash,
+                        if is_multi_hop { "[MULTI-HOP]" } else { "" }
                     );
 
                     skipped_info.push(skip_info);

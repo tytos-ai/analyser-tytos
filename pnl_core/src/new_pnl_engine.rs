@@ -684,7 +684,38 @@ impl NewPnLEngine {
             );
         }
 
-        let total_invested_usd: Decimal = buy_events_for_invested.iter().map(|e| e.usd_value).sum();
+        // === FIX: Use swap_input_usd_value for multi-hop BUY events ===
+        // For multi-hop swaps (e.g., USDUC → SOL → INFINITY), swap_input_usd_value contains
+        // the actual amount spent (USDUC value), not the market value of tokens received (INFINITY value).
+        // This correctly accounts for slippage and gives true invested amount.
+        let mut multi_hop_adjustments = 0usize;
+        let total_invested_usd: Decimal = buy_events_for_invested.iter().map(|e| {
+            if let Some(swap_input_value) = e.swap_input_usd_value {
+                // Multi-hop swap - use what was actually spent
+                multi_hop_adjustments += 1;
+                if multi_hop_adjustments <= 3 {  // Log first 3 to avoid spam
+                    debug!(
+                        "  💱 Multi-hop adjustment: using swap_input ${:.4} instead of market value ${:.4} for {} (spent: {})",
+                        swap_input_value,
+                        e.usd_value,
+                        e.token_symbol,
+                        e.swap_input_token.as_ref().unwrap_or(&"unknown".to_string())
+                    );
+                }
+                swap_input_value
+            } else {
+                // Regular buy - use market value
+                e.usd_value
+            }
+        }).sum();
+
+        if multi_hop_adjustments > 0 {
+            info!(
+                "💱 Applied {} multi-hop swap adjustments for {} (using actual spend amounts)",
+                multi_hop_adjustments,
+                token_symbol
+            );
+        }
 
         debug!(
             "💰 Total invested in {}: ${:.2} (from {} buy events)",
@@ -692,7 +723,7 @@ impl NewPnLEngine {
             total_invested_usd,
             buy_events_for_invested.len()
         );
-        // === END ENHANCED DEBUG LOGGING ===
+        // === END ENHANCED DEBUG LOGGING & MULTI-HOP FIX ===
 
         // === VALIDATION: Check for extreme buy/sell imbalances (Fix #3) ===
         let total_sell_value: Decimal = events
@@ -920,6 +951,14 @@ impl NewPnLEngine {
                     break;
                 }
 
+                // ENHANCED DEBUG: Log timestamp comparison
+                debug!(
+                    "   🔍 Checking buy @ {} vs sell @ {} (buy <= sell? {})",
+                    buy_event.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                    remaining_sell_event.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                    buy_event.timestamp <= remaining_sell_event.timestamp
+                );
+
                 if buy_event.quantity > Decimal::ZERO && buy_event.timestamp <= remaining_sell_event.timestamp {
                     let matched_quantity = remaining_sell_event.quantity.min(buy_event.quantity);
 
@@ -943,6 +982,9 @@ impl NewPnLEngine {
                         quantity: matched_quantity,
                         usd_price_per_token: buy_event.usd_price_per_token,
                         usd_value: matched_quantity * buy_event.usd_price_per_token,
+                        swap_input_token: buy_event.swap_input_token.clone(),
+                        swap_input_quantity: buy_event.swap_input_quantity,
+                        swap_input_usd_value: buy_event.swap_input_usd_value,
                     };
 
                     // Create matched sell portion (only the matched quantity)
@@ -959,6 +1001,9 @@ impl NewPnLEngine {
                         quantity: matched_quantity,
                         usd_price_per_token: remaining_sell_event.usd_price_per_token,
                         usd_value: matched_quantity * remaining_sell_event.usd_price_per_token,
+                        swap_input_token: None,
+                        swap_input_quantity: None,
+                        swap_input_usd_value: None,
                     };
 
                     matched_trades.push(MatchedTrade {
@@ -1072,6 +1117,9 @@ impl NewPnLEngine {
                         quantity: remaining_sell_event.quantity,
                         usd_price_per_token: Decimal::ZERO, // No cost basis for pre-existing holdings
                         usd_value: Decimal::ZERO,
+                        swap_input_token: None,
+                        swap_input_quantity: None,
+                        swap_input_usd_value: None,
                         chain_id: remaining_sell_event.chain_id.clone(),
                     };
 

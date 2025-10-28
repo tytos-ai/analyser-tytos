@@ -326,6 +326,9 @@ impl HistoryTransactionParser {
             quantity,
             usd_price_per_token: price_per_token,
             usd_value,
+            swap_input_token: None,
+            swap_input_quantity: None,
+            swap_input_usd_value: None,
             timestamp,
             transaction_hash: transaction_hash.to_string(),
         })

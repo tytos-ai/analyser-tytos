@@ -58,6 +58,20 @@ pub struct NewFinancialEvent {
     /// USD value (quantity × price)
     pub usd_value: Decimal,
 
+    /// For multi-hop swap BUY events: the token that was actually spent
+    /// Example: USDUC → SOL → INFINITY, this would be "USDUC" for the INFINITY BUY event
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_input_token: Option<String>,
+
+    /// For multi-hop swap BUY events: quantity of the input token spent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_input_quantity: Option<Decimal>,
+
+    /// For multi-hop swap BUY events: USD value of what was actually spent
+    /// This is the TRUE invested amount (what user paid), not the market value of tokens received
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_input_usd_value: Option<Decimal>,
+
     /// Transaction timestamp
     pub timestamp: DateTime<Utc>,
 
@@ -348,6 +362,9 @@ impl NewTransactionParser {
             quantity: params.quantity,
             usd_price_per_token: params.price_per_token,
             usd_value,
+            swap_input_token: None,
+            swap_input_quantity: None,
+            swap_input_usd_value: None,
             timestamp: params.timestamp,
             transaction_hash: params.transaction_hash.to_string(),
         })
