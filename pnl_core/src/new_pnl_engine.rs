@@ -962,11 +962,40 @@ impl NewPnLEngine {
                 if buy_event.quantity > Decimal::ZERO && buy_event.timestamp <= remaining_sell_event.timestamp {
                     let matched_quantity = remaining_sell_event.quantity.min(buy_event.quantity);
 
-                    let realized_pnl = (remaining_sell_event.usd_price_per_token - buy_event.usd_price_per_token) * matched_quantity;
+                    // FIX: Calculate true cost per token for multi-hop swaps
+                    // For multi-hop swaps, use actual spend (swap_input_usd_value) instead of market value
+                    let buy_cost_per_token = if let Some(swap_input_value) = buy_event.swap_input_usd_value {
+                        // Multi-hop: actual cost per token = total spent / total quantity
+                        // Note: buy_event.quantity may be reduced from previous partial matches,
+                        // but swap_input_usd_value is proportionally reduced too (see line 1020+)
+                        swap_input_value / buy_event.quantity
+                    } else {
+                        // Regular buy: use market-based price
+                        buy_event.usd_price_per_token
+                    };
+
+                    let realized_pnl = (remaining_sell_event.usd_price_per_token - buy_cost_per_token) * matched_quantity;
+
+                    debug!(
+                        "   💱 Multi-hop cost basis: market=${:.6}, actual=${:.6}, diff=${:.6}",
+                        buy_event.usd_price_per_token,
+                        buy_cost_per_token,
+                        buy_cost_per_token - buy_event.usd_price_per_token
+                    );
 
                     let hold_time_seconds = (remaining_sell_event.timestamp - buy_event.timestamp)
                         .num_seconds()
                         .max(0);
+
+                    // FIX: Calculate proportional swap_input values for partial matches
+                    let (proportional_swap_input_quantity, proportional_swap_input_value) =
+                        if let (Some(swap_qty), Some(swap_value)) = (buy_event.swap_input_quantity, buy_event.swap_input_usd_value) {
+                            // Proportion of total quantity being matched
+                            let proportion = matched_quantity / buy_event.quantity;
+                            (Some(swap_qty * proportion), Some(swap_value * proportion))
+                        } else {
+                            (None, None)
+                        };
 
                     // Create a new event representing ONLY the matched portion
                     let matched_buy_portion = NewFinancialEvent {
@@ -983,8 +1012,8 @@ impl NewPnLEngine {
                         usd_price_per_token: buy_event.usd_price_per_token,
                         usd_value: matched_quantity * buy_event.usd_price_per_token,
                         swap_input_token: buy_event.swap_input_token.clone(),
-                        swap_input_quantity: buy_event.swap_input_quantity,
-                        swap_input_usd_value: buy_event.swap_input_usd_value,
+                        swap_input_quantity: proportional_swap_input_quantity,  // Proportionally adjusted
+                        swap_input_usd_value: proportional_swap_input_value,    // Proportionally adjusted
                     };
 
                     // Create matched sell portion (only the matched quantity)
@@ -1017,6 +1046,13 @@ impl NewPnLEngine {
                     // Update remaining quantities and USD values proportionally
                     buy_event.quantity -= matched_quantity;
                     buy_event.usd_value = buy_event.quantity * buy_event.usd_price_per_token;
+
+                    // FIX: Proportionally reduce swap_input values for remaining buy quantity
+                    if let (Some(swap_qty), Some(swap_value)) = (buy_event.swap_input_quantity, buy_event.swap_input_usd_value) {
+                        // Reduce by the proportion that was matched
+                        buy_event.swap_input_quantity = Some(swap_qty - proportional_swap_input_quantity.unwrap_or(Decimal::ZERO));
+                        buy_event.swap_input_usd_value = Some(swap_value - proportional_swap_input_value.unwrap_or(Decimal::ZERO));
+                    }
 
                     remaining_sell_event.quantity -= matched_quantity;
                     remaining_sell_event.usd_value = remaining_sell_event.quantity * remaining_sell_event.usd_price_per_token;

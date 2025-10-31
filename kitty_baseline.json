@@ -1,0 +1,636 @@
+{
+  "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+  "token_symbol": "KITTY",
+  "matched_trades": [
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "125612.179165",
+        "usd_price_per_token": "0.0048393775481014684666791759",
+        "usd_value": "607.88475961920006263610247573",
+        "timestamp": "2025-09-06T19:04:35Z",
+        "transaction_hash": "3RHLHEjNRzhv9TRTxE1pkM7U6Fp4Kny8oefVnL7ZrChuuUNDvWhS2SR6dUNcgym9dWVP7kt8uEwmhvKr9xTPxEn8"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "125612.179165",
+        "usd_price_per_token": "0.0048056178810440483561983172",
+        "usd_value": "603.64413427223265937570675840",
+        "timestamp": "2025-09-06T19:11:28Z",
+        "transaction_hash": "3LJjPFu5ScZjbtMSAnMCjCrLUdwaBMakygWzuprK7dHB8eQShTpXeFhYRrs9nVmm96D27oggUkmNETGxMKHmhjah"
+      },
+      "matched_quantity": "125612.179165",
+      "realized_pnl_usd": "-4.2406253469674032603957173274",
+      "hold_time_seconds": 413
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "16887.602422",
+        "usd_price_per_token": "0.0059192594260613498949319400",
+        "usd_value": "99.96209981999998240624207547",
+        "timestamp": "2025-09-08T06:32:14Z",
+        "transaction_hash": "f6FcAKLgZ8RW1coa8pfZMoujCcYYLQEL5Xz8Sv5WFqhM5kY6pY563SJXf1bCdEhyMSQDacNUdjxYLSq9dJjy5sZ"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "16887.602422",
+        "usd_price_per_token": "0.0057544825381694491087114507",
+        "usd_value": "97.17941324894709621468123614",
+        "timestamp": "2025-09-08T06:39:20Z",
+        "transaction_hash": "LGoiRxdDgc1ktszDkaL1UyikCJdcnvoZJehMMjhvzrPkBnQtbKApmtNw2u7mqaG775V6BhQjq1HjHrysbjDQfxV"
+      },
+      "matched_quantity": "16887.602422",
+      "realized_pnl_usd": "-2.7826865710528861915608393287",
+      "hold_time_seconds": 426
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "394000.000000",
+        "usd_price_per_token": "0.0000000526114801720304671248",
+        "usd_value": "0.0207289231877800040471712000",
+        "timestamp": "2025-09-08T06:38:30Z",
+        "transaction_hash": "487Ki7K2MsKikpFcEt6JFYPQoyfVqHyXn9E9BCeM78NCM1QvS6PVksKDXKiAymCf5kkMQ6ow2tsCrkR9eZp43QG1"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "394000.000000",
+        "usd_price_per_token": "0.0057544825381694491087114507",
+        "usd_value": "2267.2661200387629488323115758",
+        "timestamp": "2025-09-08T06:39:20Z",
+        "transaction_hash": "LGoiRxdDgc1ktszDkaL1UyikCJdcnvoZJehMMjhvzrPkBnQtbKApmtNw2u7mqaG775V6BhQjq1HjHrysbjDQfxV"
+      },
+      "matched_quantity": "394000.000000",
+      "realized_pnl_usd": "2267.2453911155751688282644046",
+      "hold_time_seconds": 50
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "236244.174906",
+        "usd_price_per_token": "0.0043225891063672717065657913",
+        "usd_value": "1021.1864968913999753199539085",
+        "timestamp": "2025-09-10T16:08:46Z",
+        "transaction_hash": "3Es4yNkzarM4XwpMVTfsnyXveKbx7VNDCbK6JXQSm8s36fNgGrWUuKYB8YRmCio6CE7xNF5SbQArjYCXa9zVSnXZ"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "236244.174906",
+        "usd_price_per_token": "0.0042842490264278733011482636",
+        "usd_value": "1012.1288763402867165500779966",
+        "timestamp": "2025-09-10T16:53:51Z",
+        "transaction_hash": "73fD31XNezPxa7Q2Ck7HLQ9fA133bRA3MhcdpFMatEhRKafgecV5re7tH5aGW98oXvfHJ2WdFdWovBgyWpfoSs4"
+      },
+      "matched_quantity": "236244.174906",
+      "realized_pnl_usd": "-9.057620551113258769875911917",
+      "hold_time_seconds": 2705
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "128317.458633",
+        "usd_price_per_token": "0.0044825121690578520472492130",
+        "usd_value": "575.18456982500003265673525057",
+        "timestamp": "2025-09-10T18:24:03Z",
+        "transaction_hash": "5LuS36KdLmJiU4pkTg4cr1TeChR1x4NQ3uyExB2S9ozRMagERtdqknpXy3Ca3jNMmbbb2MCg5zWsS38z7EfRnrRk"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "128317.458633",
+        "usd_price_per_token": "0.0044559492517546265416550355",
+        "usd_value": "571.77608378277159392518386913",
+        "timestamp": "2025-09-10T18:26:01Z",
+        "transaction_hash": "5aRVY5W9qL76LcNqUCCtUFMbGUt2LsSteUJHSMS3ySuGbjeWD5dFdTjn43wKA2wQyN4cEn1wr7dja1SAiQGW55dz"
+      },
+      "matched_quantity": "128317.458633",
+      "realized_pnl_usd": "-3.4084860422284387315513814419",
+      "hold_time_seconds": 118
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "38971.574628",
+        "usd_price_per_token": "0.0044870721361451480421744797",
+        "usd_value": "174.86826661500001316571082703",
+        "timestamp": "2025-09-10T18:25:27Z",
+        "transaction_hash": "5YapWFLYSuL6hMRxaeJSAYikmR2P212sFhJF4HyqBdqtJjgZxufhZkWNs7iutcCJBPZFh7y1JuvG8NDSgKAak9eY"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "38971.574628",
+        "usd_price_per_token": "0.0044559492517546265416550355",
+        "usd_value": "173.65535880333618821237876662",
+        "timestamp": "2025-09-10T18:26:01Z",
+        "transaction_hash": "5aRVY5W9qL76LcNqUCCtUFMbGUt2LsSteUJHSMS3ySuGbjeWD5dFdTjn43wKA2wQyN4cEn1wr7dja1SAiQGW55dz"
+      },
+      "matched_quantity": "38971.574628",
+      "realized_pnl_usd": "-1.2129078116638249533320604054",
+      "hold_time_seconds": 34
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "56027.879799",
+        "usd_price_per_token": "0.0044615153722890200232997771",
+        "usd_value": "249.96924699999994935294409070",
+        "timestamp": "2025-09-10T18:30:01Z",
+        "transaction_hash": "2UbnhSYP2YSQJtWXbHJL7ucLgWNbCnDJHVwrMaeZPrWLhvdJZnA8WuexgtLNAs8UCN9ZMvX87qAn6WnNywCuqE1F"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "56027.879799",
+        "usd_price_per_token": "0.0044286366709391433368891988",
+        "usd_value": "248.12712307282183932325979295",
+        "timestamp": "2025-09-10T18:30:16Z",
+        "transaction_hash": "3BRF4NZ3HcPKv2m6tnRyEsNuHBrgKzGWFoiSEYMcVoG2jZ8cEgdRHkjhVKZXtoGPbK41W6BTgYTtcG9cysNX9Pvr"
+      },
+      "matched_quantity": "56027.879799",
+      "realized_pnl_usd": "-1.8421239271781100296842977545",
+      "hold_time_seconds": 15
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "199859.738316",
+        "usd_price_per_token": "0.0050004646479216109319909656",
+        "usd_value": "999.3915559920222341488792577",
+        "timestamp": "2025-09-11T01:54:44Z",
+        "transaction_hash": "4K9ycbHtG4youA1e752sGDoCRbqYtFoQMoykuVBJzYrt3BcLoemW5MfF9rSVY1oHYAsjYmaXrdJzWM9ozQTvSEis"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "199859.738316",
+        "usd_price_per_token": "0.0060977764094952199153132355",
+        "usd_value": "1218.6999975111927099273749282",
+        "timestamp": "2025-09-11T20:56:09Z",
+        "transaction_hash": "5eAbdyti7HC55rhPf4WEG4SCWvMyvSBVJJ2NWjM8TzQoSPkU3KxPJcRFtosc8gF9eDKaH7mDaDBYdtx9W3wg46Md"
+      },
+      "matched_quantity": "199859.738316",
+      "realized_pnl_usd": "219.30844151917047577849567051",
+      "hold_time_seconds": 68485
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "190000.000000",
+        "usd_price_per_token": "0.0000001187875109134737093425",
+        "usd_value": "0.0225696270735600047750750000",
+        "timestamp": "2025-09-11T21:00:32Z",
+        "transaction_hash": "2bCaVBQ2St8SnFpjKLLztb8qyjzw7eVafJqaSviUyhHo4ULmtLNF96VBeWgQEJXaPndTN6LdEsPujn9u9n1JZeRJ"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "190000.000000",
+        "usd_price_per_token": "0.0059408790554724526244978478",
+        "usd_value": "1128.7670205397659986545910820",
+        "timestamp": "2025-09-11T21:01:00Z",
+        "transaction_hash": "4FohUTiBFkQ7UKVHwZ5pmifrvVFMYyEcJFFh6B3jKGJeNZgT4qmJYSzAtF6DdWUtb4soHnYzydUpncyBuLzeVNX"
+      },
+      "matched_quantity": "190000.000000",
+      "realized_pnl_usd": "1128.7444509126924386498160070",
+      "hold_time_seconds": 28
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "97500.000000",
+        "usd_price_per_token": "0.0000001159027254102051364451",
+        "usd_value": "0.0113005157274950008033972500",
+        "timestamp": "2025-09-11T21:06:22Z",
+        "transaction_hash": "4dSncTqjhd4V1BZsMTLECWERtN1MPXkmAvZzayCg1x84rRwmZfEFPU8Qo217snibUQnVEB83QHs4bEegsDWraVfd"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "97500.000000",
+        "usd_price_per_token": "0.0059166415347872121713312943",
+        "usd_value": "576.87254964175318670480119425",
+        "timestamp": "2025-09-11T21:06:57Z",
+        "transaction_hash": "3fk9GJUZ6vNAAT1B737bgsWvXoTDMFSGEHJK64vTLLAv74SzEE94Z6dqfgiWFZhntHEJweTVjzr3jHw895mGcbQi"
+      },
+      "matched_quantity": "97500.000000",
+      "realized_pnl_usd": "576.86124912602569170399779700",
+      "hold_time_seconds": 35
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "97500.000000",
+        "usd_price_per_token": "0.0000001159027254102051364451",
+        "usd_value": "0.0113005157274950008033972500",
+        "timestamp": "2025-09-11T21:06:22Z",
+        "transaction_hash": "4dSncTqjhd4V1BZsMTLECWERtN1MPXkmAvZzayCg1x84rRwmZfEFPU8Qo217snibUQnVEB83QHs4bEegsDWraVfd"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "97500.000000",
+        "usd_price_per_token": "0.0058934443215012313060929827",
+        "usd_value": "574.61082134637005234406581325",
+        "timestamp": "2025-09-11T21:07:50Z",
+        "transaction_hash": "4s8JD88usrDB7ckMfaBpFT2oJRYD7WmkWNxb3UMtxtdYngh8DxkSCqGc4G9hV4dvN24KkDi5WWb5N43nYNPwexfB"
+      },
+      "matched_quantity": "97500.000000",
+      "realized_pnl_usd": "574.59952083064255734326241600",
+      "hold_time_seconds": 88
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "267398.651368",
+        "usd_price_per_token": "0.0046720282380208920033903830",
+        "usd_value": "1249.2940499999998231149640978",
+        "timestamp": "2025-09-14T12:34:39Z",
+        "transaction_hash": "5AarMMyirjX5yjTKiuyUxQjFv56yoq2Xet8Sn8mwdQUNov78yoooUacGNxjdyJDsuAftkqfH1cJaMUxX4HER4xjh"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "267398.651368",
+        "usd_price_per_token": "0.0046561473616663923841274553",
+        "usd_value": "1245.0475250802646646455877566",
+        "timestamp": "2025-09-14T12:47:23Z",
+        "transaction_hash": "4UR8TRSxeyiV9nUVPkAwuHBZcnJNutVcTEzMHz8XhRRUrNf7TAEf3BdSymugzDQZQ6vcpV2ZPyrWYan6RuC3mmqN"
+      },
+      "matched_quantity": "267398.651368",
+      "realized_pnl_usd": "-4.2465249197351584693763411793",
+      "hold_time_seconds": 764
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "42604.192932",
+        "usd_price_per_token": "0.0046934417182636000917539398",
+        "usd_value": "199.96029648000000634197775351",
+        "timestamp": "2025-09-14T12:47:11Z",
+        "transaction_hash": "4ZXBDosmoyAsfnw3s3i7d2yCSEgfJL7szFZ6x2uHyxie31YpqNhxvYeRstKDbCT1TwX6Z16AUnqcXE6b2huCqWD5"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "42604.192932",
+        "usd_price_per_token": "0.0046561473616663923841274553",
+        "usd_value": "198.37140051625776215378156008",
+        "timestamp": "2025-09-14T12:47:23Z",
+        "transaction_hash": "4UR8TRSxeyiV9nUVPkAwuHBZcnJNutVcTEzMHz8XhRRUrNf7TAEf3BdSymugzDQZQ6vcpV2ZPyrWYan6RuC3mmqN"
+      },
+      "matched_quantity": "42604.192932",
+      "realized_pnl_usd": "-1.5888959637422441881961934309",
+      "hold_time_seconds": 12
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "68883.720847",
+        "usd_price_per_token": "0.0036090028633844416748599482",
+        "usd_value": "248.60154577739755797400580963",
+        "swap_input_token": "USDC",
+        "swap_input_quantity": "250.539910",
+        "swap_input_usd_value": "250.82397134823028750361117992",
+        "timestamp": "2025-09-16T14:24:11Z",
+        "transaction_hash": "5hAC2gyH41HR2PrcdDeMpEmjRPBBNghFYQxAAXJ5KuyYDhzZRZEruA3WJAoYWfs9aMXpiSPCmecZTD6Lj3L8k6SV"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "68883.720847",
+        "usd_price_per_token": "0.0036090028633844416748599482",
+        "usd_value": "248.60154577739755797400580963",
+        "timestamp": "2025-09-16T14:24:35Z",
+        "transaction_hash": "5K1zWMZnmCZfacpLQfKSkcGMEpTbWQspSTE73WWcHE9XFtbrqanTxnKAD2KeJVzGQS5TmACeiZ65gJFxXKLwPaKc"
+      },
+      "matched_quantity": "68883.720847",
+      "realized_pnl_usd": "0",
+      "hold_time_seconds": 24
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "375000.000000",
+        "usd_price_per_token": "0.0000000660860131706133412189",
+        "usd_value": "0.0247822549389800029570875000",
+        "timestamp": "2025-09-18T14:27:59Z",
+        "transaction_hash": "3jUPt3J6EmNdP28cvok2q5nEvsXDHjhJ8cvitJnns2Pw7JNaQn6LXZ2mMRc9CxF3gisxNhVvbHDJStxRfesdBN4M"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "375000.000000",
+        "usd_price_per_token": "0.0049934975963872411941490981",
+        "usd_value": "1872.5615986452154478059117875",
+        "timestamp": "2025-09-18T14:29:10Z",
+        "transaction_hash": "211dYcxx1ff35V1LA1yd2y5YumsNZmGPa1Zk4KHn2yvVdSt6hP2gY9g1oEqF8fouWgMVjn5g2HXZVdW2fzFiWcY1"
+      },
+      "matched_quantity": "375000.000000",
+      "realized_pnl_usd": "1872.5368163902764678029547000",
+      "hold_time_seconds": 71
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "285000.000000",
+        "usd_price_per_token": "0.0000000825477805911929867894",
+        "usd_value": "0.0235261174684900012349790000",
+        "timestamp": "2025-09-22T00:27:28Z",
+        "transaction_hash": "45fh8bjSD9LRbuRwq7moxhdXXFqiQ9uDANmJaF13FmoUWHQBU4wxjmKgdeGQS3tmJQaNY7kYVe7ffiTSeeLaR934"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "285000.000000",
+        "usd_price_per_token": "0.0037512997546419843582221620",
+        "usd_value": "1069.1204300729655420933161700",
+        "timestamp": "2025-09-22T00:28:31Z",
+        "transaction_hash": "EF1hQHppUNBXbSjDmcA5FTesn5of74Sd3DbbKUvUkWUWkT8VMLShcQfs3zy5a88c1yA9AHn7sTXLh9s7jYAtz8A"
+      },
+      "matched_quantity": "285000.000000",
+      "realized_pnl_usd": "1069.0969039554970520920811910",
+      "hold_time_seconds": 63
+    },
+    {
+      "buy_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Buy",
+        "quantity": "1000118.416250",
+        "usd_price_per_token": "0.0000000201548786899763281046",
+        "usd_value": "0.0201572653551300000139629163",
+        "timestamp": "2025-09-27T18:21:56Z",
+        "transaction_hash": "42GdQXNydRosLugj8pXhw4zchFpSSsBBsoTvuQenjNSQJ3YHCLKhFp6U8nr5RvUnxLndKTtcn2du5jSNSDopydTc"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "1000118.416250",
+        "usd_price_per_token": "0.0023747653226743811738508327",
+        "usd_value": "2375.0465334785223140405107137",
+        "timestamp": "2025-09-27T18:22:42Z",
+        "transaction_hash": "3tf5sBx7oM8xbFKeb8TbNeear6DW47b7e5sWwXVWCsZns7wqTUMQpHru7hEGExNVM7YdT9gKxtjy1hfgbKC9vcEA"
+      },
+      "matched_quantity": "1000118.416250",
+      "realized_pnl_usd": "2375.0263762131671840404967508",
+      "hold_time_seconds": 46
+    }
+  ],
+  "remaining_position": null,
+  "total_realized_pnl_usd": "10055.039278929365711645396194",
+  "total_unrealized_pnl_usd": "0",
+  "total_pnl_usd": "10055.039278929365711645396194",
+  "total_trades": 17,
+  "winning_trades": 8,
+  "losing_trades": 9,
+  "win_rate_percentage": "47.058823529411764705882352941",
+  "avg_hold_time_minutes": "71.938235294117647058823529412",
+  "min_hold_time_minutes": "0.20",
+  "max_hold_time_minutes": "1141.4166666666666666666666667",
+  "total_invested_usd": "5428.6596788103314210824357196",
+  "total_returned_usd": "15481.476532168864278777546812",
+  "current_winning_streak": 3,
+  "longest_winning_streak": 4,
+  "current_losing_streak": 0,
+  "longest_losing_streak": 4,
+  "receive_consumptions": [
+    {
+      "receive_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Receive",
+        "quantity": "12475.962236",
+        "usd_price_per_token": "0",
+        "usd_value": "0",
+        "timestamp": "2025-09-08T06:39:19Z",
+        "transaction_hash": "implicit_receive_LGoiRxdDgc1ktszDkaL1UyikCJdcnvoZJehMMjhvzrPkBnQtbKApmtNw2u7mqaG775V6BhQjq1HjHrysbjDQfxV"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "12475.962236",
+        "usd_price_per_token": "0.0057544825381694491087114507",
+        "usd_value": "71.792706833923475649207917554",
+        "timestamp": "2025-09-08T06:39:20Z",
+        "transaction_hash": "LGoiRxdDgc1ktszDkaL1UyikCJdcnvoZJehMMjhvzrPkBnQtbKApmtNw2u7mqaG775V6BhQjq1HjHrysbjDQfxV"
+      },
+      "consumed_quantity": "12475.962236",
+      "pnl_impact_usd": "0"
+    },
+    {
+      "receive_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Receive",
+        "quantity": "41372.477248",
+        "usd_price_per_token": "0.0044909771705863403556957536",
+        "usd_value": "185.80285081137078118560679303",
+        "timestamp": "2025-09-14T20:34:31Z",
+        "transaction_hash": "2jgzJwwJBCojeatBbiKry4y6t8RQHkfN9T9AxsJkJxxhB2LaW2sobabzBDUgVs77JMYW5aCBtFiPFNkNYKu4H3R"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "418721.530951",
+        "usd_price_per_token": "0.0040084375689541686116346142",
+        "usd_value": "1678.4191155939941090170358084",
+        "timestamp": "2025-09-15T12:10:52Z",
+        "transaction_hash": "sam6rvWTYyurnMwbjufNo9sJEQPiqqEbzorWypDfEiUhbUM2VSuUgpgy6WbgDMypvFkPRP2VqkgHi4KhdAGP5a6"
+      },
+      "consumed_quantity": "41372.477248",
+      "pnl_impact_usd": "0"
+    },
+    {
+      "receive_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Receive",
+        "quantity": "61844.790319",
+        "usd_price_per_token": "0.0040084375689541686116346142",
+        "usd_value": "247.90098095877266190751405904",
+        "timestamp": "2025-09-15T12:09:13Z",
+        "transaction_hash": "2LEbmB9JaNK9QyRFVwXpbrnqAapDvNyz9FAbSGyCVCZSWqtTY6ma8itFvt6EPFxsAkyFtWQfPWTBuoEyrtpQMWbG"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "418721.530951",
+        "usd_price_per_token": "0.0040084375689541686116346142",
+        "usd_value": "1678.4191155939941090170358084",
+        "timestamp": "2025-09-15T12:10:52Z",
+        "transaction_hash": "sam6rvWTYyurnMwbjufNo9sJEQPiqqEbzorWypDfEiUhbUM2VSuUgpgy6WbgDMypvFkPRP2VqkgHi4KhdAGP5a6"
+      },
+      "consumed_quantity": "61844.790319",
+      "pnl_impact_usd": "0"
+    },
+    {
+      "receive_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Receive",
+        "quantity": "315504.263384",
+        "usd_price_per_token": "0",
+        "usd_value": "0",
+        "timestamp": "2025-09-15T12:10:51Z",
+        "transaction_hash": "implicit_receive_sam6rvWTYyurnMwbjufNo9sJEQPiqqEbzorWypDfEiUhbUM2VSuUgpgy6WbgDMypvFkPRP2VqkgHi4KhdAGP5a6"
+      },
+      "sell_event": {
+        "wallet_address": "8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw",
+        "token_address": "DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump",
+        "token_symbol": "KITTY",
+        "chain_id": "solana",
+        "event_type": "Sell",
+        "quantity": "315504.263384",
+        "usd_price_per_token": "0.0040084375689541686116346142",
+        "usd_value": "1678.4191155939941090170358084",
+        "timestamp": "2025-09-15T12:10:52Z",
+        "transaction_hash": "sam6rvWTYyurnMwbjufNo9sJEQPiqqEbzorWypDfEiUhbUM2VSuUgpgy6WbgDMypvFkPRP2VqkgHi4KhdAGP5a6"
+      },
+      "consumed_quantity": "315504.263384",
+      "pnl_impact_usd": "0"
+    }
+  ],
+  "total_received_quantity": "431197.493187",
+  "total_received_sold_quantity": "431197.493187",
+  "remaining_received_quantity": "0.000000"
+}

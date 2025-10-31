@@ -1,0 +1,47 @@
+# Multi-Hop Swap P&L Fix - Kitty Token Comparison
+
+## Wallet: 8qGi6DpLzGs16PBTrEqfvRJP7jLePAYQnQG36oPjG7Cw
+## Token: DFfPq2hHbJeunp1F6eNyuyvBHcPpnTqaawn2tAFUpump (KITTY)
+
+## BEFORE FIX (Baseline)
+- total_invested_usd:    $5,428.66
+- total_returned_usd:    $15,481.48
+- total_realized_pnl:    $10,055.04
+- total_unrealized_pnl:  $0.00
+- total_pnl:             $10,055.04
+
+## AFTER FIX (Post-Fix)
+- total_invested_usd:    $5,428.66  ✓ (unchanged)
+- total_returned_usd:    $15,481.48  ✓ (unchanged)
+- total_realized_pnl:    $10,052.82  ← CORRECTED
+- total_unrealized_pnl:  $0.00  ✓ (unchanged)
+- total_pnl:             $10,052.82  ← CORRECTED
+
+## DEVIATION ELIMINATED
+- Difference in realized_pnl: $2.22
+- Difference in total_pnl: $2.22
+
+## ANALYSIS
+The fix successfully corrected the P&L calculation for multi-hop swaps.
+
+Trade #14 (Sep 16, 14:24:11) had:
+- Market value: $248.60
+- Actual spend (USDC): $250.82
+- Previous realized_pnl: $0.00 (incorrect - used market value)
+- Corrected realized_pnl: -$2.22 (correct - uses actual spend)
+
+The $2.22 deviation represents the slippage cost from the multi-hop swap
+(USDC → SOL → KITTY), which was previously not accounted for in P&L.
+
+## VERIFICATION
+✓ total_invested remains unchanged (already correct from previous fix)
+✓ total_returned remains unchanged  
+✓ realized_pnl now correctly accounts for multi-hop swap costs
+✓ Deviation eliminated successfully
+
+## FORMULA VERIFICATION
+Before fix: 15481.48 + 0 - 5428.66 = 10052.82 (but reported 10055.04 ❌)
+After fix:  15481.48 + 0 - 5428.66 = 10052.82 (now reports 10052.82 ✓)
+
+The fix ensures the formula holds true:
+total_returned + still_held_value - total_invested = total_pnl ✓
