@@ -756,7 +756,7 @@ impl JobOrchestrator {
         // Process wallets in parallel with controlled concurrency (max 5 at a time)
         let wallet_count = wallet_addresses.len();
         info!(
-            "⚡ Starting controlled parallel processing of {} wallets (max 5 concurrent, timeout: 10 minutes per wallet)...",
+            "⚡ Starting controlled parallel processing of {} wallets (max 5 concurrent, timeout: 2 hours per wallet)...",
             wallet_count
         );
 
@@ -778,8 +778,8 @@ impl JobOrchestrator {
                 let wallet_start_time = std::time::Instant::now();
                 info!("🔄 Processing wallet {}/{}: {} on {} (acquired processing slot)", index + 1, wallet_count, wallet_clone, chain_clone);
 
-                // Add timeout for each wallet processing (10 minutes max)
-                let timeout_duration = Duration::from_secs(600);
+                // Add timeout for each wallet processing (2 hours max)
+                let timeout_duration = Duration::from_secs(7200);
                 let result = match tokio::time::timeout(
                     timeout_duration,
                     self_clone.process_single_wallet(&wallet_clone, &chain_clone, time_range_clone.as_deref(), max_transactions)
@@ -1208,8 +1208,9 @@ impl JobOrchestrator {
                max_total_transactions, wallet_address);
 
         let history_start = std::time::Instant::now();
-        let zerion_transactions = zerion_client
-            .get_wallet_transactions_with_time_range(
+        // Use new metadata-returning function to track transaction limits
+        let (zerion_transactions, fetch_metadata) = zerion_client
+            .get_wallet_transactions_with_metadata(
                 wallet_address,
                 "usd",
                 time_range,
@@ -1218,6 +1219,13 @@ impl JobOrchestrator {
             )
             .await?;
         let history_elapsed = history_start.elapsed();
+
+        // Log metadata about the fetch
+        info!(
+            "📊 Fetch metadata: {} transactions fetched, stopped reason: {:?}",
+            fetch_metadata.transactions_fetched,
+            fetch_metadata.stopped_reason
+        );
 
         if let Some(time_range) = time_range {
             info!("✅ Step 1 completed in {:.2}s: Found {} transactions for wallet {} within {} time period with embedded prices",
@@ -1312,6 +1320,7 @@ impl JobOrchestrator {
                 zerion_transactions,
                 current_prices,
                 chain,
+                fetch_metadata,  // Pass metadata to inner function
             )
             .await?;
         let pnl_elapsed = pnl_start.elapsed();
@@ -1339,6 +1348,7 @@ impl JobOrchestrator {
         zerion_transactions: Vec<zerion_client::ZerionTransaction>,
         current_prices: HashMap<String, Decimal>,
         chain: &str, // Chain identifier for BirdEye historical price enrichment
+        fetch_metadata: zerion_client::FetchMetadata, // Transaction fetch metadata for populating result
     ) -> Result<(PortfolioPnLResult, u32)> {
         info!("🚀 Starting Zerion P&L calculation with {} current prices for wallet: {} with {} transactions",
               current_prices.len(), wallet_address, zerion_transactions.len());
@@ -1454,7 +1464,7 @@ impl JobOrchestrator {
         );
 
         // Step 4: Calculate portfolio totals using the engine's method
-        let portfolio_result = pnl_engine
+        let mut portfolio_result = pnl_engine
             .calculate_portfolio_pnl(events_by_token, Some(current_prices))
             .map_err(|e| {
                 OrchestratorError::PnL(format!("Portfolio P&L calculation failed: {}", e))
@@ -1465,6 +1475,24 @@ impl JobOrchestrator {
         // Note: financial_events already moved into events_by_token loop (line 1372)
         // Note: events_by_token already consumed by calculate_portfolio_pnl
         // Note: current_prices already consumed by calculate_portfolio_pnl
+
+        // Populate transaction fetch metadata into the result
+        portfolio_result.timeframe_requested = fetch_metadata.time_range_requested;
+        portfolio_result.transaction_limit_requested = fetch_metadata.transaction_limit_requested.map(|v| v as u32);
+        portfolio_result.transactions_fetched = fetch_metadata.transactions_fetched as u32;
+        portfolio_result.was_transaction_limit_hit = matches!(
+            fetch_metadata.stopped_reason,
+            zerion_client::StopReason::TransactionLimitReached |
+            zerion_client::StopReason::BothConditionsMet
+        );
+
+        info!(
+            "✅ Populated metadata: timeframe={:?}, limit={:?}, fetched={}, limit_hit={}",
+            portfolio_result.timeframe_requested,
+            portfolio_result.transaction_limit_requested,
+            portfolio_result.transactions_fetched,
+            portfolio_result.was_transaction_limit_hit
+        );
 
         info!(
             "🎯 Portfolio P&L Summary: Realized ${:.2}, Unrealized ${:.2}, Total ${:.2}, {} incomplete trades",
@@ -2155,6 +2183,9 @@ impl JobOrchestrator {
                         swap_input_token: None,
                         swap_input_quantity: None,
                         swap_input_usd_value: None,
+                        swap_output_token: None,
+                        swap_output_quantity: None,
+                        swap_output_usd_value: None,
                         timestamp: skip_info.timestamp,
                         transaction_hash: skip_info.tx_hash.clone(),
                     };
@@ -2254,6 +2285,89 @@ impl JobOrchestrator {
                 }
             }
             // === END MULTI-HOP SWAP_INPUT CALCULATION ===
+
+            // === MULTI-HOP SWAP_OUTPUT CALCULATION FOR SELLS ===
+            // For SELL events in multi-hop swaps, calculate swap_output from IN-side transfers
+            let multi_hop_sell_events: Vec<usize> = tx_events.iter()
+                .enumerate()
+                .filter_map(|(idx, event)| {
+                    // Find corresponding skip_info
+                    let skip_info = tx_skip_infos.iter()
+                        .find(|si| si.token_mint == event.token_address)?;
+
+                    if skip_info.is_multi_hop_swap && event.event_type == pnl_core::NewEventType::Sell {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !multi_hop_sell_events.is_empty() {
+                multi_hop_swaps_enriched += multi_hop_sell_events.len() as u32;
+
+                // For each multi-hop SELL event, calculate swap_output from other_transfers_in_tx
+                for sell_idx in multi_hop_sell_events {
+                    let skip_info = tx_skip_infos.iter()
+                        .find(|si| si.token_mint == tx_events[sell_idx].token_address)
+                        .expect("skip_info must exist");
+
+                    // Calculate total IN-side USD value from enriched transfers
+                    let mut total_in_usd_value = Decimal::ZERO;
+                    let mut in_token_symbols = Vec::new();
+                    let mut in_token_qty: Option<Decimal> = None;
+
+                    for transfer in &skip_info.other_transfers_in_tx {
+                        if transfer.direction == "in" {
+                            // Find enriched event for this transfer
+                            let enriched_value = tx_events.iter()
+                                .find(|e| e.token_address == transfer.token_address)
+                                .map(|e| e.usd_value);
+
+                            if let Some(value) = enriched_value {
+                                total_in_usd_value += value;
+                                in_token_symbols.push(transfer.token_symbol.clone());
+
+                                if in_token_qty.is_none() {
+                                    in_token_qty = Some(transfer.quantity);
+                                }
+                            } else if let Some(zerion_value) = transfer.usd_value {
+                                // Use Zerion value if available
+                                total_in_usd_value += Decimal::from_f64_retain(zerion_value)
+                                    .unwrap_or(Decimal::ZERO);
+                                in_token_symbols.push(transfer.token_symbol.clone());
+
+                                if in_token_qty.is_none() {
+                                    in_token_qty = Some(transfer.quantity);
+                                }
+                            }
+                        }
+                    }
+
+                    if total_in_usd_value > Decimal::ZERO {
+                        // Populate swap_output fields
+                        tx_events[sell_idx].swap_output_token = if in_token_symbols.len() == 1 {
+                            Some(in_token_symbols[0].clone())
+                        } else if !in_token_symbols.is_empty() {
+                            Some(format!("Multi-token ({})", in_token_symbols.join("+")))
+                        } else {
+                            None
+                        };
+
+                        tx_events[sell_idx].swap_output_quantity = in_token_qty;
+                        tx_events[sell_idx].swap_output_usd_value = Some(total_in_usd_value);
+
+                        info!(
+                            "💱 Multi-hop enrichment: {} SELL swap_output = {} (${:.4}) vs market value ${:.4}",
+                            tx_events[sell_idx].token_symbol,
+                            tx_events[sell_idx].swap_output_token.as_ref().unwrap_or(&"unknown".to_string()),
+                            total_in_usd_value,
+                            tx_events[sell_idx].usd_value
+                        );
+                    }
+                }
+            }
+            // === END MULTI-HOP SWAP_OUTPUT CALCULATION ===
 
             // Step 3.2c: Add all events for this transaction to the final list
             enriched_events.extend(tx_events);

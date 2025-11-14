@@ -936,6 +936,11 @@ pub async fn get_all_results(
             is_favorited: summary.is_favorited,
             is_archived: summary.is_archived,
             incomplete_trades_count: summary.incomplete_trades_count,
+            // Transaction fetching metadata
+            timeframe_requested: summary.timeframe_requested,
+            transaction_limit_requested: summary.transaction_limit_requested,
+            transactions_fetched: summary.transactions_fetched,
+            was_transaction_limit_hit: summary.was_transaction_limit_hit,
         })
         .collect();
     info!("⏱️  [PERF] f64 mapping completed: {} records in {}ms", results.len(), mapping_start.elapsed().as_millis());

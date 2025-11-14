@@ -329,6 +329,9 @@ impl HistoryTransactionParser {
             swap_input_token: None,
             swap_input_quantity: None,
             swap_input_usd_value: None,
+            swap_output_token: None,
+            swap_output_quantity: None,
+            swap_output_usd_value: None,
             timestamp,
             transaction_hash: transaction_hash.to_string(),
         })

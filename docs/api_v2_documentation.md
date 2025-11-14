@@ -56,6 +56,7 @@ The primary endpoint for complete wallet P&L analysis with copy trading metrics.
 
 #### Query Parameters
 - `max_transactions` (optional): Maximum transactions to analyze (default: 500)
+- `time_range` (optional): Time period to analyze (e.g., "7d", "1h", "30d"). When combined with `max_transactions`, uses Hybrid Mode
 - `include_copy_metrics` (optional): Include copy trading analysis (default: true)
 
 #### Example Request

@@ -308,13 +308,18 @@ curl -X POST http://134.199.211.155:8080/api/pnl/batch/run \
   }'
 ```
 
-### Time-Based vs Transaction-Based Analysis
+### Transaction Fetching Modes
 
-| Approach | When to Use | Benefits | Limitations |
-|----------|------------|----------|-------------|
-| **Time Range** (`time_range`) | Analyzing specific periods | Gets ALL transactions in period, no limits | May fetch many transactions for active traders |
-| **Transaction Limit** (`max_transactions`) | Quick analysis of recent activity | Predictable data volume | May miss older important trades |
-| **Default** (no params) | General analysis | Gets most recent 1000 transactions | Fixed limit may not suit all wallets |
+The system supports **4 distinct transaction fetching modes**:
+
+| Mode | Parameters | Behavior | When to Use | Benefits |
+|------|------------|----------|-------------|----------|
+| **Default** | Neither specified | Fetches exactly 1000 txs | General analysis | Backward compatible, predictable |
+| **Time-Only** | `time_range` only | ALL txs in period (no limit) | Complete period analysis | Comprehensive data |
+| **Limit-Only** | `max_transactions` only | Exact transaction count | Quick recent activity check | Fast, controlled cost |
+| **Hybrid** | Both specified | Stops at first limit reached | Flexible analysis with cap | Best of both: time boundaries + cost control |
+
+**Metadata Tracking:** All results include metadata showing which limit was hit (timeframe exhausted vs transaction limit reached), providing transparency about data completeness.
 
 ## 📋 Best Practices
 

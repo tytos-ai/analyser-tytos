@@ -205,6 +205,20 @@ pub struct PortfolioPnLResult {
     pub unique_tokens_count: u32,
     #[serde(default)]
     pub active_days_count: u32,
+
+    /// Transaction fetching metadata
+    /// Time range requested for analysis (e.g., "6m", "1y")
+    #[serde(default)]
+    pub timeframe_requested: Option<String>,
+    /// Transaction limit requested (e.g., 10000)
+    #[serde(default)]
+    pub transaction_limit_requested: Option<u32>,
+    /// Number of transactions actually fetched
+    #[serde(default)]
+    pub transactions_fetched: u32,
+    /// Whether the transaction limit was hit before timeframe exhausted
+    #[serde(default)]
+    pub was_transaction_limit_hit: bool,
 }
 
 /// P&L Engine Module
@@ -539,6 +553,11 @@ impl NewPnLEngine {
             profit_percentage,
             unique_tokens_count,
             active_days_count,
+            // Transaction fetching metadata (populated by orchestrator)
+            timeframe_requested: None,
+            transaction_limit_requested: None,
+            transactions_fetched: 0,
+            was_transaction_limit_hit: false,
         };
 
         info!(
@@ -777,7 +796,14 @@ impl NewPnLEngine {
         // excluding proceeds from selling received or pre-existing (implicit receive) tokens
         let total_returned_usd: Decimal = matched_trades
             .iter()
-            .map(|t| t.sell_event.usd_value)
+            .map(|t| {
+                // FIX: Use actual received amount for multi-hop swaps
+                if let Some(swap_output_value) = t.sell_event.swap_output_usd_value {
+                    swap_output_value
+                } else {
+                    t.sell_event.usd_value
+                }
+            })
             .sum();
 
         // Calculate remaining position from unmatched buys and remaining receives
@@ -974,7 +1000,16 @@ impl NewPnLEngine {
                         buy_event.usd_price_per_token
                     };
 
-                    let realized_pnl = (remaining_sell_event.usd_price_per_token - buy_cost_per_token) * matched_quantity;
+                    // FIX: Calculate sell proceeds per token for multi-hop swaps
+                    let sell_proceeds_per_token = if let Some(swap_output_value) = remaining_sell_event.swap_output_usd_value {
+                        // Multi-hop SELL: actual proceeds per token = total received / total quantity
+                        swap_output_value / remaining_sell_event.quantity
+                    } else {
+                        // Regular SELL: use market-based price
+                        remaining_sell_event.usd_price_per_token
+                    };
+
+                    let realized_pnl = (sell_proceeds_per_token - buy_cost_per_token) * matched_quantity;
 
                     debug!(
                         "   💱 Multi-hop cost basis: market=${:.6}, actual=${:.6}, diff=${:.6}",
@@ -997,6 +1032,16 @@ impl NewPnLEngine {
                             (None, None)
                         };
 
+                    // FIX: Calculate proportional swap_output values for partial SELL matches
+                    let (proportional_swap_output_quantity, proportional_swap_output_value) =
+                        if let (Some(swap_qty), Some(swap_value)) = (remaining_sell_event.swap_output_quantity, remaining_sell_event.swap_output_usd_value) {
+                            // Proportion of total quantity being matched
+                            let proportion = matched_quantity / remaining_sell_event.quantity;
+                            (Some(swap_qty * proportion), Some(swap_value * proportion))
+                        } else {
+                            (None, None)
+                        };
+
                     // Create a new event representing ONLY the matched portion
                     let matched_buy_portion = NewFinancialEvent {
                         wallet_address: buy_event.wallet_address.clone(),
@@ -1014,6 +1059,9 @@ impl NewPnLEngine {
                         swap_input_token: buy_event.swap_input_token.clone(),
                         swap_input_quantity: proportional_swap_input_quantity,  // Proportionally adjusted
                         swap_input_usd_value: proportional_swap_input_value,    // Proportionally adjusted
+                        swap_output_token: None,
+                        swap_output_quantity: None,
+                        swap_output_usd_value: None,
                     };
 
                     // Create matched sell portion (only the matched quantity)
@@ -1033,6 +1081,9 @@ impl NewPnLEngine {
                         swap_input_token: None,
                         swap_input_quantity: None,
                         swap_input_usd_value: None,
+                        swap_output_token: remaining_sell_event.swap_output_token.clone(),
+                        swap_output_quantity: proportional_swap_output_quantity,
+                        swap_output_usd_value: proportional_swap_output_value,
                     };
 
                     matched_trades.push(MatchedTrade {
@@ -1056,6 +1107,13 @@ impl NewPnLEngine {
 
                     remaining_sell_event.quantity -= matched_quantity;
                     remaining_sell_event.usd_value = remaining_sell_event.quantity * remaining_sell_event.usd_price_per_token;
+
+                    // FIX: Proportionally reduce swap_output values for remaining sell quantity
+                    if let (Some(swap_qty), Some(swap_value)) = (remaining_sell_event.swap_output_quantity, remaining_sell_event.swap_output_usd_value) {
+                        // Reduce by the proportion that was matched
+                        remaining_sell_event.swap_output_quantity = Some(swap_qty - proportional_swap_output_quantity.unwrap_or(Decimal::ZERO));
+                        remaining_sell_event.swap_output_usd_value = Some(swap_value - proportional_swap_output_value.unwrap_or(Decimal::ZERO));
+                    }
 
                     total_matched_from_buys += matched_quantity;
 
@@ -1156,6 +1214,9 @@ impl NewPnLEngine {
                         swap_input_token: None,
                         swap_input_quantity: None,
                         swap_input_usd_value: None,
+                        swap_output_token: None,
+                        swap_output_quantity: None,
+                        swap_output_usd_value: None,
                         chain_id: remaining_sell_event.chain_id.clone(),
                     };
 
@@ -1255,7 +1316,14 @@ impl NewPnLEngine {
         let total_bought_cost: Decimal = remaining_buys
             .iter()
             .filter(|e| !e.transaction_hash.starts_with("phantom_buy_"))
-            .map(|e| e.usd_value)
+            .map(|e| {
+                // FIX: Use actual spent amount for multi-hop swaps
+                if let Some(swap_input_value) = e.swap_input_usd_value {
+                    swap_input_value
+                } else {
+                    e.usd_value
+                }
+            })
             .sum();
         let avg_cost_basis = if bought_quantity > Decimal::ZERO {
             total_bought_cost / bought_quantity

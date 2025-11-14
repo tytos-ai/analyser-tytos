@@ -215,6 +215,34 @@ pub struct SkippedTransactionInfo {
     pub other_transfers_in_tx: Vec<TransferSummary>,
 }
 
+/// Metadata about transaction fetching operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FetchMetadata {
+    /// Number of transactions actually fetched
+    pub transactions_fetched: usize,
+    /// Why the fetching stopped
+    pub stopped_reason: StopReason,
+    /// Time range that was requested (e.g., "6m")
+    pub time_range_requested: Option<String>,
+    /// Transaction limit that was requested
+    pub transaction_limit_requested: Option<usize>,
+}
+
+/// Reason why transaction fetching stopped
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum StopReason {
+    /// Fetched all transactions within the specified timeframe
+    TimeRangeExhausted,
+    /// Hit the transaction limit cap before exhausting the timeframe
+    TransactionLimitReached,
+    /// Both conditions were met at the same time
+    BothConditionsMet,
+    /// Wallet has no more transactions to fetch
+    NoMoreData,
+    /// Single fetch completed (when neither time range nor limit specified)
+    CompletedWithDefaults,
+}
+
 /// Paired IN and OUT transfers for a trade (same act_id)
 #[derive(Debug, Clone)]
 struct TradePair<'a> {
@@ -871,6 +899,82 @@ impl ZerionClient {
         .await
     }
 
+    /// Get wallet transactions with time range filter - returns METADATA about fetch
+    /// This version returns both transactions and metadata about why fetching stopped
+    /// Useful for orchestrator to track which limits were hit
+    pub async fn get_wallet_transactions_with_metadata(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        time_range: Option<&str>,
+        max_transactions: Option<usize>,
+        chain_id: Option<&str>,
+    ) -> Result<(Vec<ZerionTransaction>, FetchMetadata), ZerionError> {
+        let wallet_owned = wallet_address.to_string();
+        let currency_owned = currency.to_string();
+        let time_range_owned = time_range.map(|s| s.to_string());
+        let chain_owned = chain_id.map(|s| s.to_string());
+
+        retry_with_backoff(
+            || self.get_wallet_transactions_with_metadata_internal(
+                &wallet_owned,
+                &currency_owned,
+                time_range_owned.as_deref(),
+                max_transactions,
+                chain_owned.as_deref(),
+            ),
+            &get_zerion_retry_config(),
+            classify_zerion_error,
+        )
+        .await
+    }
+
+    /// Internal implementation that returns metadata
+    async fn get_wallet_transactions_with_metadata_internal(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        time_range: Option<&str>,
+        max_transactions: Option<usize>,
+        chain_id: Option<&str>,
+    ) -> Result<(Vec<ZerionTransaction>, FetchMetadata), ZerionError> {
+        // HYBRID MODE: Both time_range AND max_transactions specified
+        if let (Some(time_range), Some(max_tx)) = (time_range, max_transactions) {
+            return self.get_wallet_transactions_hybrid(
+                wallet_address,
+                currency,
+                time_range,
+                max_tx,
+                chain_id,
+            ).await;
+        }
+
+        // For other modes, fetch transactions and construct metadata manually
+        let transactions = self.get_wallet_transactions_with_time_range_internal(
+            wallet_address,
+            currency,
+            time_range,
+            max_transactions,
+            chain_id,
+        ).await?;
+
+        // Construct metadata based on what parameters were provided
+        let stopped_reason = match (time_range, max_transactions) {
+            (Some(_), None) => StopReason::TimeRangeExhausted,
+            (None, Some(_)) if transactions.len() >= max_transactions.unwrap() => StopReason::TransactionLimitReached,
+            _ => StopReason::CompletedWithDefaults,
+        };
+
+        let metadata = FetchMetadata {
+            transactions_fetched: transactions.len(),
+            stopped_reason,
+            time_range_requested: time_range.map(|s| s.to_string()),
+            transaction_limit_requested: max_transactions,
+        };
+
+        Ok((transactions, metadata))
+    }
+
     /// Internal implementation of get_wallet_transactions_with_time_range (without retry)
     async fn get_wallet_transactions_with_time_range_internal(
         &self,
@@ -880,7 +984,19 @@ impl ZerionClient {
         max_transactions: Option<usize>,
         chain_id: Option<&str>,
     ) -> Result<Vec<ZerionTransaction>, ZerionError> {
-        // If time_range is provided, use time-based filtering (ignore transaction limits)
+        // HYBRID MODE: Both time_range AND max_transactions specified
+        if let (Some(time_range), Some(max_tx)) = (time_range, max_transactions) {
+            let (transactions, _metadata) = self.get_wallet_transactions_hybrid(
+                wallet_address,
+                currency,
+                time_range,
+                max_tx,
+                chain_id,
+            ).await?;
+            return Ok(transactions);
+        }
+
+        // TIME-ONLY MODE: Only time_range specified (fetch ALL in timeframe)
         if let Some(time_range) = time_range {
             return self.get_wallet_transactions_time_filtered(
                 wallet_address,
@@ -890,13 +1006,20 @@ impl ZerionClient {
             ).await;
         }
 
-        // Otherwise use limit-based approach
+        // LIMIT-ONLY MODE: Only max_transactions specified
         if let Some(max_tx) = max_transactions {
-            self.get_wallet_transactions_with_limit(wallet_address, currency, max_tx, chain_id).await
-        } else {
-            // Default: unlimited fetch
-            self.get_wallet_transactions_for_chain(wallet_address, currency, chain_id.unwrap_or(&self.chain_ids)).await
+            return self.get_wallet_transactions_with_limit(wallet_address, currency, max_tx, chain_id).await;
         }
+
+        // DEFAULT MODE: No limits specified - enforce default limit of 1000 transactions
+        // This prevents unlimited fetching when user doesn't specify parameters
+        warn!("⚠️  No timeframe or limit specified, enforcing default limit of 1000 transactions");
+        self.get_wallet_transactions_with_limit(
+            wallet_address,
+            currency,
+            1000,  // Default from config: default_max_transactions = 1000
+            chain_id,
+        ).await
     }
 
     /// Get wallet transactions filtered by time range (fetches ALL transactions in period)
@@ -1035,6 +1158,227 @@ impl ZerionClient {
         );
 
         Ok(all_transactions)
+    }
+
+    /// Get wallet transactions with HYBRID filtering (both time range AND transaction limit)
+    /// Stops at whichever condition is met first
+    /// Returns both transactions and metadata about why fetching stopped
+    async fn get_wallet_transactions_hybrid(
+        &self,
+        wallet_address: &str,
+        currency: &str,
+        time_range: &str,
+        max_transactions: usize,
+        chain_id: Option<&str>,
+    ) -> Result<(Vec<ZerionTransaction>, FetchMetadata), ZerionError> {
+        use crate::time_utils::calculate_time_range;
+
+        let start_time = std::time::Instant::now();
+        let mut all_transactions = Vec::new();
+        let mut page_num = 1u32;
+
+        // Calculate time range timestamps
+        let (min_mined_at, max_mined_at) = calculate_time_range(time_range)
+            .map_err(|e| ZerionError::InvalidTimeRange(e.to_string()))?;
+
+        // Use provided chain_id or fallback to configured chain_ids
+        let base_chain_filter = chain_id.unwrap_or(&self.chain_ids);
+
+        // Final normalization before Zerion API call
+        let normalized_chain = normalize_chain_for_zerion(base_chain_filter)
+            .map_err(|e| ZerionError::InvalidChain(e))?;
+
+        if base_chain_filter != normalized_chain {
+            info!(
+                "Final chain normalization at Zerion client (hybrid): '{}' -> '{}'",
+                base_chain_filter, normalized_chain
+            );
+        }
+
+        let chain_filter = normalized_chain;
+
+        // Build URL with time filters
+        let mut next_url = Some(format!(
+            "{}/v1/wallets/{}/transactions/?currency={}&page[size]={}&filter[chain_ids]={}&filter[trash]={}&filter[operation_types]={}&filter[min_mined_at]={}&filter[max_mined_at]={}",
+            self.base_url, wallet_address, currency, self.page_size, chain_filter, self.trash_filter, self.operation_types, min_mined_at, max_mined_at
+        ));
+
+        info!(
+            "🔄 Starting HYBRID transaction fetch for wallet: {} (time_range: {}, limit: {})",
+            wallet_address, time_range, max_transactions
+        );
+        info!(
+            "🎯 Time filters: {} to {} ({}ms to {}ms)",
+            time_range, "now", min_mined_at, max_mined_at
+        );
+        info!(
+            "🎯 Transaction limit: {} (will stop if reached before timeframe exhausted)",
+            max_transactions
+        );
+        info!(
+            "🎯 Other filters: page_size={}, chain={}, trash={}, types={}",
+            self.page_size, chain_filter, self.trash_filter, self.operation_types
+        );
+
+        // Track whether we hit the transaction limit
+        let mut limit_reached = false;
+        let mut timeframe_exhausted = false;
+
+        // Fetch pages until we hit limit OR run out of pages in timeframe
+        while all_transactions.len() < max_transactions {
+            let Some(url) = next_url.take() else {
+                // No more pages available in the timeframe
+                info!(
+                    "📄 No more pages available in timeframe, stopping at {} transactions",
+                    all_transactions.len()
+                );
+                timeframe_exhausted = true;
+                break;
+            };
+
+            let page_start = std::time::Instant::now();
+            let remaining_needed = max_transactions - all_transactions.len();
+
+            info!(
+                "📄 Page {}: Fetching up to {} more transactions ({}/{})",
+                page_num,
+                remaining_needed,
+                all_transactions.len(),
+                max_transactions
+            );
+            debug!("🌐 URL: {}", url);
+
+            let response = self.client.get(&url).send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+
+                // Check for rate limit (429)
+                if status.as_u16() == 429 {
+                    error!("⏱️  Rate limit hit on page {}", page_num);
+                    return Err(ZerionError::RateLimit);
+                }
+
+                error!(
+                    "❌ Zerion API error {} on page {}: {}",
+                    status, page_num, text
+                );
+                return Err(ZerionError::Api {
+                    message: format!("HTTP {}: {}", status, text),
+                });
+            }
+
+            let response_text = response.text().await?;
+            debug!(
+                "📄 Page {}: Response size: {} bytes",
+                page_num,
+                response_text.len()
+            );
+
+            let zerion_response: ZerionResponse = match serde_json::from_str(&response_text) {
+                Ok(response) => response,
+                Err(e) => {
+                    error!("❌ JSON parsing failed on page {}: {}", page_num, e);
+                    error!(
+                        "🔍 Response snippet: {}",
+                        &response_text.chars().take(500).collect::<String>()
+                    );
+                    return Err(ZerionError::Json(e));
+                }
+            };
+
+            if zerion_response.data.is_empty() {
+                info!(
+                    "📄 Page {}: No more transactions in timeframe, stopping pagination",
+                    page_num
+                );
+                timeframe_exhausted = true;
+                break;
+            }
+
+            let available_count = zerion_response.data.len();
+            let to_take = std::cmp::min(remaining_needed, available_count);
+            let page_elapsed = page_start.elapsed();
+            let has_next = zerion_response.links.next.is_some();
+
+            all_transactions.extend(zerion_response.data.into_iter().take(to_take));
+
+            info!(
+                "📄 Page {}: Took {} of {} transactions in {}ms, has_next: {}",
+                page_num,
+                to_take,
+                available_count,
+                page_elapsed.as_millis(),
+                has_next
+            );
+
+            let progress_percentage = (all_transactions.len() as f64 / max_transactions as f64 * 100.0) as u32;
+            info!(
+                "🎯 Progress: {}/{} transactions ({}% of limit)",
+                all_transactions.len(),
+                max_transactions,
+                progress_percentage
+            );
+
+            if all_transactions.len() >= max_transactions {
+                info!("🎯 Transaction limit of {} reached", max_transactions);
+                limit_reached = true;
+                break;
+            }
+
+            // Use the complete next URL provided by Zerion API
+            next_url = zerion_response.links.next;
+            if next_url.is_none() && !timeframe_exhausted {
+                timeframe_exhausted = true;
+            }
+
+            page_num += 1;
+        }
+
+        let total_elapsed = start_time.elapsed();
+        let avg_per_page = if page_num > 1 {
+            total_elapsed.as_millis() / (page_num - 1) as u128
+        } else {
+            0
+        };
+
+        // Determine why we stopped
+        let stopped_reason = if limit_reached && timeframe_exhausted {
+            StopReason::BothConditionsMet
+        } else if limit_reached {
+            StopReason::TransactionLimitReached
+        } else if timeframe_exhausted {
+            StopReason::TimeRangeExhausted
+        } else {
+            StopReason::NoMoreData
+        };
+
+        info!(
+            "📊 Hybrid fetch summary: {} pages, {} total transactions in {}ms (reason: {:?})",
+            page_num - 1,
+            all_transactions.len(),
+            total_elapsed.as_millis(),
+            stopped_reason
+        );
+        info!(
+            "⏱️ Performance: avg {}ms per page, {} transactions/second",
+            avg_per_page,
+            if total_elapsed.as_secs() > 0 {
+                all_transactions.len() as u64 / total_elapsed.as_secs()
+            } else {
+                0
+            }
+        );
+
+        let metadata = FetchMetadata {
+            transactions_fetched: all_transactions.len(),
+            stopped_reason,
+            time_range_requested: Some(time_range.to_string()),
+            transaction_limit_requested: Some(max_transactions),
+        };
+
+        Ok((all_transactions, metadata))
     }
 
     /// Check if a token address is a known stable currency
@@ -1671,6 +2015,9 @@ impl ZerionClient {
             swap_input_token: None,
             swap_input_quantity: None,
             swap_input_usd_value: None,
+            swap_output_token: None,
+            swap_output_quantity: None,
+            swap_output_usd_value: None,
             timestamp: tx.attributes.mined_at,
             transaction_hash: tx.attributes.hash.clone(),
         })
@@ -2121,6 +2468,9 @@ impl ZerionClient {
             swap_input_token,
             swap_input_quantity,
             swap_input_usd_value,
+            swap_output_token: None,
+            swap_output_quantity: None,
+            swap_output_usd_value: None,
             timestamp: tx.attributes.mined_at,
             transaction_hash: tx.attributes.hash.clone(),
         })

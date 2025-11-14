@@ -247,7 +247,7 @@ curl -X POST http://localhost:8080/api/pnl/batch/run \
   }'
 ```
 
-**Note:** When `time_range` is provided, ALL transactions within that period are fetched (ignoring `max_transactions`)
+**Note on Hybrid Mode:** When BOTH `time_range` AND `max_transactions` are provided, the system uses **Hybrid Mode** - fetching stops at whichever limit is reached first (timeframe exhausted OR transaction limit hit). This provides cost control while respecting time boundaries.
 
 ### Submit Batch Job (Multiple Wallets)
 ```bash
@@ -580,8 +580,19 @@ The batch P&L analysis API supports the following parameters:
 |-----------|------|----------|---------|---------|
 | `wallet_addresses` | Array<String> | Yes | Wallet addresses to analyze | `["ARZfRQg..."]` |
 | `chain` | String | Yes | Blockchain network | `"solana"` |
-| `time_range` | String | No | Time period to analyze (fetches ALL txs in period) | `"7d"`, `"1h"`, `"30d"` |
-| `max_transactions` | u32 | No | Limit transactions per wallet (ignored if time_range set) | `200` |
+| `time_range` | String | No | Time period to analyze | `"7d"`, `"1h"`, `"30d"` |
+| `max_transactions` | u32 | No | Transaction limit per wallet | `200`, `1000`, `5000` |
+
+### Transaction Fetching Modes
+
+The system supports **4 distinct fetching modes** based on which parameters are provided:
+
+| Mode | Parameters | Behavior | Use Case |
+|------|------------|----------|----------|
+| **Default** | Neither specified | Fetches exactly 1000 transactions | General analysis, backward compatible |
+| **Time-Only** | `time_range` only | Fetches ALL transactions in period (no limit) | Complete period analysis |
+| **Limit-Only** | `max_transactions` only | Fetches exact transaction count | Quick analysis, cost control |
+| **Hybrid** | Both specified | Stops at whichever comes first | Flexible control with cost cap |
 
 ### Supported Time Ranges
 
@@ -596,9 +607,11 @@ When using the `time_range` parameter, the following formats are supported:
 | `Ny` | Years ago | `"1y"` | Last 365 days |
 
 **Important Notes:**
-- When `time_range` is provided, the system fetches ALL transactions within that period (no 1000 transaction limit)
-- Without `time_range`, the system uses `max_transactions` limit (default: 1000)
-- Shorter time ranges (1h, 1d) typically perform faster than transaction limits
+- **Hybrid Mode** provides cost control: when both `time_range` and `max_transactions` are specified, fetching stops at whichever limit is reached first
+- **Default Mode** (no parameters) enforces exactly 1000 transactions for backward compatibility
+- **Time-Only Mode** fetches ALL transactions in the period (no transaction limit)
+- **Limit-Only Mode** fetches the exact number specified
+- Results include metadata showing which limit was hit (timeframe vs transaction count)
 - Maximum allowed time range is 2 years
 
 ### Batch Results Endpoints

@@ -218,6 +218,7 @@ output_csv_file = \"pnl_results.csv\"
 
 [redis]
 # IMPORTANT: For production server, use password-protected Redis URL
+# Redis is used for wallet queueing, caching, and storing transaction fetch metadata
 url = \"redis://:dexscreener_732d9e7d7d74573e0040d736e94e3a29@localhost:6379\"
 connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
@@ -260,7 +261,7 @@ aggregator_min_hold_minutes = 0.0
 amount_trades = 0
 win_rate = 0.0
 aggregator_batch_size = 20
-max_signatures = 1000
+max_signatures = 1000  # Default transaction limit (1000 when no timeframe specified)
 
 [trader_filter]
 min_realized_pnl_usd = 100.0
@@ -483,6 +484,8 @@ curl -s -X POST http://134.199.211.155:8080/api/pnl/batch/run \
   }
 }'
 ```
+
+**Note:** When both `max_transactions_to_fetch` and a timeframe are specified, the system uses **Hybrid Mode** - fetching stops at whichever limit is reached first. Results include metadata indicating which limit was hit.
 
 #### 9.1c Test Basic (Use Config Defaults)
 ```bash

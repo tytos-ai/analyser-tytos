@@ -82,6 +82,11 @@ pub struct StoredPortfolioPnLResultSummary {
     pub is_archived: bool,
     #[serde(default)]
     pub incomplete_trades_count: u32,  // Count of trades with only OUT transfers (no IN side)
+    // Transaction fetching metadata
+    pub timeframe_requested: Option<String>,
+    pub transaction_limit_requested: Option<i32>,
+    pub transactions_fetched: i32,
+    pub was_transaction_limit_hit: bool,
 }
 
 /// Aggregated P&L summary statistics

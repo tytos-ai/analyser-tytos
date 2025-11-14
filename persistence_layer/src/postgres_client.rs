@@ -119,6 +119,12 @@ impl PostgresClient {
         // This is already calculated by the PnL engine
         let roi_percentage = portfolio_result.profit_percentage.to_string().parse::<f64>().unwrap_or(0.0);
 
+        // Extract transaction fetching metadata
+        let timeframe_requested = portfolio_result.timeframe_requested.as_deref();
+        let transaction_limit_requested = portfolio_result.transaction_limit_requested.map(|v| v as i32);
+        let transactions_fetched = portfolio_result.transactions_fetched as i32;
+        let was_transaction_limit_hit = portfolio_result.was_transaction_limit_hit;
+
         // Clear existing data for this wallet and chain
         sqlx::query("DELETE FROM pnl_results WHERE wallet_address = $1 AND chain = $2")
             .bind(wallet_address)
@@ -137,8 +143,9 @@ impl PostgresClient {
             r#"
             INSERT INTO pnl_results
             (wallet_address, chain, total_pnl_usd, realized_pnl_usd, unrealized_pnl_usd, total_trades, win_rate,
-             tokens_analyzed, avg_hold_time_minutes, unique_tokens_count, active_days_count, roi_percentage, portfolio_json, analyzed_at, analysis_source, incomplete_trades_count)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             tokens_analyzed, avg_hold_time_minutes, unique_tokens_count, active_days_count, roi_percentage, portfolio_json, analyzed_at, analysis_source, incomplete_trades_count,
+             timeframe_requested, transaction_limit_requested, transactions_fetched, was_transaction_limit_hit)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             "#
         )
         .bind(wallet_address)
@@ -157,6 +164,10 @@ impl PostgresClient {
         .bind(Utc::now())
         .bind(analysis_source)
         .bind(incomplete_trades_count as i32)
+        .bind(timeframe_requested)
+        .bind(transaction_limit_requested)
+        .bind(transactions_fetched)
+        .bind(was_transaction_limit_hit)
         .execute(&self.pool)
         .await
         .map_err(|e| PersistenceError::Connection(redis::RedisError::from(std::io::Error::new(
@@ -180,7 +191,8 @@ impl PostgresClient {
         let row = sqlx::query(
             r#"
             SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                   unique_tokens_count, active_days_count, incomplete_trades_count
+                   unique_tokens_count, active_days_count, incomplete_trades_count,
+                   timeframe_requested, transaction_limit_requested, transactions_fetched, was_transaction_limit_hit
             FROM pnl_results
             WHERE wallet_address = $1 AND chain = $2
             "#,
@@ -273,7 +285,8 @@ impl PostgresClient {
             sqlx::query(
                 r#"
                 SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                       unique_tokens_count, active_days_count, incomplete_trades_count
+                       unique_tokens_count, active_days_count, incomplete_trades_count,
+                       timeframe_requested, transaction_limit_requested, transactions_fetched, was_transaction_limit_hit
                 FROM pnl_results
                 WHERE chain = $1
                 ORDER BY analyzed_at DESC
@@ -287,7 +300,8 @@ impl PostgresClient {
             sqlx::query(
                 r#"
                 SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                       unique_tokens_count, active_days_count, incomplete_trades_count
+                       unique_tokens_count, active_days_count, incomplete_trades_count,
+                       timeframe_requested, transaction_limit_requested, transactions_fetched, was_transaction_limit_hit
                 FROM pnl_results
                 ORDER BY analyzed_at DESC
                 LIMIT $1 OFFSET $2
@@ -389,7 +403,8 @@ impl PostgresClient {
                        win_rate::float8 as win_rate,
                        avg_hold_time_minutes::float8 as avg_hold_time_minutes,
                        unique_tokens_count, active_days_count, analyzed_at, is_favorited, is_archived,
-                       incomplete_trades_count
+                       incomplete_trades_count,
+                       timeframe_requested, transaction_limit_requested, transactions_fetched, was_transaction_limit_hit
                 FROM pnl_results
                 WHERE chain = $1
                 ORDER BY analyzed_at DESC
@@ -411,7 +426,8 @@ impl PostgresClient {
                        win_rate::float8 as win_rate,
                        avg_hold_time_minutes::float8 as avg_hold_time_minutes,
                        unique_tokens_count, active_days_count, analyzed_at, is_favorited, is_archived,
-                       incomplete_trades_count
+                       incomplete_trades_count,
+                       timeframe_requested, transaction_limit_requested, transactions_fetched, was_transaction_limit_hit
                 FROM pnl_results
                 ORDER BY analyzed_at DESC
                 LIMIT $1 OFFSET $2
@@ -446,6 +462,11 @@ impl PostgresClient {
                 is_favorited: row.get("is_favorited"),
                 is_archived: row.get("is_archived"),
                 incomplete_trades_count: row.get::<Option<i32>, _>("incomplete_trades_count").map(|v| v as u32).unwrap_or(0),
+                // Transaction fetching metadata
+                timeframe_requested: row.get("timeframe_requested"),
+                transaction_limit_requested: row.get("transaction_limit_requested"),
+                transactions_fetched: row.get::<Option<i32>, _>("transactions_fetched").unwrap_or(0),
+                was_transaction_limit_hit: row.get::<Option<bool>, _>("was_transaction_limit_hit").unwrap_or(false),
             };
             results.push(result);
         }
@@ -1263,7 +1284,8 @@ impl PostgresClient {
         let results_query = format!(
             r#"
             SELECT wallet_address, chain, portfolio_json, analyzed_at, is_favorited, is_archived,
-                   unique_tokens_count, active_days_count, incomplete_trades_count
+                   unique_tokens_count, active_days_count, incomplete_trades_count,
+                   timeframe_requested, transaction_limit_requested, transactions_fetched, was_transaction_limit_hit
             FROM pnl_results
             {}
             ORDER BY analyzed_at DESC

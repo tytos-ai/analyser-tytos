@@ -37,6 +37,7 @@ data_source = \"BirdEye\"
 
 [redis]
 # IMPORTANT: For production server, use password-protected Redis URL
+# Redis stores transaction fetch metadata including which limit was hit
 url = \"redis://:dexscreener_732d9e7d7d74573e0040d736e94e3a29@localhost:6379\"
 connection_timeout_seconds = 10
 default_lock_ttl_seconds = 600
@@ -87,7 +88,7 @@ aggregator_min_hold_minutes = 0.0
 amount_trades = 0
 win_rate = 0.0
 aggregator_batch_size = 20
-max_signatures = 1000  # NOTE: This value is now ignored - automatically set to match birdeye.default_max_transactions
+max_signatures = 1000  # Default transaction limit when no timeframe specified (Hybrid Mode supports both time and count limits)
 
 # Advanced trader filtering for copy trading (production settings)
 [trader_filter]

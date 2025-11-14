@@ -72,6 +72,20 @@ pub struct NewFinancialEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub swap_input_usd_value: Option<Decimal>,
 
+    /// For multi-hop swap SELL events: the token that was actually received
+    /// Example: INFINITY → penny → SOL, this would be "SOL" (or "penny" if intermediate) for the INFINITY SELL event
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_output_token: Option<String>,
+
+    /// For multi-hop swap SELL events: quantity of the output token received
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_output_quantity: Option<Decimal>,
+
+    /// For multi-hop swap SELL events: USD value of what was actually received
+    /// This is the TRUE proceeds (what user got), not the market value of tokens sold
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swap_output_usd_value: Option<Decimal>,
+
     /// Transaction timestamp
     pub timestamp: DateTime<Utc>,
 
@@ -365,6 +379,9 @@ impl NewTransactionParser {
             swap_input_token: None,
             swap_input_quantity: None,
             swap_input_usd_value: None,
+            swap_output_token: None,
+            swap_output_quantity: None,
+            swap_output_usd_value: None,
             timestamp: params.timestamp,
             transaction_hash: params.transaction_hash.to_string(),
         })
